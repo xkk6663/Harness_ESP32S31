@@ -47,3 +47,9 @@ CONFIG_LV_USE_PERF_MONITOR=y
 
 CONFIG_LV_USE_FLOAT=y
 CONFIG_LV_USE_GESTURE_RECOGNITION=y
+
+## PPA (Pixel Processing Accelerator) on ESP32-S31 ##
+## 注：LVGL 9.5 内置 lv_draw_ppa 仅支持 ESP32-P4（依赖 CONFIG_CACHE_L2_CACHE_LINE_SIZE，S31 无此 Kconfig）
+## 待 LVGL 后续版本适配 S31 后再开启。当前先留空，软件渲染。
+# CONFIG_LV_USE_PPA is not set
+# CONFIG_LV_USE_PPA_IMG is not set
