@@ -27,3 +27,6 @@ Thumbs.db
 # Local scratch logs
 docs/_*.log
 docs/_*.png
+
+# Local askpass helper (do not commit)
+.askpass.bat
