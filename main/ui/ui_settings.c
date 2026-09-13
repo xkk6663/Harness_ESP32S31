@@ -79,6 +79,11 @@ void app_disp_lvgl_show_settings(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
 
+    l = lv_label_create(info);
+    lv_label_set_text_static(l, "GitHub: xkk6663");
+    lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+
     /* Volume card */
     lv_obj_t *vol = lv_obj_create(screen);
     lv_obj_set_size(vol, BSP_LCD_H_RES - 40, 90);

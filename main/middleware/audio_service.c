@@ -17,6 +17,7 @@
 #include "esp_err.h"
 #include "bsp/esp-bsp.h"
 #include "audio_service.h"
+#include "3rd/ringbuf/ringbuf.h"
 
 static const char *TAG = "AUDIO_SVC";
 
@@ -29,9 +30,11 @@ static SemaphoreHandle_t audio_mux;
 static QueueHandle_t    audio_cmd_queue;
 static audio_evt_cb_t   audio_evt_cb_fn;
 
-/* 播放工作缓冲（init 时一次性分配） */
-static int16_t *play_wav_buf;
-static int16_t *rec_buf;
+/* 播放/录音工作缓冲：用第三方 ringbuf 库管理（main/3rd/ringbuf） */
+static uint8_t     play_rb_pool[BUFFER_SIZE];
+static ringbuf_t   play_rb;
+static uint8_t     rec_rb_pool[BUFFER_SIZE];
+static ringbuf_t   rec_rb;
 
 /* 播放内部状态（不再对外暴露全局变量） */
 static bool play_repeat = false;
@@ -79,10 +82,9 @@ void audio_service_init(void)
     audio_cmd_queue = xQueueCreate(4, sizeof(audio_cmd_t));
     assert(audio_cmd_queue);
 
-    /* 一次性分配工作缓冲 */
-    play_wav_buf = heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_DEFAULT);
-    rec_buf      = heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_DEFAULT);
-    assert(play_wav_buf && rec_buf);
+    /* 初始化第三方 ringbuf（pool 为静态数组，无需动态分配） */
+    ringbuffer_init(&play_rb, play_rb_pool, BUFFER_SIZE);
+    ringbuffer_init(&rec_rb,  rec_rb_pool,  BUFFER_SIZE);
 
     /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里） */
     xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
@@ -145,13 +147,17 @@ static void handle_play_file(const char *path)
     esp_codec_dev_open(spk_codec_dev, &fs);
 
     bool stopped = false;
+    static uint8_t io_tmp[BUFFER_SIZE];
     do {
         fseek(file, sizeof(hdr), SEEK_SET);
         uint32_t sent = 0;
         while (sent < hdr.data_size && !stopped) {
             xSemaphoreTake(audio_mux, portMAX_DELAY);
-            size_t n = fread(play_wav_buf, 1, BUFFER_SIZE, file);
-            esp_codec_dev_write(spk_codec_dev, play_wav_buf, n);
+            size_t n = fread(io_tmp, 1, BUFFER_SIZE, file);
+            /* 写入 ringbuf，再读出给 codec（统一走第三方 ringbuf 接口） */
+            ringbuffer_put(&play_rb, io_tmp, (uint16_t)n);
+            uint16_t got = ringbuffer_get(&play_rb, io_tmp, (uint16_t)n);
+            esp_codec_dev_write(spk_codec_dev, io_tmp, got);
             sent += n;
             xSemaphoreGive(audio_mux);
 
@@ -215,9 +221,13 @@ static void handle_record(const char *path)
 
     size_t written = 0;
     bool stopped = false;
+    static uint8_t rec_tmp[BUFFER_SIZE];
     while (written < RECORDING_LENGTH * BUFFER_SIZE && !stopped) {
-        ESP_ERROR_CHECK(esp_codec_dev_read(mic_codec_dev, rec_buf, BUFFER_SIZE));
-        written += fwrite(rec_buf, 1, BUFFER_SIZE, f);
+        ESP_ERROR_CHECK(esp_codec_dev_read(mic_codec_dev, rec_tmp, BUFFER_SIZE));
+        /* codec 读进 ringbuf，再读出落盘 */
+        ringbuffer_put(&rec_rb, rec_tmp, BUFFER_SIZE);
+        uint16_t got = ringbuffer_get(&rec_rb, rec_tmp, BUFFER_SIZE);
+        written += fwrite(rec_tmp, 1, got, f);
 
         /* 录音态也允许响应 STOP_RECORD / SET_VOLUME */
         static audio_cmd_t cmd;

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -22,7 +22,7 @@
 static const char *TAG = "SPLASH";
 
 #define SPLASH_PATH      FS_MNT_PATH"/xwkkk.jpg"
-#define SWIPE_UP_DY      (-80)   /* 涓婃媺璺濈闃堝€?px) */
+#define SWIPE_UP_DY      (-80)   /* swipe-up threshold (px) */
 
 static ui_splash_enter_cb_t s_enter_cb;
 static lv_obj_t *s_canvas;
@@ -30,9 +30,8 @@ static lv_obj_t *s_hint;
 static int32_t s_press_start_y;
 static bool s_entered;
 
-/* ---- JPEG 瑙ｇ爜骞堕摵鍒?canvas ---- */
-
-static void splash_load_image(void)
+/* Decode xwkkk.jpg into the shared PSRAM file_buffer and draw into canvas. */
+static void splash_decode_into(lv_obj_t *canvas)
 {
     struct stat st;
     if (stat(SPLASH_PATH, &st) != 0) {
@@ -82,8 +81,8 @@ static void splash_load_image(void)
         goto cleanup;
     }
     if (jpeg_dec_process(dec, &io) == JPEG_ERR_OK) {
-        lv_canvas_set_buffer(s_canvas, file_buffer, info.width, info.height, LV_COLOR_FORMAT_RGB565);
-        lv_obj_center(s_canvas);
+        lv_canvas_set_buffer(canvas, file_buffer, info.width, info.height, LV_COLOR_FORMAT_RGB565);
+        lv_obj_center(canvas);
         ESP_LOGI(TAG, "splash image %dx%d decoded", info.width, info.height);
     } else {
         ESP_LOGE(TAG, "jpeg decode failed");
@@ -96,7 +95,26 @@ cleanup:
     free(jpeg_buf);
 }
 
-/* ---- 涓婃媺鎵嬪娍 ---- */
+/* ---------------- public: reusable wallpaper layer ---------------- */
+
+lv_obj_t *ui_wallpaper_attach(lv_obj_t *parent)
+{
+    lv_obj_t *layer = lv_obj_create(parent);
+    lv_obj_set_size(layer, BSP_LCD_H_RES, BSP_LCD_V_RES);
+    lv_obj_set_style_bg_color(layer, lv_color_hex(0x0F2547), 0);
+    lv_obj_set_style_border_width(layer, 0, 0);
+    lv_obj_set_style_radius(layer, 0, 0);
+    lv_obj_set_style_pad_all(layer, 0, 0);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_canvas = lv_canvas_create(layer);
+    lv_obj_center(s_canvas);
+
+    splash_decode_into(s_canvas);
+    return layer;
+}
+
+/* ---------------- splash swipe-up handlers ---------------- */
 
 static void splash_pressed_cb(lv_event_t *e)
 {
@@ -121,7 +139,6 @@ static void splash_pressing_cb(lv_event_t *e)
     lv_indev_get_point(indev, &p);
     int32_t dy = p.y - s_press_start_y;
 
-    /* 璺熼殢鎵嬫寚寰井绉诲姩鎻愮ず鏂囧瓧 */
     if (s_hint) {
         int32_t move = dy / 4;
         if (move < 0) {
@@ -138,8 +155,6 @@ static void splash_pressing_cb(lv_event_t *e)
     }
 }
 
-/* ---- Public ---- */
-
 void ui_splash_show(ui_splash_enter_cb_t cb)
 {
     s_enter_cb = cb;
@@ -148,16 +163,11 @@ void ui_splash_show(ui_splash_enter_cb_t cb)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0F2547), 0);
 
-    /* 鍏ㄥ睆 canvas 鏄剧ず澹佺焊 */
-    s_canvas = lv_canvas_create(scr);
-    lv_obj_center(s_canvas);
-    lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_canvas, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(s_canvas, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_t *wp = ui_wallpaper_attach(scr);
+    lv_obj_add_flag(wp, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(wp, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(wp, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
 
-    splash_load_image();
-
-    /* 搴曢儴涓婃媺鎻愮ず */
     s_hint = lv_label_create(scr);
     lv_label_set_text(s_hint, LV_SYMBOL_UP"  SWIPE UP TO ENTER");
     lv_obj_set_style_text_color(s_hint, lv_color_hex(0x22D3EE), 0);
