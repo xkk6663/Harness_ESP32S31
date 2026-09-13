@@ -1,0 +1,29 @@
+# ESP-IDF build output
+build/
+sdkconfig.old
+sdkconfig.defaults.esp32s3
+
+# Managed components (restored by idf.py reconfigure)
+managed_components/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+.clangd
+.cache/
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local scratch logs
+docs/_*.log
+docs/_*.png

@@ -1,0 +1,12 @@
+idf_component_register(SRCS
+                        "app/main.c"
+                        "middleware/audio_service.c"
+                        "middleware/fs_service.c"
+                        "ui/ui_disp.c"
+                        "ui/ui_splash.c"
+                        "ui/ui_call.c"
+                        "ui/ui_windows.c"
+                        "ui/ui_record.c"
+                        "ui/ui_settings.c"
+                      INCLUDE_DIRS "."
+                      PRIV_REQUIRES spiffs)
