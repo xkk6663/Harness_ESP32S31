@@ -132,7 +132,7 @@ display_audio_photo/
 **EIM（Espressif IDF Manager）** 是乐鑫官方的 IDF 版本管理器，图形界面，免去手动装 Python / 工具链。
 
 - 下载：[https://idf.espressif.com/](https://idf.espressif.com/)
-- GitHub：[https://github.com/espressif/idf-im](https://github.com/espressif/idf-im)
+- GitHub：[https://github.com/espressif/idf-im-ui](https://github.com/espressif/idf-im-ui)
 - 教程：
   - 官方文档：[Get Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/index.html)
   - B站/EIM 视频教程搜索"乐鑫 EIM"
@@ -201,7 +201,7 @@ idf.py -p COM9 flash
 | [espressif/esp-adf](https://github.com/espressif/esp-adf) | 音频开发框架 |
 | [espressif/esp-sr](https://github.com/espressif/esp-sr) | 语音识别 / AFE 音频前端 |
 | [espressif/esp32-camera](https://github.com/espressif/esp32-camera) | 摄像头驱动（本工程保留了依赖） |
-| [espressif/idf-im](https://github.com/espressif/idf-im) | EIM 官方源码 |
+| [espressif/idf-im-ui](https://github.com/espressif/idf-im-ui) | EIM 官方源码 |
 | [espressif/esp-jpeg_dec](https://github.com/espressif/idf-extra-components/tree/master/jpeg_dec) | JPEG 硬件解码（开屏壁纸用） |
 
 ---
