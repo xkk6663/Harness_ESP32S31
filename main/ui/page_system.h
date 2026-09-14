@@ -3,20 +3,15 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
-/**
- * @file ui_call.h
- * @brief 通话 tab（UDP 低延迟通话占位页）
- */
-
 #pragma once
+
+#include "page_manager.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-lv_obj_t *ui_call_get_screen(void);
-void app_disp_lvgl_show_call(lv_obj_t *screen, lv_group_t *group);
+extern const Page_t Page_System;
 
 #ifdef __cplusplus
 }
