@@ -11,6 +11,8 @@
 #include "ui_disp.h"
 #include "ui_settings.h"
 #include "middleware/audio_service.h"
+#include "middleware/button_service.h"
+#include "freertos/queue.h"
 
 #define COL_BG        lv_color_hex(0x0F2547)
 #define COL_CARD      lv_color_hex(0x1E3A5F)
@@ -19,14 +21,35 @@
 #define COL_TEXT      lv_color_hex(0xE2E8F0)
 #define COL_SUBTEXT   lv_color_hex(0x94A3B8)
 
+static lv_obj_t *s_vol_slider;
+
 static void volume_event_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
+    int vol = lv_slider_get_value(slider);
+    button_service_set_volume(vol);
     audio_cmd_t cmd = {
         .id = AUDIO_CMD_SET_VOLUME,
-        .value = lv_slider_get_value(slider),
+        .value = vol,
     };
     audio_service_post_cmd(&cmd);
+}
+
+/* lv_timer: drain button volume queue and update slider */
+static void vol_timer_cb(lv_timer_t *t)
+{
+    QueueHandle_t q = button_service_get_vol_queue();
+    btn_vol_msg_t msg;
+    while (q && xQueueReceive(q, &msg, 0) == pdPASS) {
+        if (s_vol_slider) {
+            lv_slider_set_value(s_vol_slider, msg.volume, true);
+        }
+        audio_cmd_t cmd = {
+            .id = AUDIO_CMD_SET_VOLUME,
+            .value = msg.volume,
+        };
+        audio_service_post_cmd(&cmd);
+    }
 }
 
 void app_disp_lvgl_show_settings(lv_obj_t *screen, lv_group_t *group)
@@ -100,15 +123,18 @@ void app_disp_lvgl_show_settings(lv_obj_t *screen, lv_group_t *group)
     lv_label_set_text_static(l, LV_SYMBOL_VOLUME_MAX"  VOL");
     lv_obj_set_style_text_color(l, COL_TEXT, 0);
 
-    lv_obj_t *slider = lv_slider_create(vol);
-    lv_obj_set_width(slider, BSP_LCD_H_RES - 220);
-    lv_slider_set_range(slider, 0, 90);
-    lv_slider_set_value(slider, DEFAULT_VOLUME, false);
-    lv_obj_set_style_bg_color(slider, COL_BORDER, 0);
-    lv_obj_set_style_bg_color(slider, COL_CYAN, LV_PART_INDICATOR);
-    lv_obj_add_event_cb(slider, volume_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    s_vol_slider = lv_slider_create(vol);
+    lv_obj_set_width(s_vol_slider, BSP_LCD_H_RES - 220);
+    lv_slider_set_range(s_vol_slider, 0, 90);
+    lv_slider_set_value(s_vol_slider, button_service_get_volume(), false);
+    lv_obj_set_style_bg_color(s_vol_slider, COL_BORDER, 0);
+    lv_obj_set_style_bg_color(s_vol_slider, COL_CYAN, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_vol_slider, volume_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     if (group) {
-        lv_group_add_obj(group, slider);
+        lv_group_add_obj(group, s_vol_slider);
     }
+
+    /* Poll button volume queue every 100ms */
+    lv_timer_create(vol_timer_cb, 100, NULL);
 }

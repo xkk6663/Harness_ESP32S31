@@ -9,10 +9,10 @@
  * @note 修改自rtthread ringbuff 在在单生产/单消费的模式 中可以实现无锁即两个线程只单独操作读和写
  */
 #include "ringbuf.h"
+#include <stdlib.h>
+#include <assert.h>
 
-#include "../../elab/common/elab_assert.h"
 
-ELAB_TAG("ringbuf");
 static inline ringbuffer_status_t get_ringbuffer_status(ringbuf_t *rb)
 {
     if (rb->read_index == rb->write_index)
@@ -69,7 +69,7 @@ rb->read_mirror=rb->write_index=0;
 
 /*set buffer poll and size */
 rb->buffer = pool;
-rb->buffer_size =ELAB_SIZE_ALIGN_DOWN(size,4);//保证大小为按字节对齐
+rb->buffer_size = size & ~(4u - 1u); //保证大小为按字节对齐
 
 
 }
@@ -392,7 +392,7 @@ ringbuf_t* ringbuffer_create(uint16_t size)
     ringbuf_t *rb;
     uint8_t *pool;
 
-    size = ELAB_SIZE_ALIGN_DOWN(size, 4);// 大小做字节对齐
+    size = size & ~(4u - 1u); // 大小做字节对齐
 
     rb = (ringbuf_t *)malloc(sizeof(ringbuf_t));// 申请内存
     if (rb == NULL)

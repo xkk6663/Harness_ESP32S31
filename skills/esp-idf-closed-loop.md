@@ -114,15 +114,13 @@ idf.py -p COM9 flash
 Error: Monitor requires standard input to be attached to TTY.
 ```
 
-替代方案：**用 pyserial 直接读 COM9，拉 RTS 触发硬复位，再读 N 秒**。
+替代方案：**用 pyserial 直接读 COM9**。`idf.py flash` 烧录结束会自动拉 RTS 复位并启动程序，烧录完直接跑脚本读串口即可，不需要再手动复位。
 
 脚本见 `docs/_serial_capture.py`：
 
 ```python
 import serial, time
 s = serial.Serial('COM9', 115200, timeout=1)
-s.setRTS(True);  time.sleep(0.15)   # EN 拉低复位
-s.setRTS(False)                      # 释放运行
 end = time.time() + 12               # 读 12 秒
 while time.time() < end:
     line = s.readline()
@@ -139,7 +137,6 @@ s.close()
 ```
 
 > 想改抓多少秒，改脚本里的 `+ 12`。
-> 想等用户点屏幕再抓，把脚本里的 `setRTS` 复位两行删掉，直接读。
 
 ---
 
@@ -169,7 +166,7 @@ agent 后台跑时，把 build+flash 串成一条：
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'; Set-Location 'C:\Users\xiao1\Desktop\esp32\display_audio_photo'; idf.py -p COM9 flash"
 ```
 
-跑完再单独跑 pyserial 脚本。**不要把 flash 和 pyserial 放同一条命令**——flash 结束时设备已跑起来，pyserial 再拉 RTS 复位就能抓到完整启动日志。
+跑完再单独跑 pyserial 脚本。`idf.py flash` 结束时板子会自动复位并启动，pyserial 直接读就能抓到完整启动日志，不需要再拉 RTS。
 
 ---
 

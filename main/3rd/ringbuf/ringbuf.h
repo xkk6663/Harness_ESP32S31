@@ -1,11 +1,15 @@
 #ifndef __RING_BUF_
 #define __RING_BUF_
-#include "../../elab/common/elab_def.h"
+
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum 
+typedef enum
 {
     RINGBUFFER_EMPTY=0,
     RINGBUFFER_FULL,
@@ -14,32 +18,13 @@ typedef enum
 }ringbuffer_status_t;
 
 
-    /* use the msb of the {read,write}_index as mirror bit. You can see this as
-     * if the buffer adds a virtual mirror and the pointers point either to the
-     * normal or to the mirrored buffer. If the write_index has the same value
-     * with the read_index, but in a different mirror, the buffer is full.
-     * While if the write_index and the read_index are the same and within the
-     * same mirror, the buffer is empty. The ASCII art of the ringbuffer is:
-     *
-     *          mirror = 0                    mirror = 1
-     * +---+---+---+---+---+---+---+|+~~~+~~~+~~~+~~~+~~~+~~~+~~~+
-     * | 0 | 1 | 2 | 3 | 4 | 5 | 6 ||| 0 | 1 | 2 | 3 | 4 | 5 | 6 | Full
-     * +---+---+---+---+---+---+---+|+~~~+~~~+~~~+~~~+~~~+~~~+~~~+
-     *  read_idx-^                   write_idx-^
-     *
-     * +---+---+---+---+---+---+---+|+~~~+~~~+~~~+~~~+~~~+~~~+~~~+
-     * | 0 | 1 | 2 | 3 | 4 | 5 | 6 ||| 0 | 1 | 2 | 3 | 4 | 5 | 6 | Empty
-     * +---+---+---+---+---+---+---+|+~~~+~~~+~~~+~~~+~~~+~~~+~~~+
-     * read_idx-^ ^-write_idx
-     */
 typedef struct{
-    uint8_t *buffer;        // Buffer pointer
-    uint16_t read_mirror:1; //page 0 or 1, used to indicate which page is being read
-    uint16_t read_index:14;  // Read index, used to indicate the current read position in the buffer 
-    uint16_t write_mirror:1; //page 0 or 1
-    uint16_t write_index:14; // Write index
-
-    uint16_t buffer_size;   // Size of the buffer
+    uint8_t *buffer;        /* Buffer pointer */
+    uint16_t read_mirror:1; /* page 0 or 1 */
+    uint16_t read_index:14; /* Read index */
+    uint16_t write_mirror:1; /* page 0 or 1 */
+    uint16_t write_index:14; /* Write index */
+    uint16_t buffer_size;    /* Size of the buffer */
 }ringbuf_t;
 
 
@@ -54,18 +39,10 @@ uint16_t ringbuffer_peek(ringbuf_t *rb, uint8_t **ptr);
 uint16_t ringbuffer_getbyte(ringbuf_t *rb, uint8_t *byte);
 uint16_t ringbuffer_data_len(ringbuf_t *rb);
 
-
-/** return the size of empty space in rb */
 #define ringbuffer_space_len(rb) ((rb)->buffer_size - ringbuffer_data_len(rb))
-
-
-
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif //__RING_BUF_
-
-
-
+#endif /* __RING_BUF_ */
