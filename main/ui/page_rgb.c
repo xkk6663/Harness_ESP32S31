@@ -39,6 +39,8 @@ static void apply_color(void)
     /* only push color to the hardware when the LED power switch is on */
     bool on = s_switch && lv_obj_has_state(s_switch, LV_STATE_CHECKED);
     if (on) {
+        /* turn on (task keeps s_led_on flag) then push color */
+        led_service_set_on(true);
         led_service_set_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
 }
@@ -100,6 +102,10 @@ static lv_obj_t *make_channel_row(lv_obj_t *parent, const char *name,
 
 static lv_obj_t *rgb_create(lv_obj_t *parent)
 {
+    /* take over LED from main-interface status logic; power switch starts OFF */
+    led_service_set_manual(true);
+    led_service_set_on(false);
+
     lv_obj_t *page = ui_common_page_root(parent);
     lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -127,7 +133,7 @@ static lv_obj_t *rgb_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(sw_label, UI_FONT, 0);
 
     s_switch = lv_switch_create(sw_row);
-    lv_obj_add_state(s_switch, LV_STATE_CHECKED);
+    /* default OFF: user controls manually from here */
     lv_obj_set_style_bg_color(s_switch, COL_BORDER, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s_switch, COL_CYAN, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_add_event_cb(s_switch, switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -156,6 +162,8 @@ static lv_obj_t *rgb_create(lv_obj_t *parent)
 
 static void rgb_destroy(lv_obj_t *page)
 {
+    /* hand LED back to main-interface Wi-Fi status logic */
+    led_service_set_manual(false);
     lv_obj_del(page);
     s_switch = NULL;
     s_r_slider = s_g_slider = s_b_slider = NULL;

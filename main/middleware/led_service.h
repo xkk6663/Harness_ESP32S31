@@ -8,12 +8,11 @@
  * @file led_service.h
  * @brief 中间层：RGB LED 服务（WS2812 on GPIO37, RMT 后端）
  *
- * 设计：
- *  - led_service_init() 初始化 BSP LED indicator，默认慢呼吸；
- *  - led_service_set_mode() 切换 BSP 效果；
- *  - led_service_set_rgb() 自定义颜色（常亮）；
- *  - led_service_set_on() 开关（保持当前颜色）；
- *  - 不依赖 LVGL，不暴露 handle 给上层。
+ * 并发保护（FreeRTOS）：
+ *  - 内部建命令队列 + 专用 LED 任务；所有硬件操作串行执行；
+ *  - UI(LVGL task) / WIFI(esp event task) 只 post 命令，不直接碰 LED 驱动，
+ *    从根本上消除跨任务并发访问 led_indicator/RMT 的竞争。
+ *  - 主界面 set_status() 反映 Wi-Fi 状态；RGB 页 set_manual() 接管为手动。
  */
 
 #pragma once
@@ -26,26 +25,18 @@
 extern "C" {
 #endif
 
-/**
- * @brief 初始化 RGB LED，默认进入慢呼吸
- */
+typedef enum {
+    LED_STATUS_DISCONNECTED = 0,
+    LED_STATUS_CONNECTING,
+    LED_STATUS_CONNECTED,
+} led_status_t;
+
 void led_service_init(void);
 
-/**
- * @brief 切换 LED 模式（BSP_LED_* 枚举，如 BSP_LED_BREATHE_SLOW / BSP_LED_ON / BSP_LED_OFF）
- */
-void led_service_set_mode(bsp_led_effect_t mode);
-
-/**
- * @brief 设置自定义 RGB 颜色并常亮显示
- * @param r,g,b 0-255
- */
+void led_service_set_status(led_status_t status);
 void led_service_set_rgb(uint8_t r, uint8_t g, uint8_t b);
-
-/**
- * @brief 开 / 关 LED（on 时保持当前颜色常亮，off 熄灭）
- */
 void led_service_set_on(bool on);
+void led_service_set_manual(bool manual);
 
 #ifdef __cplusplus
 }
