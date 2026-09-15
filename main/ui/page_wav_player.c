@@ -16,6 +16,8 @@
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 #include "page_wav_player.h"
 #include "ui_theme.h"
@@ -28,24 +30,26 @@ static const char *TAG = "WAV_PAGE";
 static char      s_file_path[256];
 static lv_obj_t *s_play_btn;
 
-/* ---- audio completion event ---- */
+/* ---- UI 事件解耦：audio_task 只入队，LVGL task 经 lv_timer 出队再碰控件 ----
+ * 历史坑：on_audio_event 直接在 audio_task 上下文用 bsp_display_lock(0)
+ * （非阻塞、拿不到锁也不检查）操作 LVGL 按钮，与 LVGL task 并发访问导致崩溃。
+ * 现改为 FreeRTOS 队列：跨任务只传事件 ID，UI 更新全部回到 LVGL task。 */
+static QueueHandle_t s_audio_evt_q;
+#define AUDIO_UI_Q_DEPTH 8
 
-static void on_audio_event(audio_evt_id_t evt)
+/* 在 LVGL task 上下文执行（由 lv_timer 调用），可安全操作控件 */
+static void apply_audio_evt(audio_evt_id_t evt)
 {
     switch (evt) {
     case AUDIO_EVT_PLAY_DONE:
-        bsp_display_lock(0);
         if (s_play_btn) {
             lv_obj_clear_state(s_play_btn, LV_STATE_DISABLED);
         }
         tab_record_on_play_done();
-        bsp_display_unlock();
         break;
     case AUDIO_EVT_RECORD_DONE:
 #if BSP_CAPS_AUDIO_MIC
-        bsp_display_lock(0);
         tab_record_on_record_done();
-        bsp_display_unlock();
 #endif
         break;
     default:
@@ -53,8 +57,33 @@ static void on_audio_event(audio_evt_id_t evt)
     }
 }
 
+static void audio_evt_drain_cb(lv_timer_t *t)
+{
+    (void)t;
+    audio_evt_id_t evt;
+    /* 一次性取空队列（本 timer 跑在 LVGL task，持显示锁） */
+    while (s_audio_evt_q && xQueueReceive(s_audio_evt_q, &evt, 0) == pdPASS) {
+        apply_audio_evt(evt);
+    }
+}
+
+/* 运行在 audio_task 上下文：严禁直接 lv_*，只投递事件 */
+static void on_audio_event(audio_evt_id_t evt)
+{
+    if (s_audio_evt_q) {
+        /* 队列满则丢最新事件（按钮状态以最后一次为准，下次 drain 自然对齐） */
+        xQueueSend(s_audio_evt_q, &evt, 0);
+    }
+}
+
 void page_wav_player_register_audio_events(void)
 {
+    /* 在 LVGL task 上下文调用（page_main create），可安全建 lv_timer */
+    if (s_audio_evt_q == NULL) {
+        s_audio_evt_q = xQueueCreate(AUDIO_UI_Q_DEPTH, sizeof(audio_evt_id_t));
+        /* 30ms 节拍出队，等价于在 LVGL task 内轮询 UI 事件 */
+        lv_timer_create(audio_evt_drain_cb, 30, NULL);
+    }
     audio_service_set_evt_cb(on_audio_event);
 }
 

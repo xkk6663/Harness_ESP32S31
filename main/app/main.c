@@ -5,6 +5,7 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 
@@ -20,10 +21,25 @@
 
 static const char *TAG = "main";
 
+/* 本次上电周期内，开机提示音是否已播过（只在第一次上滑进主界面时播一次） */
+static bool s_boot_tone_played = false;
+
 /* Swipe-up on splash recognized -> push the main page. */
 static void on_splash_enter(void)
 {
     PageManager_Load(&Page_Main);
+
+    /* 第一次上滑进主界面：自动播放一次开机提示音 */
+    if (!s_boot_tone_played) {
+        s_boot_tone_played = true;
+        audio_cmd_t cmd = {
+            .id = AUDIO_CMD_PLAY_FILE,
+            .value = 0,
+        };
+        snprintf(cmd.path, sizeof(cmd.path), "%s/boot_tone.wav", FS_MNT_PATH);
+        audio_service_post_cmd(&cmd);
+        ESP_LOGI(TAG, "boot tone requested: %s", cmd.path);
+    }
 }
 
 /* Wi-Fi status -> main-interface RGB LED (red / blue breathe / green) */

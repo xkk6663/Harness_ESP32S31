@@ -89,20 +89,48 @@ idf.py build
   `-D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_s31_korvo_1`；
 - 增量编译只改几个 .c 时不带该参数即可；
 - 成功标志：`Project build complete` + `display_audio_photo.bin binary size 0x...`；
-- 本工程目标分区 2MB，当前 bin ≈ 0xCA620，剩余 60%。
+- OTA app 槽 3MB，当前 bin ≈ 0x18a360（~1.63MB），槽内剩余约 49%。
 
 ---
 
-## 3. 烧录
+## 3. 烧录（分场景，避免每次都写 10MB）
+
+> 当前分区：`ota_0/ota_1 各 3MB` + `storage littlefs 9.87MB(@0x620000)`。
+> 已去掉 `FLASH_IN_PROJECT`，默认 **不再重烧 storage 素材镜像**，板子上已有素材/录音保留。
+> 原则：**只写这次真正变了的那一块**，其余不动。
+
+### 3.1 选哪条命令（按改动内容对号入座）
+
+| 这次改了什么 | 用哪条命令 | 烧写内容 | 耗时 |
+|---|---|---|---|
+| 只改了 `main/` 业务代码（最常见） | `idf.py -p COM9 app-flash` | 仅 ota_0 app | **~2–5 秒** |
+| 改了 `sdkconfig` / bootloader / 分区表 | `idf.py -p COM9 flash` | bootloader+partition+otadata+app（~2MB） | ~10–20 秒 |
+| 改了 `littlefs_content/` 里的素材（壁纸/wav） | 先 `flash` 再单独烧 storage | 上述 + storage.bin@0x620000（10.35MB） | ~11 分钟 |
+| 新板子 / 整片擦除后首次烧录 | 全套：`flash` + 烧 storage | 全部 | ~11 分钟 |
+| 阶段六 OTA 升级 | 不烧录，走 wifi TCP 写 ota_1 | — | — |
+
+> 日常开发 99% 用第一条 `app-flash`。不要无脑 `flash` 更不要每次都写 storage。
+
+### 3.2 单独烧 storage 素材镜像（仅素材变更/首次时）
+
+> 注意：`idf.py flash-storage` **不是有效 target**（会报 unknown target）。
+> 去 `FLASH_IN_PROJECT` 后没有自动的 storage 烧录 target，必须用 esptool 手动写：
 
 ```powershell
-idf.py -p COM9 flash
+cd build
+& "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" -m esptool `
+  --chip esp32s31 -p COM9 -b 460800 --before default-reset --after hard-reset `
+  write-flash 0x620000 storage.bin
 ```
 
+要点：参数顺序是 **`write-flash <地址> <文件>`**（地址在前）；460800 波特 + esptool 压缩约 35 秒写完 10MB。
+
+### 3.3 注意事项
 - 不要在这条命令后直接跟 `monitor`（见第 4 节）；
-- 成功标志：`Hash of data verified` + `Hard resetting via RTS pin...`；
-- storage.bin（SPIFFS 镜像）若未变化会 `already in flash, skipping write`，秒过；变了会重写 5MB，约 5 分钟；
-- 波特率 460800，app 分区 ~800KB 约 55 秒。
+- 成功标志：`Hash of data verified` + `Hard resetting via RTS pin...`，烧完板子自动复位；
+- **ESP32-S31 ROM 不支持整片 `erase-flash`**（报 `does not support function erase_flash`），不要用；直接覆盖烧录即可；
+- 进下载模式偶发 `Invalid head of packet (0x78)` / `Failed to enter flash download mode`：多半是板子在跑旧固件占串口，等 3–4 秒或重插 USB 后重试；
+- 波特率 460800；app 约 1.6MB，`app-flash` 几秒完成。
 
 ---
 
@@ -192,6 +220,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Espressif\tool
 
 - ES8389 MCLK=GPIO42 未连 → BSP 已配 `use_mclk=false`，TDM 帧格式；
 - 推荐 16kHz / 16bit / mono，20ms 一帧 = 640B；
-- 分区表：nvs 24K / factory app 2M / spiffs 5M（offset 0x210000）；
+- 分区表（OTA 最终布局，无 factory）：nvs 24K / phy 4K / otadata 8K / **ota_0 3MB@0x20000 / ota_1 3MB@0x320000** / **storage littlefs 9.87MB@0x620000**；
+- 文件系统：LittleFS（挂载点 `/littlefs`），素材目录 `littlefs_content/`；已去 `FLASH_IN_PROJECT`，日常不重烧 storage（见第 3 节）；
+- **音频素材规范（重要）**：播放/录音通路固定 **16kHz / 16bit / mono**。新增 WAV 素材必须满足：
+  1. 采样率 16000、单声道、16bit（44.1k/立体声在本板会失真）；
+  2. **标准 44 字节 RIFF 头**：导出软件常插 `LIST/fact` chunk，工程里 `dumb_wav_header` 按固定偏移读 `data_size`，非标准头会把长度读错（曾出现 `size=26` 无声 / 数据错乱）；
+  3. 用 `python -c`/wave 模块重写一遍即可自动得到标准头并完成下混+重采样；改完素材必须按 3.2 单独烧 storage。
 - 板子不支持软件调 LCD 亮度（日志会打 `This board doesn't support to change brightness of LCD`）；
-- 编译输出在 `build/`，产物：`build/display_audio_photo.bin` + `bootloader.bin` + `partition-table.bin` + `storage.bin`。
+- 编译输出在 `build/`：`display_audio_photo.bin` + `bootloader.bin` + `partition-table.bin` + `storage.bin`（仅素材变更/首次时才烧后两项之外的 storage）。
