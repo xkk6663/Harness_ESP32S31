@@ -23,6 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "esp_codec_dev.h"
 #include "bsp/esp-bsp.h"
+#include "middleware/fs_service.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +33,7 @@ extern "C" {
 #define SAMPLE_RATE     (16000)
 #define DEFAULT_VOLUME  (70)
 #define RECORDING_LENGTH (160)   /* 160 * 1024 bytes @16k/16bit mono ≈ 5.12 s */
-#define REC_FILENAME    BSP_SPIFFS_MOUNT_POINT"/recording.wav"
+#define REC_FILENAME    FS_MNT_PATH"/recording.wav"
 
 #define AUDIO_CMD_PATH_MAX  256
 

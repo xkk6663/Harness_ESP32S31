@@ -127,7 +127,7 @@ void tab_record_build(lv_obj_t *screen, lv_group_t *group)
 
     /* Footer hint */
     lv_obj_t *hint = lv_label_create(screen);
-    lv_label_set_text_static(hint, "5s local test  |  /spiffs/recording.wav");
+    lv_label_set_text_static(hint, "5s local test  |  /littlefs/recording.wav");
     lv_obj_set_style_text_color(hint, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(hint, UI_FONT, 0);
 

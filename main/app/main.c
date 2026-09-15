@@ -46,7 +46,7 @@ static void on_wifi_evt(wifi_evt_t evt, const char *info)
 
 void app_main(void)
 {
-    bsp_spiffs_mount();
+    ESP_ERROR_CHECK(fs_service_mount());
     bsp_i2c_init();
     bsp_display_start();
     //bsp_display_brightness_set(50);

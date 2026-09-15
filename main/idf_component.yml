@@ -3,3 +3,4 @@ dependencies:
     version: '*'
   esp_new_jpeg: ^1
 description: BSP Display Audio Photo Example
+# esp_littlefs 由工程本地 components/esp_littlefs 提供（组件注册表 403，已离线 clone）

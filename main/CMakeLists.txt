@@ -22,4 +22,4 @@ idf_component_register(SRCS
                         "ui/page_system.c"
                       INCLUDE_DIRS "."
                                     "ui/ui_manager"
-                      PRIV_REQUIRES spiffs esp_wifi esp_event esp_netif nvs_flash)
+                      PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash)

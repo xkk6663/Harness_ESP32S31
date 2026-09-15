@@ -5,13 +5,49 @@
  */
 
 #include <string.h>
+#include "esp_log.h"
+#include "esp_err.h"
+#include "esp_littlefs.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 #include "esp_jpeg_dec.h"
 #include "fs_service.h"
 
+static const char *TAG = "FS_SVC";
+
 uint8_t *file_buffer = NULL;
 size_t file_buffer_size = 0;
+
+/* ===== LittleFS 挂载（替代原 bsp_spiffs_mount） ===== */
+esp_err_t fs_service_mount(void)
+{
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = FS_MNT_PATH,
+        .partition_label = "storage",
+        .format_if_mount_failed = true,
+        .read_only = false,
+        .dont_mount = false,
+    };
+
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find LittleFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
+        }
+        return ret;
+    }
+
+    size_t total = 0, used = 0;
+    esp_littlefs_info(conf.partition_label, &total, &used);
+    ESP_LOGI(TAG, "LittleFS mounted at %s, partition '%s', total=%uKB used=%uKB",
+             FS_MNT_PATH, conf.partition_label,
+             (unsigned)(total / 1024), (unsigned)(used / 1024));
+    return ESP_OK;
+}
 
 app_file_type_t get_file_type(const char *filepath)
 {

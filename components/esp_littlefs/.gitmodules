@@ -1,0 +1,3 @@
+[submodule "main/littlefs"]
+	path = src/littlefs
+	url = git@github.com:littlefs-project/littlefs.git
