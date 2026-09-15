@@ -38,7 +38,7 @@
 本仓库把这套流程**沉淀成 Agent 可执行的 Skill + 工程规范**：
 
 ```
-Agent 读 docs/工程规范/01~10
+Agent 读 docs/工程规范/01~11
         ↓
 按模板写 middleware / ui 代码
         ↓
@@ -79,7 +79,8 @@ Agent 读日志：panic? 功能日志? 静默?
 | 屏幕 | 4.3" RGB 800×480 ST7262E43 + 电容触摸 |
 | ESP-IDF | **v6.1.0**（`IDF_TARGET=esp32s31`） |
 | 烧录端口 | COM9 |
-| 分区表 | nvs 24K / factory app 2M / spiffs 5M |
+| 分区表 | nvs 24K / phy 4K / otadata 8K / **ota_0 3M / ota_1 3M** / **storage littlefs 9.87M**（无 factory，A/B OTA） |
+| 文件系统 | LittleFS（挂载点 `/littlefs`，素材/录音/壁纸同盘分目录） |
 
 ---
 
@@ -88,38 +89,31 @@ Agent 读日志：panic? 功能日志? 静默?
 ```
 display_audio_photo/
 ├── main/
-│   ├── app/main.c                 # app_main() 只做初始化顺序
-│   ├── middleware/                # 硬件业务，不依赖 LVGL
-│   │   ├── audio_service.c/h      # ES8389 + I2S + 常驻 audio_task + 命令队列
-│   │   ├── fs_service.c/h         # 文件类型识别 + JPEG 解码缓冲
-│   │   ├── wifi_manager.c/h       # （待建）STA 连接
-│   │   ├── udp_voice.c/h          # （待建）UDP 通话
-│   │   └── tcp_record.c/h         # （待建）TCP 录音
-│   └── ui/                        # LVGL 界面
-│       ├── ui_disp.c/h            # tabview 主框架（CALL/REC/SYS）
-│       ├── ui_splash.c/h          # 开屏壁纸 + 上拉手势
-│       ├── ui_call.c/h            # CALL tab
-│       ├── ui_record.c/h          # REC tab
-│       ├── ui_settings.c/h        # SYS tab
-│       ├── ui_windows.c/h         # WAV 播放弹窗
-│       └── ui_state.h
+│   ├── app/main.c                # app_main() 初始化顺序 + 上滑自动播开机提示音
+│   ├── middleware/               # 硬件业务，不 include LVGL
+│   │   ├── audio_service.c/h     # ES8389 + I2S + 常驻任务+命令队列（文件播放/录音/流式）
+│   │   ├── fs_service.c/h        # LittleFS 挂载 + JPEG 解码缓冲
+│   │   ├── led_service.c/h        # RGB LED（GPIO37 WS2812，命令队列）
+│   │   ├── button_service.c/h    # 4 路 ADC 分压按键 + 音量队列
+│   │   ├── wifi_manager.c/h      # STA 扫描/连接/IP
+│   │   ├── udp_voice.c/h         # （阶段二待建）UDP 通话
+│   │   └── tcp_record.c/h        # （阶段三待建）TCP 录音
+│   ├── ui/                       # LVGL 界面（PageManager 栈式导航）
+│   │   ├── page_splash.c/h       # 开屏壁纸 + 上滑进主界面
+│   │   ├── page_main.c/h         # CALL / REC / SYS tab
+│   │   ├── page_wifi.c/page_rgb.c/page_system.c/page_wav_player.c
+│   │   ├── ui_manager/page_manager.c/h
+│   │   └── overlay_wallpaper.c    # 壁纸浮层
+│   └── 3rd/ringbuf/              # 第三方纯 C 环形缓冲
 ├── docs/
-│   ├── 工程规范/                  # Agent 写代码前必读
-│   │   ├── 01_工程分层架构.md
-│   │   ├── 02_文件头规范.md
-│   │   ├── ... 03~10 ...
-│   │   └── 附录_代码文件索引.md
-│   ├── 项目规划/                  # 推进方向必读
-│   │   ├── 需求文档.md
-│   │   ├── todolist.md
-│   │   └── 改动记录.md
-│   └── _serial_capture.py         # 替代 idf.py monitor
+│   ├── 工程规范/                 # Agent 写代码前必读（01~11 + 附录）
+│   ├── 项目规划/                 # 需求文档 / todolist / 改动记录 / ICD
+│   └── _serial_capture.py        # 替代 idf.py monitor
 ├── skills/
-│   └── esp-idf-closed-loop.md    # 闭环开发 SOP（硬约束：先读规范再写代码）
-├── spiffs_content/                # SPIFFS 素材（xwkkk.jpg / test_16kHz.wav）
-├── IDF_v6.1_Powershell.lnk       # 一键打开 IDF v6.1 终端
-├── partitions.csv
-├── sdkconfig / sdkconfig.defaults / sdkconfig.bsp.esp32_s31_korvo_1
+│   └── esp-idf-closed-loop.md   # 闭环 SOP：build→flash→抓日志→定位→再改
+├── littlefs_content/             # LittleFS 素材（xwkkk.jpg / boot_tone.wav）
+├── components/esp_littlefs/      # 本地组件（registry 403，Git 拉取）
+├── partitions.csv                # OTA 双 3MB + storage littlefs
 └── CMakeLists.txt
 ```
 
@@ -179,7 +173,7 @@ idf.py -p COM9 flash
 
 1. 把本仓库喂给 Agent（豆包 / Claude / Cursor 等）；
 2. 让 Agent 先 `Read skills/esp-idf-closed-loop.md`；
-3. 再 `Read docs/工程规范/01~10`；
+3. 再 `Read docs/工程规范/01~11`；
 4. 给任务（例如"实现 wifi_manager.c 按 STA 模式连指定 SSID"）；
 5. Agent 会自己：
    - 按 07 章模板写代码；
@@ -208,12 +202,15 @@ idf.py -p COM9 flash
 
 ## ✅ 当前进度
 
-- [x] M1 音频链路（ES8389 / I2S DMA / WAV 播放 / 5 s 录音）
-- [x] UI 骨架（CALL / REC / SYS 三 tab + 开屏壁纸 + 上拉手势）
-- [x] 工程规范 11 篇 + 闭环 SOP
-- [ ] M2 UDP 通话（wifi_manager + udp_voice）
-- [ ] M3 TCP 录音（tcp_record）
-- [ ] PC 端 Python 客户端
+- [x] M1 音频链路（ES8389 / I2S DMA / WAV 播放 / 本地录音）
+- [x] UI 骨架（CALL / REC / SYS 子页 + 开屏壁纸 + 上拉手势 + RGB / WiFi / System 监视卡）
+- [x] RGB LED 呼吸 + 4 路 ADC 分压按键（音量 ± / mode / set）
+- [x] Wi-Fi STA（扫描/连接/状态灯）
+- [x] 分区表 OTA 双 3MB + SPIFFS→LittleFS 迁移；开机提示音（16k/mono）
+- [x] 工程规范 11 篇 + 闭环 SOP（含分场景烧录、日志规范）
+- [ ] M2 UDP 通话（audio 流式改造 + link_manager + udp_voice + PC 端）
+- [ ] M3 TCP 录音 + M3.5 远程文件管理/文件浏览器 + M4 多任务调度
+- [ ] M6 OTA A/B 升级
 
 详见 [`docs/项目规划/todolist.md`](docs/项目规划/todolist.md)。
 

@@ -149,18 +149,44 @@
 
 ---
 
-## 阶段 3.5：壁纸热更新（wallpaper_service + PC 拖图）
+## 阶段 3.5：文件系统管理（远程 HTTP + 设备端文件浏览器 + 壁纸热更新）
 
-### 3.5.1 设备端 wallpaper_service
-- [ ] 中间层 wallpaper_service（命令队列）：收图片→写 rec_cache `/wallpapers/custom.jpg`→发事件；
-- [ ] UI 订阅事件，LVGL 图片资源失效重载（PPA 硬解）；默认壁纸从 assets 读；
-- [ ] 校验 <200KB / JPEG，失败不覆盖旧壁纸。
+> 目标：PC 端可远程管理 /littlefs 里的图片/音频（上传/下载/删除/设为壁纸），
+> 设备端 System 子页可浏览文件、点图片预览、点音频试听。
+> 关键结论：LittleFS 本身只是 Flash 文件系统，"远程写入"由上层 HTTP 做；
+> LittleFS 提供 wear-leveling + 掉电保护 + 原子 rename，适合远程写。
 
-### 3.5.2 PC 端 Wallpaper Tab
-- [ ] 拖图→缩放到 800×480、压 JPEG<200KB、预览；推送进度/失败重试；EventBus 解耦互不影响。
+### 3.5.1 设备端 fs_http_service（新增中间层，禁止 include lvgl）
+- [ ] `fs_http_service_init()`：基于 `esp_http_server`，wifi_manager 上线后起服务，端口 80；常驻在 HTTP 自带任务，不另建大任务；
+- [ ] 接口：
+  - `GET /fs/list` → JSON `[{name,size,type(image/audio)}]`（遍历 /littlefs，按扩展名分类）；
+  - `PUT /fs/upload?name=xxx` → 流式分块写 `xxx.tmp`，写完 `rename()` 原子替换（掉电不损旧文件）；
+  - `GET /fs/file?name=xxx` → 返回文件内容（PC 下载/预览）；
+  - `POST /fs/delete?name=xxx` → unlink；
+  - `POST /fs/wallpaper?name=xxx` → 设为开屏壁纸（发事件，不直接操作 LVGL）；
+- [ ] 约束：上传前查剩余空间（`esp_littlefs_info`）；单文件上限（图片<512KB、音频<2MB，超出拒绝）；
+  文件名仅允许 `[A-Za-z0-9._-]`、≤63 字符，拒绝 `../` 路径穿越；简单 token 头校验；
+- [ ] 上传/删除完成经事件队列通知 UI 刷新文件列表（网络任务上下文禁止碰 LVGL）。
 
-### 3.5.3 验收
-- [ ] 拖图后壁纸即时更新、重启保留；OTA/清录音不丢自定义壁纸；大图正确压缩，换图不卡 UI、不影响通话。
+### 3.5.2 设备端壁纸热更新（wallpaper_service，3.5.1 的壁纸子能力）
+- [ ] 中间层 wallpaper_service（命令队列）：设壁纸→校验 JPEG/大小→写 `/wallpapers/custom.jpg`→发事件；
+- [ ] UI 订阅事件，LVGL 图片资源失效重载（PPA 硬解）；默认壁纸从 /littlefs 读；
+- [ ] 校验失败/掉电回退旧壁纸；换图不卡 UI、不影响通话。
+
+### 3.5.3 设备端文件浏览器 UI（System 子页新增入口）
+- [ ] System 子页加"Files"入口 → 进入文件浏览页（list/grid）：实时列出 /littlefs 下图片(缩略)+音频(时长/大小)；
+- [ ] 点图片 → 全屏预览（复用 JPEG/PPA 硬解，滑动/返回退出）；点音频 → 调 `audio_service` PLAY_FILE 播放，带播放/停止/返回；
+- [ ] 文件列表随 fs_http 增删事件自动刷新（走队列/timer，不在网络回调刷 LVGL）；
+- [ ] 长列表用虚拟滚动/分页，避免一次性加载全部缩略图占 PSRAM。
+
+### 3.5.4 PC 端文件管理 Tab（pc_host，PySide6）
+- [ ] 统一"文件管理"面板：列文件（图标/大小/类型），支持拖拽上传、下载到本地、删除、"设为壁纸"按钮；
+- [ ] 图片上传前按 800×480 缩放 + 压 JPEG；上传进度/失败重试；EventBus 与通话/录音/OTA 互不阻塞。
+
+### 3.5.5 阶段 3.5 验收
+- [ ] PC 上传新壁纸即时生效、重启保留；PC 上传音频后设备端文件浏览器立即可见、可播放；
+- [ ] 设备端点图片全屏预览清晰、点音频播放正常；删除后列表/PC 同步刷新；
+- [ ] 上传中途掉电不损坏旧文件（临时文件+rename）；空间不足/非法文件名被拒；操作不卡 UI、不影响通话；打勾 + 改动记录 + 文件索引。
 
 ---
 
@@ -180,7 +206,33 @@
 - [ ] IDLE ↔ UDP_CALL ↔ TCP_RECORD 互斥：任一模式进行中禁止切入另一模式；切换走 STOP 当前→START 新，不重启；
 - [ ] 设备 UI 与 PC 端经信令同步模式，状态 UI 一致。
 
-### 4.4 验收
+### 4.4 多任务调度与优先级管理（FreeRTOS，跨全系统统一）
+> 原则：硬实时音频 > 网络收包 > 业务/传输 > 后台管理/UI；后台写 Flash 必须分段让出 CPU。
+
+- [ ] 统一任务优先级表（数值越大越高，FreeRTOS 0=IDLE）：
+
+| 优先级 | 任务 | 核 | 说明 |
+|---|---|---|---|
+| 8 | mic 采集 / spk 播放（audio_stream） | Core1 | 硬实时，最高；I2S DMA 任务通知唤醒 |
+| 7 | udp_voice tx/rx | Core0 | 次实时，紧跟音频，不可被后台阻塞 |
+| 5 | tcp_record 收块 / ota_service 写块 | Core0 | 可靠传输，允许偶发抖动 |
+| 4 | link_manager 心跳/信令 | Core0 | 500ms 节拍，非实时 |
+| 3 | fs_http_service（esp_http_server 自带任务） | Core0 | 后台管理，最低业务级 |
+| 3 | LVGL lvgl_port task | Core0 | 稳态 30FPS，不抢实时 |
+| 2 | led/button/wifi 事件回调 | Core0 | 事件驱动，非实时 |
+| 0 | IDLE | 任一 | idle hook 喂狗/统计 |
+
+- [ ] **核绑定**：音频任务钉 Core1（xTaskCreatePinnedToCore），其余网络/HTTP/UI 在 Core0，
+  避免 SMP 迁移抖动；音频 ringbuf/jitter/DMA 缓冲放内部 SRAM；
+- [ ] **优先级反转防护**：共享 codec/FS/socket 的互斥锁一律用 `xSemaphoreCreateMutex()`（带优先级继承），
+  禁止用 `spinlock`/关中断做长时间临界区；后台任务持锁时间 ≤1ms；
+- [ ] **后台写 Flash 分段**：HTTP 上传/OTA 写块每写一块 `vTaskDelay(pdMS_TO_TICKS(1))` 让出 CPU，
+  并在通话中按 5.6.1 避让；禁止后台任务连续占满 Core0 导致 udp_voice 调度延迟；
+- [ ] **通知替代轮询**：DMA/网络/按键用任务通知或队列事件唤醒，不用 `vTaskDelay` 忙等；
+- [ ] **栈水位巡检**：每个任务 `uxTaskGetStackHighWaterMark` ≥30% 余量，日志/System 页输出；
+- [ ] **可观测**：CPU 占比（`esp_timer_get_time` 采样）、各任务栈水位、队列积压，输出 SYS 页。
+
+### 4.5 验收
 - [ ] PC 自动发现并选中设备；一键切通话/录音不重启；切换过程状态两端同步、音频链路干净切换；打勾 + 改动记录。
 
 ---
