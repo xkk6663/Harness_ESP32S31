@@ -18,6 +18,10 @@
 #include "middleware/led_service.h"
 #include "middleware/button_service.h"
 #include "middleware/wifi_manager.h"
+#include "middleware/session_manager.h"
+#include "middleware/link_manager.h"
+#include "middleware/udp_voice.h"
+#include "middleware/record_service.h"
 
 static const char *TAG = "main";
 
@@ -29,17 +33,17 @@ static void on_splash_enter(void)
 {
     PageManager_Load(&Page_Main);
 
-    /* 第一次上滑进主界面：自动播放一次开机提示音 */
-    if (!s_boot_tone_played) {
-        s_boot_tone_played = true;
-        audio_cmd_t cmd = {
-            .id = AUDIO_CMD_PLAY_FILE,
-            .value = 0,
-        };
-        snprintf(cmd.path, sizeof(cmd.path), "%s/boot_tone.wav", FS_MNT_PATH);
-        audio_service_post_cmd(&cmd);
-        ESP_LOGI(TAG, "boot tone requested: %s", cmd.path);
-    }
+    // /* 第一次上滑进主界面：自动播放一次开机提示音 */
+    // if (!s_boot_tone_played) {
+    //     s_boot_tone_played = true;
+    //     audio_cmd_t cmd = {
+    //         .id = AUDIO_CMD_PLAY_FILE,
+    //         .value = 0,
+    //     };
+    //     snprintf(cmd.path, sizeof(cmd.path), "%s/boot_tone.wav", FS_MNT_PATH);
+    //     audio_service_post_cmd(&cmd);
+    //     ESP_LOGI(TAG, "boot tone requested: %s", cmd.path);
+    // }
 }
 
 /* Wi-Fi status -> main-interface RGB LED (red / blue breathe / green) */
@@ -77,7 +81,11 @@ void app_main(void)
     button_service_init();
     wifi_manager_init();
     wifi_manager_set_sys_cb(on_wifi_evt);
-    /* 默认上电 AP 模式（init 内已开热点）；UI 可切 STA 走自动连接 */
+    session_manager_init();
+    link_manager_init();
+    udp_voice_init();
+    record_service_init();
+    /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
 
     /* UI framework */
     PageManager_Init();

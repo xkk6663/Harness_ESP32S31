@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "bsp/esp-bsp.h"
 #include "audio_service.h"
 #include "3rd/ringbuf/ringbuf.h"
@@ -39,6 +41,17 @@ static ringbuf_t   rec_rb;
 /* 播放内部状态（不再对外暴露全局变量） */
 static bool play_repeat = false;
 
+/* Stream buffers deliberately live in internal static RAM.  ringbuf has a
+ * 14-bit index, so no pool may exceed 16383 bytes. */
+static uint8_t mic_tx_rb_pool[5120];
+static uint8_t spk_rx_rb_pool[3840];
+static ringbuf_t mic_tx_rb;
+static ringbuf_t spk_rx_rb;
+static SemaphoreHandle_t mic_rb_mux;
+static SemaphoreHandle_t spk_rb_mux;
+static TaskHandle_t stream_task_handle;
+static volatile bool stream_active;
+
 /* 简易 WAV 头 */
 typedef struct __attribute__((packed))
 {
@@ -56,6 +69,7 @@ typedef struct __attribute__((packed))
 static void audio_task(void *arg);
 static void handle_play_file(const char *path);
 static void handle_record(const char *path);
+static void audio_stream_task(void *arg);
 
 /* ============================================================
  * Public API
@@ -85,6 +99,11 @@ void audio_service_init(void)
     /* 初始化第三方 ringbuf（pool 为静态数组，无需动态分配） */
     ringbuffer_init(&play_rb, play_rb_pool, BUFFER_SIZE);
     ringbuffer_init(&rec_rb,  rec_rb_pool,  BUFFER_SIZE);
+    ringbuffer_init(&mic_tx_rb, mic_tx_rb_pool, sizeof(mic_tx_rb_pool));
+    ringbuffer_init(&spk_rx_rb, spk_rx_rb_pool, sizeof(spk_rx_rb_pool));
+    mic_rb_mux = xSemaphoreCreateMutex();
+    spk_rb_mux = xSemaphoreCreateMutex();
+    assert(mic_rb_mux && spk_rb_mux);
 
     /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里） */
     xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
@@ -103,6 +122,93 @@ void audio_service_post_cmd(const audio_cmd_t *cmd)
 void audio_service_set_evt_cb(audio_evt_cb_t cb)
 {
     audio_evt_cb_fn = cb;
+}
+
+esp_err_t audio_stream_start(void)
+{
+#if !BSP_CAPS_AUDIO_MIC
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    xSemaphoreTake(audio_mux, portMAX_DELAY);
+    if (stream_active) {
+        xSemaphoreGive(audio_mux);
+        return ESP_OK;
+    }
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate = SAMPLE_RATE,
+        .channel = 1,
+        .bits_per_sample = 16,
+        .mclk_multiple = I2S_MCLK_MULTIPLE_384,
+    };
+    esp_err_t err = esp_codec_dev_open(mic_codec_dev, &fs);
+    if (err == ESP_OK) {
+        err = esp_codec_dev_open(spk_codec_dev, &fs);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "stream codec open failed, err=%s", esp_err_to_name(err));
+        esp_codec_dev_close(mic_codec_dev);
+        xSemaphoreGive(audio_mux);
+        return err;
+    }
+    stream_active = true;
+    ringbuffer_reset(&mic_tx_rb);
+    ringbuffer_reset(&spk_rx_rb);
+    BaseType_t ok = xTaskCreatePinnedToCore(audio_stream_task, "audio_stream", 8192,
+                                             NULL, 8, &stream_task_handle, 1);
+    if (ok != pdPASS) {
+        stream_active = false;
+        esp_codec_dev_close(mic_codec_dev);
+        esp_codec_dev_close(spk_codec_dev);
+        xSemaphoreGive(audio_mux);
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreGive(audio_mux);
+    ESP_LOGI(TAG, "stream started, 16k/mono/20ms core=1");
+    return ESP_OK;
+#endif
+}
+
+void audio_stream_stop(void)
+{
+    if (!stream_active) {
+        return;
+    }
+    stream_active = false;
+    if (stream_task_handle) {
+        xTaskNotifyGive(stream_task_handle);
+    }
+}
+
+bool audio_stream_is_active(void)
+{
+    return stream_active;
+}
+
+size_t audio_stream_read_mic(uint8_t *buf, size_t len)
+{
+    if (!buf || !len || !mic_rb_mux) {
+        return 0;
+    }
+    xSemaphoreTake(mic_rb_mux, portMAX_DELAY);
+    uint16_t n = ringbuffer_get(&mic_tx_rb, buf, (uint16_t)MIN(len, UINT16_MAX));
+    xSemaphoreGive(mic_rb_mux);
+    return n;
+}
+
+size_t audio_stream_write_spk(const uint8_t *buf, size_t len)
+{
+    if (!buf || !len || !spk_rb_mux) {
+        return 0;
+    }
+    xSemaphoreTake(spk_rb_mux, portMAX_DELAY);
+    /* More than six queued frames means latency is growing: retain newest. */
+    while (ringbuffer_data_len(&spk_rx_rb) + len > 6 * AUDIO_FRAME_BYTES) {
+        static uint8_t discard[AUDIO_FRAME_BYTES];
+        ringbuffer_get(&spk_rx_rb, discard, AUDIO_FRAME_BYTES);
+    }
+    uint16_t n = ringbuffer_put_force(&spk_rx_rb, buf, (uint16_t)MIN(len, UINT16_MAX));
+    xSemaphoreGive(spk_rb_mux);
+    return n;
 }
 
 /* ============================================================
@@ -259,10 +365,18 @@ static void audio_task(void *arg)
         }
         switch (cmd.id) {
         case AUDIO_CMD_PLAY_FILE:
-            handle_play_file(cmd.path);
+            if (!stream_active) {
+                handle_play_file(cmd.path);
+            } else {
+                ESP_LOGW(TAG, "ignore playback while stream is active");
+            }
             break;
         case AUDIO_CMD_START_RECORD:
-            handle_record(cmd.path);
+            if (!stream_active) {
+                handle_record(cmd.path);
+            } else {
+                ESP_LOGW(TAG, "ignore legacy record while stream is active");
+            }
             break;
         case AUDIO_CMD_SET_REPEAT:
             play_repeat = cmd.value ? true : false;
@@ -280,4 +394,57 @@ static void audio_task(void *arg)
             break;
         }
     }
+}
+
+/* One Core1 task owns codec I/O while networking only accesses the two
+ * ringbuffers.  This keeps UDP/TCP code independent of ES8389/I2S. */
+static void audio_stream_task(void *arg)
+{
+    (void)arg;
+#if BSP_CAPS_AUDIO_MIC
+    static uint8_t mic_frame[AUDIO_FRAME_BYTES];
+    static uint8_t spk_frame[AUDIO_FRAME_BYTES];
+    int64_t stat_us = esp_timer_get_time();
+    uint32_t frames = 0;
+    int64_t rms_acc = 0;
+    while (stream_active) {
+        esp_err_t err = esp_codec_dev_read(mic_codec_dev, mic_frame, sizeof(mic_frame));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "stream mic read failed, err=%s", esp_err_to_name(err));
+            memset(mic_frame, 0, sizeof(mic_frame));
+        }
+        /* mic RMS diagnostics */
+        for (int i = 0; i + 1 < (int)sizeof(mic_frame); i += 2) {
+            int16_t s = (int16_t)((mic_frame[i + 1] << 8) | mic_frame[i]);
+            rms_acc += (int64_t)s * s;
+        }
+        frames++;
+        if (esp_timer_get_time() - stat_us >= 2000000) {
+            double rms = frames ? sqrt((double)rms_acc / (frames * (AUDIO_FRAME_BYTES / 2))) : 0;
+            ESP_LOGI(TAG, "MIC_RMS=%.0f frames=%u", rms, frames);
+            rms_acc = 0; frames = 0; stat_us = esp_timer_get_time();
+        }
+        xSemaphoreTake(mic_rb_mux, portMAX_DELAY);
+        ringbuffer_put_force(&mic_tx_rb, mic_frame, sizeof(mic_frame));
+        xSemaphoreGive(mic_rb_mux);
+
+        xSemaphoreTake(spk_rb_mux, portMAX_DELAY);
+        uint16_t got = ringbuffer_get(&spk_rx_rb, spk_frame, sizeof(spk_frame));
+        xSemaphoreGive(spk_rb_mux);
+        if (got < sizeof(spk_frame)) {
+            memset(spk_frame + got, 0, sizeof(spk_frame) - got);
+        }
+        err = esp_codec_dev_write(spk_codec_dev, spk_frame, sizeof(spk_frame));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "stream speaker write failed, err=%s", esp_err_to_name(err));
+        }
+    }
+    xSemaphoreTake(audio_mux, portMAX_DELAY);
+    esp_codec_dev_close(mic_codec_dev);
+    esp_codec_dev_close(spk_codec_dev);
+    stream_task_handle = NULL;
+    xSemaphoreGive(audio_mux);
+    ESP_LOGI(TAG, "stream stopped");
+#endif
+    vTaskDelete(NULL);
 }

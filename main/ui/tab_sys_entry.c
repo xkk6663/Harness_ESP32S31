@@ -11,6 +11,7 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
@@ -25,10 +26,27 @@
 #include "page_system.h"
 #include "middleware/audio_service.h"
 #include "middleware/button_service.h"
+#include "middleware/link_manager.h"
 #include "freertos/queue.h"
 
 static lv_obj_t  *s_vol_slider;
 static lv_timer_t *s_vol_timer;
+static lv_obj_t *s_link_label;
+static QueueHandle_t s_link_evt_q;
+
+typedef struct {
+    link_evt_t evt;
+    char ip[16];
+} link_ui_evt_t;
+
+static void link_event_cb(link_evt_t evt, const char *ip)
+{
+    if (s_link_evt_q) {
+        link_ui_evt_t message = {.evt = evt};
+        snprintf(message.ip, sizeof(message.ip), "%s", ip ? ip : "");
+        xQueueSend(s_link_evt_q, &message, 0);
+    }
+}
 
 /* sub-page row ids */
 enum {
@@ -64,6 +82,18 @@ static void vol_timer_cb(lv_timer_t *t)
             .value = msg.volume,
         };
         audio_service_post_cmd(&cmd);
+    }
+    link_ui_evt_t link_evt;
+    while (s_link_evt_q && xQueueReceive(s_link_evt_q, &link_evt, 0) == pdPASS) {
+        if (s_link_label) {
+            if (link_evt.evt == LINK_EVT_ONLINE) {
+                lv_label_set_text_fmt(s_link_label, LV_SYMBOL_OK "  PC online: %s", link_evt.ip);
+                lv_obj_set_style_text_color(s_link_label, COL_GREEN, 0);
+            } else {
+                lv_label_set_text_static(s_link_label, LV_SYMBOL_CLOSE "  No PC peer");
+                lv_obj_set_style_text_color(s_link_label, COL_RED, 0);
+            }
+        }
     }
 }
 
@@ -104,6 +134,11 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_text_color(title, COL_CYAN, 0);
     lv_obj_set_style_text_font(title, UI_FONT, 0);
 
+    s_link_label = lv_label_create(screen);
+    lv_label_set_text_static(s_link_label, link_manager_is_online() ? LV_SYMBOL_OK "  PC online" : LV_SYMBOL_CLOSE "  No PC peer");
+    lv_obj_set_style_text_color(s_link_label, link_manager_is_online() ? COL_GREEN : COL_RED, 0);
+    lv_obj_set_style_text_font(s_link_label, UI_FONT, 0);
+
     /* Volume card */
     lv_obj_t *vol = lv_obj_create(screen);
     lv_obj_set_size(vol, BSP_LCD_H_RES - 40, 80);
@@ -141,6 +176,10 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
     if (s_vol_timer == NULL) {
         s_vol_timer = lv_timer_create(vol_timer_cb, 100, NULL);
     }
+    if (s_link_evt_q == NULL) {
+        s_link_evt_q = xQueueCreate(8, sizeof(link_ui_evt_t));
+    }
+    link_manager_add_evt_cb(link_event_cb);
 }
 
 void tab_sys_entry_destroy(void)
@@ -150,4 +189,5 @@ void tab_sys_entry_destroy(void)
         s_vol_timer = NULL;
     }
     s_vol_slider = NULL;
+    s_link_label = NULL;
 }

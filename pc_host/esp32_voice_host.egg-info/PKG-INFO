@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: esp32-voice-host
+Version: 0.1.0
+Requires-Python: >=3.10
+Provides-Extra: desktop
+Requires-Dist: PySide6>=6.6; extra == "desktop"
+Requires-Dist: sounddevice>=0.4; extra == "desktop"
+Requires-Dist: numpy>=1.24; extra == "desktop"
+Requires-Dist: sherpa-onnx>=1.10; extra == "desktop"

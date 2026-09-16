@@ -97,6 +97,8 @@ static lv_obj_t *main_create(lv_obj_t *parent)
 
 static void main_destroy(lv_obj_t *page)
 {
+    tab_call_destroy();
+    tab_record_destroy();
     tab_sys_entry_destroy();
     overlay_wallpaper_deinit();
 

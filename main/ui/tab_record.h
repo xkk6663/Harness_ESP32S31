@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 void tab_record_build(lv_obj_t *tab, lv_group_t *group);
+void tab_record_destroy(void);
 
 /* Re-enable buttons after an audio task finishes (called by audio evt cb). */
 void tab_record_on_play_done(void);

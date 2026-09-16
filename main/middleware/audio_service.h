@@ -34,6 +34,7 @@ extern "C" {
 #define DEFAULT_VOLUME  (70)
 #define RECORDING_LENGTH (160)   /* 160 * 1024 bytes @16k/16bit mono ≈ 5.12 s */
 #define REC_FILENAME    FS_MNT_PATH"/recording.wav"
+#define AUDIO_FRAME_BYTES (640)
 
 #define AUDIO_CMD_PATH_MAX  256
 
@@ -80,6 +81,22 @@ void audio_service_post_cmd(const audio_cmd_t *cmd);
  * @brief 注册事件回调（覆盖式，后注册者生效）
  */
 void audio_service_set_evt_cb(audio_evt_cb_t cb);
+
+/**
+ * @brief Start/stop the full-duplex 16 kHz stream used by voice and recording.
+ * @note  Stream mode is mutually exclusive with legacy file playback/recording.
+ */
+esp_err_t audio_stream_start(void);
+void audio_stream_stop(void);
+bool audio_stream_is_active(void);
+
+/**
+ * @brief Consume captured microphone PCM or append speaker PCM.
+ * @return Number of bytes transferred.  Speaker writes retain only the newest
+ *         six frames, while microphone overflow drops the oldest frame.
+ */
+size_t audio_stream_read_mic(uint8_t *buf, size_t len);
+size_t audio_stream_write_spk(const uint8_t *buf, size_t len);
 
 #ifdef __cplusplus
 }

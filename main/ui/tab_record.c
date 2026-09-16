@@ -1,159 +1,50 @@
-/*
- * SPDX-FileCopyrightText: 2022-2026 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
-/**
- * @file tab_record.c
- * @brief REC tab (local test record / play / stop). Buttons are file-static;
- *        audio completion re-enables them through tab_record_on_*().
- */
-
-#include <string.h>
-
+/* SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+ * SPDX-License-Identifier: Apache-2.0 */
+/** @file tab_record.c @brief Recording tab that only posts record-service commands. */
 #include "bsp/esp-bsp.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "lvgl.h"
-
 #include "tab_record.h"
 #include "ui_theme.h"
-#include "middleware/audio_service.h"
+#include "middleware/record_service.h"
 
-static lv_obj_t *s_rec_btn;
-static lv_obj_t *s_play_btn;
-static lv_obj_t *s_stop_btn;
-
-/* ---- button click handlers (formerly in ui_windows.c) ---- */
-
-static void rec_play_event_cb(lv_event_t *e)
+static QueueHandle_t s_evt_q; static lv_timer_t *s_timer; static lv_obj_t *s_btn; static lv_obj_t *s_btn_label; static lv_obj_t *s_status; static lv_obj_t *s_bar;
+static void on_record(const record_event_t *evt) { if (s_evt_q) xQueueSend(s_evt_q, evt, 0); }
+static void drain(lv_timer_t *timer)
 {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        lv_obj_add_state(lv_event_get_target(e), LV_STATE_DISABLED);
-        audio_cmd_t cmd = { .id = AUDIO_CMD_PLAY_FILE };
-        strncpy(cmd.path, lv_event_get_user_data(e), sizeof(cmd.path) - 1);
-        audio_service_post_cmd(&cmd);
+    (void)timer; record_event_t evt;
+    while (s_evt_q && xQueueReceive(s_evt_q, &evt, 0) == pdPASS) {
+        if (!s_btn || !s_status) continue;
+        if (evt.event == RECORD_EVT_STARTED) { lv_label_set_text_static(s_btn_label, "STOP"); lv_label_set_text_static(s_status, evt.mode == RECORD_MODE_STREAM ? "STREAM  |  PC recording" : "LOCAL  |  offline cache"); }
+        else if (evt.event == RECORD_EVT_PROGRESS) { lv_bar_set_value(s_bar, (int)(evt.bytes * 100U / evt.limit_bytes), LV_ANIM_ON); lv_label_set_text_fmt(s_status, "%s  |  %u s", evt.mode == RECORD_MODE_STREAM ? "STREAM" : "LOCAL", (unsigned)(evt.bytes / 32000U)); }
+        else if (evt.event == RECORD_EVT_STOPPED) { lv_label_set_text_static(s_btn_label, "REC"); lv_label_set_text_static(s_status, "SAVED / synced"); lv_bar_set_value(s_bar, 0, LV_ANIM_ON); }
+        else if (evt.event == RECORD_EVT_UPLOAD_DONE) lv_label_set_text_static(s_status, "LOCAL recording uploaded");
+        else if (evt.event == RECORD_EVT_ERROR) lv_label_set_text_static(s_status, "Audio busy: stop CALL first");
     }
 }
-
-static void rec_stop_event_cb(lv_event_t *e)
-{
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        audio_cmd_t cmd = { .id = AUDIO_CMD_STOP };
-        audio_service_post_cmd(&cmd);
-    }
-}
-
-static void rec_event_cb(lv_event_t *e)
-{
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        lv_obj_add_state(lv_event_get_target(e), LV_STATE_DISABLED);
-        if (s_stop_btn && s_play_btn) {
-            lv_obj_add_state(s_play_btn, LV_STATE_DISABLED);
-            lv_obj_add_state(s_stop_btn, LV_STATE_DISABLED);
-        }
-        audio_cmd_t cmd = { .id = AUDIO_CMD_START_RECORD };
-        strncpy(cmd.path, lv_event_get_user_data(e), sizeof(cmd.path) - 1);
-        audio_service_post_cmd(&cmd);
-    }
-}
-
+static void record_btn_cb(lv_event_t *e) { (void)e; record_service_post_cmd(record_service_is_active() ? RECORD_CMD_STOP : RECORD_CMD_START); }
 void tab_record_build(lv_obj_t *screen, lv_group_t *group)
 {
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_color(screen, COL_BG, 0);
-
-    lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(screen, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(screen, 16, 0);
-    lv_obj_set_style_pad_top(screen, 24, 0);
-
-    /* Title */
-    lv_obj_t *title = lv_label_create(screen);
-    lv_label_set_text_static(title, LV_SYMBOL_SAVE"  LOCAL RECORD");
-    lv_obj_set_style_text_color(title, COL_CYAN, 0);
-    lv_obj_set_style_text_font(title, UI_FONT, 0);
-
-    /* Card */
-    lv_obj_t *card = lv_obj_create(screen);
-    lv_obj_set_size(card, BSP_LCD_H_RES - 40, 280);
-    lv_obj_set_style_bg_color(card, COL_CARD, 0);
-    lv_obj_set_style_border_color(card, COL_BORDER, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_radius(card, 16, 0);
-    lv_obj_set_style_pad_all(card, 20, 0);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(card, 24, 0);
-
-    /* REC button (red) */
-    s_rec_btn = lv_btn_create(card);
-    lv_obj_set_size(s_rec_btn, 100, 100);
-    lv_obj_set_style_radius(s_rec_btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_rec_btn, COL_RED, 0);
-    lv_obj_set_style_shadow_color(s_rec_btn, COL_RED, 0);
-    lv_obj_set_style_shadow_width(s_rec_btn, 14, 0);
-    lv_obj_t *rl = lv_label_create(s_rec_btn);
-    lv_label_set_text_static(rl, "REC");
-    lv_obj_set_style_text_color(rl, COL_DARK, 0);
-    lv_obj_set_style_text_font(rl, UI_FONT, 0);
-    lv_obj_center(rl);
-    lv_obj_add_event_cb(s_rec_btn, rec_event_cb, LV_EVENT_CLICKED, (char *)REC_FILENAME);
-
-    /* Play button (cyan) */
-    s_play_btn = lv_btn_create(card);
-    lv_obj_set_size(s_play_btn, 100, 100);
-    lv_obj_set_style_radius(s_play_btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_play_btn, COL_CYAN, 0);
-    lv_obj_set_style_shadow_color(s_play_btn, COL_CYAN, 0);
-    lv_obj_set_style_shadow_width(s_play_btn, 14, 0);
-    lv_obj_t *pl = lv_label_create(s_play_btn);
-    lv_label_set_text_static(pl, LV_SYMBOL_PLAY);
-    lv_obj_set_style_text_color(pl, COL_DARK, 0);
-    lv_obj_set_style_text_font(pl, UI_FONT, 0);
-    lv_obj_center(pl);
-    lv_obj_add_event_cb(s_play_btn, rec_play_event_cb, LV_EVENT_CLICKED, (char *)REC_FILENAME);
-
-    /* Stop button (gray) */
-    s_stop_btn = lv_btn_create(card);
-    lv_obj_set_size(s_stop_btn, 100, 100);
-    lv_obj_set_style_radius(s_stop_btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_stop_btn, COL_SUBTEXT, 0);
-    lv_obj_t *sl = lv_label_create(s_stop_btn);
-    lv_label_set_text_static(sl, LV_SYMBOL_STOP);
-    lv_obj_set_style_text_color(sl, COL_DARK, 0);
-    lv_obj_set_style_text_font(sl, UI_FONT, 0);
-    lv_obj_center(sl);
-    lv_obj_add_event_cb(s_stop_btn, rec_stop_event_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Footer hint */
-    lv_obj_t *hint = lv_label_create(screen);
-    lv_label_set_text_static(hint, "5s local test  |  /littlefs/recording.wav");
-    lv_obj_set_style_text_color(hint, COL_SUBTEXT, 0);
-    lv_obj_set_style_text_font(hint, UI_FONT, 0);
-
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_style_bg_color(screen, COL_BG, 0); lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN); lv_obj_set_flex_align(screen, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER); lv_obj_set_style_pad_row(screen, 16, 0); lv_obj_set_style_pad_top(screen, 24, 0);
+    lv_obj_t *title = lv_label_create(screen); lv_label_set_text_static(title, LV_SYMBOL_SAVE "  RECORD & SYNC"); lv_obj_set_style_text_color(title, COL_CYAN, 0); lv_obj_set_style_text_font(title, UI_FONT, 0);
+    lv_obj_t *card = lv_obj_create(screen); lv_obj_set_size(card, BSP_LCD_H_RES - 40, 280); lv_obj_set_style_bg_color(card, COL_CARD, 0); lv_obj_set_style_border_color(card, COL_BORDER, 0); lv_obj_set_style_border_width(card, 1, 0); lv_obj_set_style_radius(card, 16, 0); lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN); lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER); lv_obj_set_style_pad_row(card, 18, 0);
+    s_status = lv_label_create(card); lv_label_set_text_static(s_status, "Ready  |  PC online = STREAM"); lv_obj_set_style_text_color(s_status, COL_TEXT, 0); lv_obj_set_style_text_font(s_status, UI_FONT, 0);
+    s_btn = lv_btn_create(card); lv_obj_set_size(s_btn, 130, 100); lv_obj_set_style_radius(s_btn, 50, 0); lv_obj_set_style_bg_color(s_btn, COL_RED, 0); lv_obj_add_event_cb(s_btn, record_btn_cb, LV_EVENT_CLICKED, NULL);
+    s_btn_label = lv_label_create(s_btn); lv_label_set_text_static(s_btn_label, "REC"); lv_obj_set_style_text_color(s_btn_label, COL_DARK, 0); lv_obj_set_style_text_font(s_btn_label, UI_FONT, 0); lv_obj_center(s_btn_label);
+    s_bar = lv_bar_create(card); lv_obj_set_width(s_bar, BSP_LCD_H_RES - 130); lv_bar_set_range(s_bar, 0, 100); lv_bar_set_value(s_bar, 0, LV_ANIM_OFF); lv_obj_set_style_bg_color(s_bar, COL_BORDER, 0); lv_obj_set_style_bg_color(s_bar, COL_CYAN, LV_PART_INDICATOR);
+    lv_obj_t *hint = lv_label_create(screen); lv_label_set_text_static(hint, "STREAM unlimited  |  LOCAL max 5 min"); lv_obj_set_style_text_color(hint, COL_SUBTEXT, 0); lv_obj_set_style_text_font(hint, UI_FONT, 0);
     if (group) {
-        lv_group_add_obj(group, s_rec_btn);
-        lv_group_add_obj(group, s_play_btn);
-        lv_group_add_obj(group, s_stop_btn);
+        lv_group_add_obj(group, s_btn);
     }
+    if (!s_evt_q) {
+        s_evt_q = xQueueCreate(8, sizeof(record_event_t));
+    }
+    if (!s_timer) {
+        s_timer = lv_timer_create(drain, 100, NULL);
+    }
+    record_service_set_evt_cb(on_record);
 }
-
-void tab_record_on_play_done(void)
-{
-    if (s_play_btn) {
-        lv_obj_clear_state(s_play_btn, LV_STATE_DISABLED);
-    }
-}
-
-void tab_record_on_record_done(void)
-{
-    if (s_rec_btn) {
-        lv_obj_clear_state(s_rec_btn, LV_STATE_DISABLED);
-    }
-    if (s_play_btn) {
-        lv_obj_clear_state(s_play_btn, LV_STATE_DISABLED);
-    }
-    if (s_stop_btn) {
-        lv_obj_clear_state(s_stop_btn, LV_STATE_DISABLED);
-    }
-}
+void tab_record_destroy(void) { if (s_timer) { lv_timer_del(s_timer); s_timer = NULL; } s_btn = s_btn_label = s_status = s_bar = NULL; }
+void tab_record_on_play_done(void) {}
+void tab_record_on_record_done(void) {}

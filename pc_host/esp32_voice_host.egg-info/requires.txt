@@ -1,0 +1,6 @@
+
+[desktop]
+PySide6>=6.6
+sounddevice>=0.4
+numpy>=1.24
+sherpa-onnx>=1.10

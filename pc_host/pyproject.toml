@@ -1,0 +1,14 @@
+[project]
+name = "esp32-voice-host"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.6", "sounddevice>=0.4", "numpy>=1.24", "sherpa-onnx>=1.10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["pc_host", "pc_host.asr", "pc_host.net", "pc_host.audio", "pc_host.record", "pc_host.tests"]

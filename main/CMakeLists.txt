@@ -5,6 +5,10 @@ idf_component_register(SRCS
                         "middleware/led_service.c"
                         "middleware/button_service.c"
                         "middleware/wifi_manager.c"
+                        "middleware/session_manager.c"
+                        "middleware/link_manager.c"
+                        "middleware/udp_voice.c"
+                        "middleware/record_service.c"
                         "3rd/ringbuf/ringbuf.c"
                         "ui/ui_manager/page_manager.c"
                         "ui/overlay_manager.c"
@@ -22,4 +26,4 @@ idf_component_register(SRCS
                         "ui/page_system.c"
                       INCLUDE_DIRS "."
                                     "ui/ui_manager"
-                      PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer)
+                      PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip)

@@ -59,7 +59,7 @@
 - [ ] L1：I2S DMA（6 描述符×10ms），DMA 回调只搬运 + `xTaskNotify`，不跑协议；
 - [ ] L2：独立流式 ringbuf（上行 8 帧≈5KB；下行目标水位 2–3 帧），与 play_rb/rec_rb 分开；用 3rd/ringbuf，≤16383B、4B 对齐、双核临界区；
 - [ ] 下行水位：<2 帧补静音防爆音，>6 帧丢最旧防延迟累积；上行满丢最旧并计数；
-- [ ] 对外接口：`audio_stream_start/stop`、`audio_stream_read_mic(buf,n)`、`audio_stream_write_spk(buf,n)`；
+- [x] 对外接口：`audio_stream_start/stop`、`audio_stream_read_mic(buf,n)`、`audio_stream_write_spk(buf,n)`；
 - [ ] mic/spk 双任务分离，ES8389 会话期同时常开、结束再 close；钉 Core1、prio 7–8、任务通知替代轮询；
 - [ ] **本地回环验收**：mic→spk 自回环 ≤8ms、无爆音。
 
@@ -91,14 +91,14 @@
   5. UDP 16 帧乱序重排窗口是**按 seq 的帧槽**，不是字节 ringbuf，用独立 `frame_slot[16]` 数组，不要塞进 ringbuf。
 
 ### 2.1 link_manager 信令与连接状态（新增中间层）
-- [ ] `link_manager_init()`：UDP 50003 socket + 常驻任务（栈 4096），按 ICD 解析 JSON；
+- [x] `link_manager_init()`：UDP 50003 socket + 常驻任务（按工程规范使用 8192B 栈），接收 HEARTBEAT/回 ACK；
 - [ ] 收 PC HEARTBEAT：`recvfrom` 学习 PC IP、刷新心跳时间，回调 ONLINE，回 HEARTBEAT_ACK（fw/proto/sample_rate）；
 - [ ] 500ms 巡检，2s 无心跳 → OFFLINE；预留 SESSION_START/STOP/PTT/MODE/REC_* 分支；
 - [ ] `link_manager_is_online()` / `get_peer(addr*)` 供 udp_voice 取上行目标；
 - [ ] 事件回调 tab_sys：连接点 ONLINE 绿/OFFLINE 红 + PC IP；断线自动通知 udp_voice STOP。
 
 ### 2.2 udp_voice 音频收发（新增中间层）
-- [ ] `udp_voice_init()`：50000/50001 socket + tx/rx 常驻任务（栈 8192，Core0）；
+- [x] `udp_voice_init()`：50000/50001 socket + tx/rx 常驻任务（栈 8192，Core0）；
 - [ ] tx：从 mic ringbuf 取 640B → 打 12B 帧头 → 发 peer:50000；
 - [ ] rx：收 50001 → 校验 magic/ver，16 帧环形重排窗口乱序重排；超时 40ms 填静音 → 写 spk ringbuf；
 - [ ] 命令队列 VOICE_CMD_START/STOP/SET_PTT；START 前要求 link ONLINE；
@@ -145,7 +145,7 @@
 - [ ] storage 内分目录：`/recordings/`（录音）与 `/wallpapers/`（壁纸）隔离；清录音只删 `/recordings/`。
 
 ### 3.1 设备端 record_service（中间层，双模状态机）
-- [ ] `record_service_init()`：常驻任务 + 命令队列（START/STOP/UPLOAD/RETRY/DELETE）；
+- [x] `record_service_init()`：常驻任务 + 命令队列（START/STOP/UPLOAD/RETRY/DELETE）；
 - [ ] START 查 link：ONLINE→STREAM（mic 帧走 tcp_transport，仅 2–3s 抗抖缓冲，无限时长）；OFFLINE→LOCAL 写 `/recordings/` WAV（44B 占位头，≤300s）；
 - [ ] STREAM 中断网→从断点转 LOCAL，恢复后 REC_BEGIN 带 `base_offset` 让 PC 拼接；
 - [ ] STOP：STREAM 发 REC_END；LOCAL 回填 WAV 头、入待传队列，link 上线自动补传；

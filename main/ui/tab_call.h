@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 void tab_call_build(lv_obj_t *tab, lv_group_t *group);
+void tab_call_destroy(void);
 
 #ifdef __cplusplus
 }

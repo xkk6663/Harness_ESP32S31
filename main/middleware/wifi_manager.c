@@ -146,7 +146,7 @@ static wifi_evt_cb_t s_evt_cb;
 static wifi_evt_cb_t s_sys_cb;
 static bool s_connected;
 static char s_ip[16];
-static wifi_role_t s_role = WIFI_ROLE_AP;   /* 默认上电 AP */
+static wifi_role_t s_role = WIFI_ROLE_STA;   /* 默认上电 STA（连已保存路由），UI 可切 AP */
 
 /* AP 客户端表 */
 #define AP_MAX_CLIENTS 4
@@ -449,10 +449,12 @@ void wifi_manager_init(void)
 
     s_client_mtx = xSemaphoreCreateMutex();
 
-    /* 默认上电 AP 模式：开发板开热点，PC 直连 */
-    start_ap_mode();
+    /* 默认上电 STA 模式：开发板自动连已保存路由；UI 可切 AP 开热点 */
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    wifi_manager_auto_connect();
 
-    ESP_LOGI(TAG, "wifi AP init done, ssid=%s", AP_DEFAULT_SSID);
+    ESP_LOGI(TAG, "wifi STA init done, auto-connecting saved creds");
 }
 
 /* AP DHCP 不下发默认网关(option 3)与 DNS(option 6)：
