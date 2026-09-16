@@ -47,12 +47,16 @@ static void on_wifi_evt(wifi_evt_t evt, const char *info)
 {
     switch (evt) {
     case WIFI_EVT_DISCONNECTED:
+    case WIFI_EVT_ALL_FAILED:
+    case WIFI_EVT_STA_LEFT:
         led_service_set_status(LED_STATUS_DISCONNECTED);
         break;
     case WIFI_EVT_CONNECTING:
+    case WIFI_EVT_AP_UP:            /* AP 热点已开，等待客户端接入 */
         led_service_set_status(LED_STATUS_CONNECTING);
         break;
     case WIFI_EVT_GOT_IP:
+    case WIFI_EVT_STA_JOINED:       /* AP 有客户端连上 / STA 拿到 IP */
         led_service_set_status(LED_STATUS_CONNECTED);
         break;
     default:
@@ -73,6 +77,7 @@ void app_main(void)
     button_service_init();
     wifi_manager_init();
     wifi_manager_set_sys_cb(on_wifi_evt);
+    /* 默认上电 AP 模式（init 内已开热点）；UI 可切 STA 走自动连接 */
 
     /* UI framework */
     PageManager_Init();

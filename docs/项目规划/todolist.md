@@ -71,6 +71,25 @@
 - [ ] 预留 `session_manager` 状态机 IDLE/UDP_CALL/TCP_RECORD 互斥；信令枚举预留 REC_*；
 - [ ] PC 端对称 NetLink(Udp/Tcp) 抽象，播放/ASR/落盘只订阅帧流。
 
+### 2.0.2 缓冲选型：统一用 main/3rd/ringbuf（第三方纯 C 环形缓冲）
+> 工程所有"字节流缓冲"统一用 `main/3rd/ringbuf/ringbuf.c`，**不再自写环形数组、不用 FreeRTOS 队列传大块音频数据**。
+> 接口：`ringbuffer_init(rb,pool,size)` / `put` / `put_force`(满覆盖最旧) / `get` / `data_len` / `space_len`。
+
+| 缓冲 | 所属模块 | 方向 | 大小 | 策略 |
+|---|---|---|---|---|
+| `play_rb` | audio_service | spk 文件播放 | 1KB | 透传，已用 |
+| `rec_rb` | audio_service | 录音落盘 | 1KB | 透传，已用 |
+| `mic_tx_rb` | audio_service 流式 | mic→网络上行 | ≈5KB(8帧) | 正常压1–2帧，满丢最旧→`put_force` |
+| `spk_rx_rb` | audio_service 流式 | 网络→spk下行 | ≈3KB | 低水位2帧补静音、高水位6帧丢最旧 |
+| `rec_jitter_rb` | record_service | STREAM 抗抖 | ≈1–2KB(2–3帧) | 断网转 LOCAL 前的短时缓冲 |
+
+- **硬约束**：
+  1. ringbuf 索引 14bit，单缓冲 **≤16383 字节**，pool 用静态数组（如 `static uint8_t mic_tx_pool[5120]`），不 malloc；
+  2. 单生产者单消费者；跨核共享处加临界区（第三方库非线程安全）；
+  3. "丢最旧"统一用 `ringbuffer_put_force`，不要自己绕指针；"还有多少空间"用 `ringbuffer_space_len(rb)`；
+  4. **FreeRTOS 队列（xQueue）只传命令/事件/指针，不传整段 PCM**（音频数据一律走 ringbuf）；
+  5. UDP 16 帧乱序重排窗口是**按 seq 的帧槽**，不是字节 ringbuf，用独立 `frame_slot[16]` 数组，不要塞进 ringbuf。
+
 ### 2.1 link_manager 信令与连接状态（新增中间层）
 - [ ] `link_manager_init()`：UDP 50003 socket + 常驻任务（栈 4096），按 ICD 解析 JSON；
 - [ ] 收 PC HEARTBEAT：`recvfrom` 学习 PC IP、刷新心跳时间，回调 ONLINE，回 HEARTBEAT_ACK（fw/proto/sample_rate）；
