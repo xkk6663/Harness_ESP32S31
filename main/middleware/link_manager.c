@@ -156,11 +156,13 @@ static void link_task(void *arg)
                 }
                 /* 信令分发：SESSION_START/STOP -> udp_voice */
                 if (strstr(packet, "\"type\"") && strstr(packet, "SESSION_START")) {
-                    ESP_LOGI(TAG, "sig SESSION_START -> voice start");
-                    udp_voice_post_cmd(VOICE_CMD_START);
+                    ESP_LOGI(TAG, "sig SESSION_START -> voice tx+rx on");
+                    udp_voice_post_cmd(VOICE_CMD_TX_ON);
+                    udp_voice_post_cmd(VOICE_CMD_RX_ON);
                 } else if (strstr(packet, "\"type\"") && strstr(packet, "SESSION_STOP")) {
-                    ESP_LOGI(TAG, "sig SESSION_STOP -> voice stop");
-                    udp_voice_post_cmd(VOICE_CMD_STOP);
+                    ESP_LOGI(TAG, "sig SESSION_STOP -> voice tx+rx off");
+                    udp_voice_post_cmd(VOICE_CMD_TX_OFF);
+                    udp_voice_post_cmd(VOICE_CMD_RX_OFF);
                 }
             }
         }

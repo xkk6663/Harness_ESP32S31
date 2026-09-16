@@ -1,4 +1,0 @@
-﻿W (29453) LINK: OFFLINE peer=10.241.126.238 (heartbeat timeout)
-I (31921) wifi:bcn_timeout,ap_probe_send_start
-
-===== CAPTURE END =====

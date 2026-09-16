@@ -23,7 +23,13 @@ class UdpVoice:
 
     def send_ptt(self, pcm: bytes) -> None:
         packet = pack_voice_frame(self._seq, int(time.monotonic() * 1000), pcm); self._seq = (self._seq + 1) & 0xFFFF
-        self._tx.sendto(packet, (self.device_ip, 50001))
+        try:
+            self._tx.sendto(packet, (self.device_ip, 50001))
+        except OSError as e:
+            print(f"[ptt] send error: {e}", flush=True)
+
+    def reset_seq(self) -> None:
+        self._seq = 0
 
     def _run(self) -> None:
         assert self._rx; slots: dict[int, bytes] = {}; expected: int | None = None; deadline = time.monotonic()
