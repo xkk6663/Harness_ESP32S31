@@ -228,3 +228,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Espressif\tool
   3. 用 `python -c`/wave 模块重写一遍即可自动得到标准头并完成下混+重采样；改完素材必须按 3.2 单独烧 storage。
 - 板子不支持软件调 LCD 亮度（日志会打 `This board doesn't support to change brightness of LCD`）；
 - 编译输出在 `build/`：`display_audio_photo.bin` + `bootloader.bin` + `partition-table.bin` + `storage.bin`（仅素材变更/首次时才烧后两项之外的 storage）。
+
+---
+
+## 9. 推送远程前必做 Checklist
+
+一旦要执行 git push，必须按顺序完成以下步骤，缺一不可：
+
+1. 删除临时文件：根目录 _*.py、docs/_*.txt、docs/_*.py 等调试残留；
+2. 删除旧日志：docs/_log_*.txt 全部删除；
+3. 更新 docs/项目规划/改动记录.md：追加本轮日期、设备端/PC端改动清单、已知问题；
+4. 更新 docs/项目规划/需求文档.md 和 todolist.md：标记完成项、新增后续项；
+5. 遇到的重大问题写入 docs/工程规范/11_遇到的问题.md：现象/根因/解决方案/经验；
+6. git add -A，commit 后 push；
+7. SSH 失败时先确认代理已开，再重试；不要改 remote URL。
