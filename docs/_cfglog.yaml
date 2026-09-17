@@ -1,0 +1,13 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Espressif/tools/cmake/4.0.3/share/cmake-4.0/Modules/CMakeDetermineSystem.cmake:200 (message)"
+      - "C:/esp/v6.1/esp-idf/tools/cmake/project.cmake:717 (__project)"
+      - "CMakeLists.txt:9 (project)"
+    message: |
+      The target system is: Generic -  - 
+      The host system is: Windows - 10.0.26200 - AMD64
+...

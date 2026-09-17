@@ -22,6 +22,7 @@
 #include "middleware/link_manager.h"
 #include "middleware/udp_voice.h"
 #include "middleware/record_service.h"
+#include "middleware/net_time_service.h"
 
 static const char *TAG = "main";
 
@@ -65,6 +66,11 @@ static void on_wifi_evt(wifi_evt_t evt, const char *info)
         break;
     default:
         break;
+    }
+
+    /* STA 真正拿到 IP 才开始校时/取天气；AP 热点自身不算联网 */
+    if (evt == WIFI_EVT_GOT_IP) {
+        net_time_service_start();
     }
 }
 

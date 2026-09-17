@@ -27,6 +27,17 @@ Thumbs.db
 # Local scratch logs
 docs/_*.log
 docs/_*.png
+docs/_*.txt
+
+# Local secrets: API keys injected at build time (NEVER commit)
+tools/idf_env.local.ps1
+*.local.ps1
 
 # Local askpass helper (do not commit)
 .askpass.bat
+
+docs/_verbatim_build/
+.workbuddy/
+tools/_probe_*.ps1
+tools/_run_idf.py
+tools/_runbuild.cmd

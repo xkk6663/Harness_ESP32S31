@@ -169,7 +169,6 @@
 ---
 
 ## 阶段 3.5：文件系统管理（远程 HTTP + 设备端文件浏览器 + 壁纸热更新）
-
 > 目标：PC 端可远程管理 /littlefs 里的图片/音频（上传/下载/删除/设为壁纸），
 > 设备端 System 子页可浏览文件、点图片预览、点音频试听。
 > 关键结论：LittleFS 本身只是 Flash 文件系统，"远程写入"由上层 HTTP 做；
@@ -206,6 +205,28 @@
 - [ ] PC 上传新壁纸即时生效、重启保留；PC 上传音频后设备端文件浏览器立即可见、可播放；
 - [ ] 设备端点图片全屏预览清晰、点音频播放正常；删除后列表/PC 同步刷新；
 - [ ] 上传中途掉电不损坏旧文件（临时文件+rename）；空间不足/非法文件名被拒；操作不卡 UI、不影响通话；打勾 + 改动记录 + 文件索引。
+
+---
+
+## 附加：主页面下拉壁纸实时时钟天气 Overlay（2026-09-17 完成）
+
+> 依据用户方案 `天气时间Tab开发方案.md`。**不新增 tab**，只在主页面下拉壁纸上叠时间天气卡片，开屏 splash 不变。
+
+- [x] 新增 `middleware/net_time_service.c/h`：SNTP（ntp.aliyun.com，TZ=CST-8）+ 和风 7 天（esp_http_client + esp_crt_bundle + cJSON）+ 每小时刷新 + 互斥锁快照；API `start/time_valid/get_weather`；
+- [x] `overlay_wallpaper.c`：`build()` **一行未动**；卡片只在 `init()` 里建，默认 HIDDEN，`clock_tick` 每秒刷新，未校时则整卡隐藏；
+- [x] `main.c` 的 `WIFI_EVT_GOT_IP` 分支触发 `net_time_service_start()`；
+- [x] `CMakeLists.txt` SRCS/PRIV_REQUIRES（`esp_http_client cjson mbedtls`）+ `sdkconfig` 开 `LV_FONT_MONTSERRAT_28`；
+- [x] 离线依赖：**IDF v6.1 已移除内置 `json` 组件**，cJSON v1.7.18 vendored 到本地 `components/cjson/`（见 F14）；
+- [x] 编译坑：`IDF_CCACHE_ENABLE=0` 绕过 ccache 拉起 gcc 失败（见 F15）；`format-truncation` 缓冲区 40→64；
+- [x] 闭环验证：build 通过（bin `0x1a3c50`，槽内 45% 空闲）→ COM9 app-flash Hash verified → 启动无 panic；
+      **联网实测 `sntp synced: 2026-09-17 16:41:11` 校时成功**；离线时无卡片/无 NET_TIME 日志（符合预期）；
+- [x] **密钥安全注入机制**（2026-09-17）：`tools/idf_env.local.ps1`（已 gitignore）→ 环境变量 →
+      `main/CMakeLists.txt` `target_compile_definitions`；新增 `tools/build.ps1` / `flash.ps1`；
+      重烧后 `QWEATHER_KEY ready (len=32)` + `injected from environment`，bin 1.72→1.83MB（注入生效，见改动记录 §16）；
+- [x] **踩坑并修复**：PS 5.1 按 GBK 解码无 BOM 的 UTF-8 脚本致密钥静默失效（F16）；`$Script:` 作用域问题；
+- [ ] **待办（用户侧一次性）**：和风已下线 `devapi.qweather.com`（2026-01-01 停服），
+      403 空 body 且去掉 key 仍 403（见 F17）。需到 https://console.qweather.com/ 查**专属 API Host**，
+      填回 `tools/idf_env.local.ps1` 后 `tools\build.ps1` 重编（源码无需改动）→ 即可点亮天气行。
 
 ---
 

@@ -70,7 +70,8 @@ static bool decode_base(void)
         return false;
     }
     size_t fsize = st.st_size;
-    uint8_t *jpeg_buf = heap_caps_malloc(fsize, MALLOC_CAP_DMA);
+    uint8_t *jpeg_buf = heap_caps_malloc(fsize, MALLOC_CAP_SPIRAM);
+    if (!jpeg_buf) jpeg_buf = malloc(fsize);
     if (!jpeg_buf) return false;
 
     int fd = open(WALLPAPER_PATH, O_RDONLY);
