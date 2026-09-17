@@ -248,6 +248,42 @@ static esp_err_t http_evt_cb(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+/** 通用 GET：url → 解压后 JSON 字符串（写进 s_http_buf），成功返回 true */
+static bool http_get_json(const char *url)
+{
+    memset(s_http_buf, 0, sizeof(s_http_buf));
+    memset(&s_gz, 0, sizeof(s_gz));
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .event_handler = http_evt_cb,
+        .user_data = s_http_buf,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 10000,
+        .buffer_size = 1024,
+        .user_agent = "esp32-display/1.0",
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return false;
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+
+    bool ok = false;
+    esp_err_t err = esp_http_client_perform(client);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "http perform failed: %s", esp_err_to_name(err));
+        goto out;
+    }
+    if (esp_http_client_get_status_code(client) != 200) {
+        ESP_LOGE(TAG, "http status=%d url=%s",
+                 esp_http_client_get_status_code(client), url);
+        goto out;
+    }
+    ok = true;
+out:
+    esp_http_client_cleanup(client);
+    return ok;
+}
+
 /** 解析和风 7 天 JSON 到 out（不加锁，由调用方加锁写入 s_weather） */
 static bool parse_weather_json(const char *json, weather_data_t *out)
 {
@@ -284,7 +320,7 @@ static bool parse_weather_json(const char *json, weather_data_t *out)
         d->t_min = json_int8(day, "tempMin", 0);
         snprintf(d->date, sizeof(d->date), "%s", json_str(day, "fxDate"));
         snprintf(d->text_en, sizeof(d->text_en), "%s",
-                 wx_text_to_en(json_str(day, "iconDay"), json_str(day, "textDay")));
+                 json_str(day, "textDay"));
         tmp.day_count++;
     }
 
@@ -297,14 +333,58 @@ static bool parse_weather_json(const char *json, weather_data_t *out)
 
     tmp.ready = true;
     tmp.updated_s = (uint32_t)time(NULL);
-    snprintf(tmp.city, sizeof(tmp.city), "%s", QWEATHER_LOC_ID);
+    snprintf(tmp.city, sizeof(tmp.city), "%s", "Guangzhou");
 
     *out = tmp;
     return true;
 }
 
+/** 解析 /v7/weather/now：填 now_temp/now_text(中文)/humidity/wind_dir(中文)/wind_scale */
+static void parse_weather_now(weather_data_t *out)
+{
+    cJSON *root = cJSON_Parse(s_http_buf);
+    if (!root) return;
+    const cJSON *now = cJSON_GetObjectItemCaseSensitive(root, "now");
+    if (now) {
+        out->now_temp = json_int8(now, "temp", 0);
+        /* UI 要中文，直接存和风返回的中文 text（如 "晴"/"多云"） */
+        snprintf(out->now_text, sizeof(out->now_text), "%s", json_str(now, "text"));
+        out->humidity = (uint8_t)json_int8(now, "humidity", 0);
+        snprintf(out->wind_dir, sizeof(out->wind_dir), "%s", json_str(now, "windDir"));
+        out->wind_scale = (uint8_t)json_int8(now, "windScale", 0);
+    }
+    cJSON_Delete(root);
+}
+
+/** 解析 /v7/air/now：填 aqi/aqi_cat */
+static void parse_air_now(weather_data_t *out)
+{
+    cJSON *root = cJSON_Parse(s_http_buf);
+    if (!root) return;
+    const cJSON *now = cJSON_GetObjectItemCaseSensitive(root, "now");
+    if (now) {
+        out->aqi = json_int8(now, "aqi", 0);
+        snprintf(out->aqi_cat, sizeof(out->aqi_cat), "%s", json_str(now, "category"));
+    }
+    cJSON_Delete(root);
+}
+
+/** 解析 /v7/astronomy/sun：填 sunrise/sunset */
+static void parse_sun(weather_data_t *out)
+{
+    cJSON *root = cJSON_Parse(s_http_buf);
+    if (!root) return;
+    const cJSON *sunArr = cJSON_GetObjectItemCaseSensitive(root, "sun");
+    if (cJSON_IsArray(sunArr) && cJSON_GetArraySize(sunArr) >= 1) {
+        const cJSON *sun = cJSON_GetArrayItem(sunArr, 0);
+        snprintf(out->sunrise, sizeof(out->sunrise), "%s", json_str(sun, "sunrise"));
+        snprintf(out->sunset, sizeof(out->sunset), "%s", json_str(sun, "sunset"));
+    }
+    cJSON_Delete(root);
+}
+
 /**
- * @brief 拉取一次和风 7 天预报并写入快照
+ * @brief 拉取一次和风天气（7d + now + air + sun）并写入快照
  * @return true 表示成功刷新
  */
 static bool fetch_weather_once(void)
@@ -314,74 +394,50 @@ static bool fetch_weather_once(void)
         return false;
     }
 
-    char url[256];
+    char url[320];
+    weather_data_t tmp;
+    bool ok = false;
+
+    /* 1) 7d 预报（必须成功） */
     snprintf(url, sizeof(url),
-             "https://%s/v7/weather/7d?location=%s&key=%s&lang=en",
+             "https://%s/v7/weather/7d?location=%s&key=%s&lang=zh",
              QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
-
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .event_handler = http_evt_cb,
-        .user_data = s_http_buf,
-        .crt_bundle_attach = esp_crt_bundle_attach,   /* 用内置根证书验签 */
-        .timeout_ms = 10000,
-        .buffer_size = 1024,
-        .user_agent = "esp32-display/1.0",
-    };
-
-    /* 复位解压状态与输出缓冲（回调按需填充，不依赖 user_data 游标） */
-    memset(s_http_buf, 0, sizeof(s_http_buf));
-    memset(&s_gz, 0, sizeof(s_gz));
-
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        ESP_LOGE(TAG, "http client init failed");
+    if (!http_get_json(url) || !parse_weather_json(s_http_buf, &tmp)) {
+        ESP_LOGE(TAG, "7d failed");
         return false;
     }
 
-    /* 说明：和风会无视该头一律回 gzip，解压由 http_evt_cb 内的 zlib 完成。
-     * 这里仍显式声明 identity，万一服务端将来尊重它则可省一次解压。 */
-    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    /* 2) now 实时 */
+    snprintf(url, sizeof(url),
+             "https://%s/v7/weather/now?location=%s&key=%s&lang=zh",
+             QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
+    if (http_get_json(url)) parse_weather_now(&tmp);
 
-    bool ok = false;
-    esp_err_t err = esp_http_client_perform(client);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "http perform failed, err=%s", esp_err_to_name(err));
-        goto cleanup;
-    }
+    /* 3) 空气质量 */
+    snprintf(url, sizeof(url),
+             "https://%s/v7/air/now?location=%s&key=%s&lang=zh",
+             QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
+    if (http_get_json(url)) parse_air_now(&tmp);
 
-    int status = esp_http_client_get_status_code(client);
-    if (status != 200) {
-        /* 诊断：把 host / 响应体 打出来，便于区分"域名下线/鉴权失败/被中间设备拦" */
-        char *ce = NULL;
-        esp_http_client_get_header(client, "Content-Encoding", &ce);
-        ESP_LOGE(TAG, "http status=%d (expect 200)", status);
-        ESP_LOGE(TAG, "  host=%s", QWEATHER_API_HOST);
-        ESP_LOGE(TAG, "  body[%d]=%.200s", (int)strlen(s_http_buf), s_http_buf);
-        ESP_LOGE(TAG, "  content-encoding=%s", ce ? ce : "(none)");
-        goto cleanup;
-    }
-
-    weather_data_t tmp;
-    if (!parse_weather_json(s_http_buf, &tmp)) {
-        /* 诊断：把解压后的内容前 200 字节打出来，一眼看出是明文 JSON 还是没解开的二进制 */
-        ESP_LOGE(TAG, "  gz=%d out_used=%u overflow=%d",
-                 (int)s_gz.gz, (unsigned)s_gz.out_used, (int)s_gz.overflow);
-        ESP_LOGE(TAG, "  body[%.200s]", s_http_buf);
-        goto cleanup;
-    }
+    /* 4) 日出日落 */
+    time_t now_t = time(NULL);
+    struct tm tmv = {0};
+    localtime_r(&now_t, &tmv);
+    char date[16];
+    strftime(date, sizeof(date), "%Y%m%d", &tmv);
+    snprintf(url, sizeof(url),
+             "https://%s/v7/astronomy/sun?location=%s&date=%s&key=%s&lang=zh",
+             QWEATHER_API_HOST, QWEATHER_LOC_ID, date, QWEATHER_KEY);
+    if (http_get_json(url)) parse_sun(&tmp);
 
     if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
         s_weather = tmp;
         xSemaphoreGive(s_lock);
     }
-    ESP_LOGI(TAG, "weather ok: %s %d/%d %s (%u days)",
-             tmp.days[0].text_en, tmp.days[0].t_max, tmp.days[0].t_min,
-             tmp.days[0].date, (unsigned)tmp.day_count);
+    ESP_LOGI(TAG, "weather ok: %s %d/%d hum=%d aqi=%d %s/%s",
+             tmp.now_text, tmp.days[0].t_max, tmp.days[0].t_min,
+             tmp.humidity, tmp.aqi, tmp.sunrise, tmp.sunset);
     ok = true;
-
-cleanup:
-    esp_http_client_cleanup(client);
     return ok;
 }
 

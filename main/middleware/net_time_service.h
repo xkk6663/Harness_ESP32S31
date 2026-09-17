@@ -34,7 +34,7 @@ extern "C" {
 #define QWEATHER_LOC_ID     "101280101"           /* 广州 */
 #endif
 #ifndef QWEATHER_API_HOST
-#define QWEATHER_API_HOST   "ke67cgkc3a.re.qweatherapi.com" /* 免费版 / 老版订阅地址 */
+#define QWEATHER_API_HOST   "devapi.qweather.com" /* 免费版 / 老版订阅地址 */
 #endif
 #ifndef QWEATHER_REFRESH_SEC
 #define QWEATHER_REFRESH_SEC 3600                 /* 天气刷新周期：1 小时 */
@@ -58,9 +58,21 @@ typedef struct {
 typedef struct {
     bool         ready;
     uint32_t     updated_s;           /* 快照刷新时刻（真实 epoch 秒） */
-    char         city[24];            /* 城市名（和风返回为中文，仅留档） */
+    char         city[24];            /* 城市名 */
     weather_day_t days[WEATHER_DAYS_MAX];
     uint8_t      day_count;
+    /* ---- now 实时天气 ---- */
+    int8_t       now_temp;            /* 实时温度 ℃ */
+    char         now_text[24];        /* 实时天气状况英文 */
+    uint8_t      humidity;             /* 湿度 % */
+    char         wind_dir[16];         /* 风向英文，如 "North" */
+    uint8_t      wind_scale;           /* 风力等级 */
+    /* ---- air now ---- */
+    int          aqi;                 /* 0=未取到 */
+    char         aqi_cat[16];          /* 优/良等英文短词 */
+    /* ---- astronomy ---- */
+    char         sunrise[8];          /* "HH:MM" */
+    char         sunset[8];
 } weather_data_t;
 
 /**

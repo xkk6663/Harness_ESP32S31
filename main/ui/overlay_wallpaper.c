@@ -29,6 +29,19 @@
 #include "ui_theme.h"
 #include "middleware/fs_service.h"
 #include "middleware/net_time_service.h"
+#include "middleware/wifi_manager.h"
+
+LV_FONT_DECLARE(lv_font_digital_96);
+LV_FONT_DECLARE(lv_font_cn_16);
+LV_FONT_DECLARE(lv_font_cn_20);
+LV_IMG_DECLARE(image_wifi);
+LV_IMG_DECLARE(image_sun);
+LV_IMG_DECLARE(image_cloud);
+LV_IMG_DECLARE(image_temp);
+LV_IMG_DECLARE(image_humidity);
+LV_IMG_DECLARE(image_wind);
+LV_IMG_DECLARE(image_sunrise);
+LV_IMG_DECLARE(image_rain);
 
 static const char *TAG = "WP_OVERLAY";
 
@@ -47,10 +60,25 @@ static int32_t   s_pull_start_y;
 static bool      s_pull_armed;
 
 /* ---- 主页面下拉壁纸上的实时时钟天气卡片 ---- */
-static lv_obj_t   *s_clock_card;
-static lv_obj_t   *s_time_label;
-static lv_obj_t   *s_date_label;
-static lv_obj_t   *s_wx_label;
+static lv_obj_t *s_root;
+/* top bar */
+static lv_obj_t *s_wifi_icon;
+static lv_obj_t *s_wifi_label;
+static lv_obj_t *s_ip_label;
+/* center */
+static lv_obj_t *s_time_label;
+static lv_obj_t *s_date_label;
+/* bottom-left main card */
+static lv_obj_t *s_wx_icon;
+static lv_obj_t *s_now_temp_label;
+static lv_obj_t *s_temp_unit_label;
+static lv_obj_t *s_now_text_label;
+static lv_obj_t *s_hi_lo_label;
+/* bottom-right 2x2 */
+static lv_obj_t *s_rh_label;
+static lv_obj_t *s_wind_label;
+static lv_obj_t *s_aqi_label;
+static lv_obj_t *s_sun_label;
 static lv_timer_t *s_clock_timer;
 
 /* Decode xwkkk.jpg into the shared PSRAM file_buffer and bind to a canvas. */
@@ -143,70 +171,193 @@ lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent)
 
 /* ================= 实时时钟天气卡片（仅主页面下拉壁纸） ================= */
 
-/**
- * @brief 在壁纸 layer 上创建时钟天气卡片（默认 HIDDEN，联网取到数据后浮现）
- * @param parent 主页面下拉壁纸 layer（build 的返回值）
- * @note  卡片是 layer 的子对象，壁纸整体位移时自动跟随，无需额外跟随代码。
- */
-static void clock_widget_create(lv_obj_t *parent)
+#define CARD_BG_OPA   LV_OPA_TRANSP  /* 卡片透明，只留边框 */
+#define CARD_RADIUS   14
+#define FRAME_OPA     LV_OPA_40    /* 总框架半透明 */
+
+/* 图标缩放到 ~40px：scale = 256 * target_w / src_w */
+#define ICON_SCALE_SMALL   50    /* ~45px for 228px src */
+#define ICON_SCALE_MED     70    /* ~60px */
+
+static lv_obj_t *card_create(lv_obj_t *parent, lv_align_t align,
+                             int32_t x, int32_t y, int32_t w, int32_t h)
 {
-    s_clock_card = lv_obj_create(parent);
-    lv_obj_set_size(s_clock_card, CLOCK_CARD_W, CLOCK_CARD_H);
-    lv_obj_align(s_clock_card, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_set_style_bg_color(s_clock_card, COL_DARK, 0);
-    lv_obj_set_style_bg_opa(s_clock_card, LV_OPA_70, 0);   /* 半透明，压在壁纸上仍可读 */
-    lv_obj_set_style_radius(s_clock_card, 14, 0);
-    lv_obj_set_style_border_color(s_clock_card, COL_CYAN, 0);
-    lv_obj_set_style_border_width(s_clock_card, 1, 0);
-    lv_obj_set_style_pad_all(s_clock_card, 0, 0);
-    lv_obj_remove_flag(s_clock_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_time_label = lv_label_create(s_clock_card);
-    lv_label_set_text_static(s_time_label, "--:--:--");
-    lv_obj_set_style_text_color(s_time_label, COL_TEXT, 0);
-    lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_28, 0);
-    lv_obj_align(s_time_label, LV_ALIGN_TOP_MID, 0, 8);
-
-    s_date_label = lv_label_create(s_clock_card);
-    lv_label_set_text_static(s_date_label, "----/--/--");
-    lv_obj_set_style_text_color(s_date_label, COL_SUBTEXT, 0);
-    lv_obj_set_style_text_font(s_date_label, UI_FONT, 0);
-    lv_obj_align(s_date_label, LV_ALIGN_TOP_MID, 0, 46);
-
-    s_wx_label = lv_label_create(s_clock_card);
-    lv_label_set_text_static(s_wx_label, "--");
-    lv_obj_set_style_text_color(s_wx_label, COL_CYAN, 0);
-    lv_obj_set_style_text_font(s_wx_label, UI_FONT, 0);
-    lv_obj_align(s_wx_label, LV_ALIGN_TOP_MID, 0, 76);
-
-    lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);   /* 默认隐藏，取到数据才显示 */
-    ESP_LOGI(TAG, "clock card created (hidden until online)");
+    lv_obj_t *c = lv_obj_create(parent);
+    lv_obj_set_size(c, w, h);
+    lv_obj_align(c, align, x, y);
+    lv_obj_set_style_bg_color(c, COL_DARK, 0);
+    lv_obj_set_style_bg_opa(c, CARD_BG_OPA, 0);
+    lv_obj_set_style_radius(c, CARD_RADIUS, 0);
+    lv_obj_set_style_border_color(c, COL_BORDER, 0);
+    lv_obj_set_style_border_width(c, 1, 0);
+    lv_obj_set_style_pad_all(c, 8, 0);
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    return c;
 }
 
-/**
- * @brief 每秒刷新：时间/日期/当天天气；未校时成功则整卡隐藏
- * @note  跑在 LVGL task（lv_timer 回调），可安全操作控件。
- */
+static lv_obj_t *mk_label(lv_obj_t *p, lv_color_t color, const lv_font_t *font,
+                          lv_align_t align, int32_t x, int32_t y)
+{
+    lv_obj_t *lb = lv_label_create(p);
+    lv_label_set_text(lb, "--");
+    lv_obj_set_style_text_color(lb, color, 0);
+    lv_obj_set_style_text_font(lb, font, 0);
+    lv_obj_align(lb, align, x, y);
+    return lb;
+}
+
+static lv_obj_t *mk_icon(lv_obj_t *parent, const void *src, uint32_t scale,
+                         lv_align_t align, int32_t x, int32_t y)
+{
+    lv_obj_t *ic = lv_img_create(parent);
+    lv_image_set_src(ic, src);
+    lv_image_set_scale(ic, scale);
+    lv_obj_align(ic, align, x, y);
+    return ic;
+}
+
+static void clock_widget_create(lv_obj_t *parent)
+{
+    s_root = parent;
+
+    /* === 总框架：半透明深蓝圆角，包住整个仪表盘 === */
+    lv_obj_t *frame = lv_obj_create(parent);
+    lv_obj_set_size(frame, 780, 460);
+    lv_obj_align(frame, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(frame, COL_DARK, 0);
+    lv_obj_set_style_bg_opa(frame, FRAME_OPA, 0);
+    lv_obj_set_style_radius(frame, 20, 0);
+    lv_obj_set_style_border_color(frame, COL_CYAN, 0);
+    lv_obj_set_style_border_width(frame, 1, 0);
+    lv_obj_set_style_pad_all(frame, 0, 0);
+    lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* ---- 顶部 bar ---- */
+    s_wifi_icon = mk_icon(frame, &image_wifi, ICON_SCALE_SMALL,
+                          LV_ALIGN_TOP_LEFT, 12, 8);
+
+    s_wifi_label = mk_label(frame, COL_TEXT, &lv_font_cn_20,
+                            LV_ALIGN_TOP_LEFT, 56, 8);
+    lv_label_set_text(s_wifi_label, "WiFi");
+
+    /* IP 地址换黄色 */
+    s_ip_label = mk_label(frame, lv_color_hex(0xFBBF24), &lv_font_cn_20,
+                          LV_ALIGN_TOP_LEFT, 56, 38);
+    lv_label_set_text(s_ip_label, "--");
+
+    /* 设备名换黄色 */
+    lv_obj_t *title = mk_label(frame, lv_color_hex(0xFBBF24), &lv_font_cn_20,
+                               LV_ALIGN_TOP_MID, 0, 12);
+    lv_label_set_text(title, "ESP32-S31");
+
+    /* ---- 中央大时间（y 往下调） ---- */
+    s_time_label = lv_label_create(frame);
+    lv_label_set_text(s_time_label, "--:--:--");
+    lv_obj_set_style_text_color(s_time_label, COL_CYAN, 0);
+    lv_obj_set_style_text_font(s_time_label, &lv_font_digital_96, 0);
+    lv_obj_align(s_time_label, LV_ALIGN_TOP_MID, 0, 80);
+
+    /* 日期 */
+    s_date_label = mk_label(frame, COL_TEXT, &lv_font_cn_20,
+                            LV_ALIGN_TOP_MID, 0, 210);
+
+    /* ---- 左下大天气卡 ---- */
+    lv_obj_t *main_card = card_create(frame, LV_ALIGN_BOTTOM_LEFT, 12, -16, 360, 150);
+    lv_obj_t *city_lb = mk_label(main_card, COL_TEXT, &lv_font_cn_20,
+                                 LV_ALIGN_TOP_LEFT, 0, 0);
+    /* 广州 (UTF-8) */
+    lv_label_set_text(city_lb, "\xe5\xb9\xbf\xe5\xb7\x9e");
+    lv_obj_t *today_lb = mk_label(main_card, lv_color_hex(0xFBBF24), &lv_font_cn_20,
+                                  LV_ALIGN_TOP_RIGHT, 0, 0);
+    /* 今日天气 */
+    lv_label_set_text(today_lb, "\xe4\xbb\x8a\xe6\x97\xa5\xe5\xa4\xa9\xe6\xb0\x94");
+
+    s_wx_icon = mk_icon(main_card, &image_cloud, ICON_SCALE_MED,
+                        LV_ALIGN_LEFT_MID, 0, 10);
+
+    /* 温度数字用 96px 数字字体，℃ 符号单独小 label */
+    s_now_temp_label = lv_label_create(main_card);
+    lv_label_set_text(s_now_temp_label, "--");
+    lv_obj_set_style_text_color(s_now_temp_label, lv_color_hex(0xFFA500), 0);
+    lv_obj_set_style_text_font(s_now_temp_label, &lv_font_digital_96, 0);
+    lv_obj_align(s_now_temp_label, LV_ALIGN_TOP_MID, 30, 20);
+
+    s_temp_unit_label = mk_label(main_card, lv_color_hex(0xFFA500), &lv_font_cn_20,
+                                LV_ALIGN_TOP_MID, 110, 50);
+    lv_label_set_text(s_temp_unit_label, "\xe2\x84\x83");  /* ℃ */
+
+    s_now_text_label = mk_label(main_card, COL_CYAN, &lv_font_cn_20,
+                                LV_ALIGN_TOP_MID, 50, 90);
+    lv_label_set_text(s_now_text_label, "--");
+
+    s_hi_lo_label = mk_label(main_card, COL_TEXT, &lv_font_cn_20,
+                              LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    /* ---- 右侧 2x2 小卡（绝对定位） ---- */
+    /* 右上：湿度卡 */
+    lv_obj_t *rh_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 250, 188, 90);
+    mk_icon(rh_card, &image_humidity, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, 0, 0);
+    s_rh_label = mk_label(rh_card, COL_TEXT, &lv_font_cn_20,
+                          LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* 右中：风卡 */
+    lv_obj_t *wind_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 250, 188, 90);
+    mk_icon(wind_card, &image_wind, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, 0, 0);
+    s_wind_label = mk_label(wind_card, COL_TEXT, &lv_font_cn_20,
+                            LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* 右下1：温度计卡（实时温度） */
+    lv_obj_t *t_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 350, 188, 90);
+    mk_icon(t_card, &image_temp, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, 0, 0);
+    s_aqi_label = mk_label(t_card, lv_color_hex(0xFFA500), &lv_font_cn_20,
+                           LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_label_set_text(s_aqi_label, "--");
+
+    /* 右下2：日出日落卡 */
+    lv_obj_t *sun_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 350, 188, 90);
+    mk_icon(sun_card, &image_sunrise, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, 0, 0);
+    s_sun_label = mk_label(sun_card, COL_TEXT, &lv_font_cn_20,
+                           LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* 主卡右下角温度计图标已移除（避免重复） */
+
+    ESP_LOGI(TAG, "clock widget created");
+}
+
+/** 每秒刷新：时间/日期/天气；5s 刷新 WiFi 状态 */
 static void clock_tick(lv_timer_t *t)
 {
     (void)t;
-    if (!s_clock_card) {
-        return;
-    }
+    if (!s_root) return;
 
-    /* 没联网 / 没校时 → 整卡隐藏，壁纸保持干净 */
-    if (!net_time_service_time_valid()) {
-        if (!lv_obj_has_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
-            ESP_LOGI(TAG, "time invalid, clock card hidden");
-        }
-        return;
-    }
+    static int s_wifi_counter = 0;
 
     time_t now = 0;
     struct tm tmv = {0};
-    /* 40 容不下 "最高/最低 + 24B 英文天气状况"，留足余量避免 -Werror=format-truncation */
     char buf[64];
+
+    bool valid = net_time_service_time_valid();
+    if (!valid) {
+        /* 时间没校到：只刷新 WiFi，不刷时钟 */
+        if ((s_wifi_counter++ % 5) == 0) {
+            if (wifi_manager_is_connected()) {
+                char ip[16] = {0};
+                wifi_manager_get_ip(ip, sizeof(ip));
+                lv_label_set_text(s_wifi_label, "WiFi");
+                lv_obj_set_style_text_color(s_wifi_label, COL_GREEN, 0);
+                lv_label_set_text(s_ip_label, ip);
+            } else {
+                lv_label_set_text(s_wifi_label, "WiFi");
+                lv_obj_set_style_text_color(s_wifi_label, COL_RED, 0);
+                lv_label_set_text(s_ip_label, "--");
+            }
+        }
+        return;
+    }
 
     time(&now);
     localtime_r(&now, &tmv);
@@ -214,24 +365,70 @@ static void clock_tick(lv_timer_t *t)
     strftime(buf, sizeof(buf), "%H:%M:%S", &tmv);
     lv_label_set_text(s_time_label, buf);
 
-    strftime(buf, sizeof(buf), "%Y-%m-%d %a", &tmv);
-    lv_label_set_text(s_date_label, buf);
+    /* 日期：2026 年 09 月 17 日 星期四 (UTF-8 转义) */
+    strftime(buf, sizeof(buf), "%Y %m %d", &tmv);
+    static const char *wd_cn[] = {
+        "\xe6\x97\xa5",     /* 日 Sunday */
+        "\xe4\xb8\x80",     /* 一 */
+        "\xe4\xba\x8c",     /* 二 */
+        "\xe4\xb8\x89",     /* 三 */
+        "\xe5\x9b\x9b",     /* 四 */
+        "\xe4\xba\x94",     /* 五 */
+        "\xe5\x85\xad",     /* 六 */
+    };
+    char wbuf[128];
+    int y, mo, d;
+    sscanf(buf, "%d %d %d", &y, &mo, &d);
+    snprintf(wbuf, sizeof(wbuf), "%d\xe5\xb9\xb4%02d\xe6\x9c\x88%02d\xe6\x97\xa5 \xe6\x98\x9f\xe6\x9c\x9f%s",
+             y, mo, d, wd_cn[tmv.tm_wday]);
+    lv_label_set_text(s_date_label, wbuf);
 
+    /* 每 5s 刷 WiFi */
+    if ((s_wifi_counter++ % 5) == 0) {
+        if (wifi_manager_is_connected()) {
+            char ip[16] = {0};
+            wifi_manager_get_ip(ip, sizeof(ip));
+            lv_obj_set_style_text_color(s_wifi_label, COL_GREEN, 0);
+            lv_label_set_text(s_ip_label, ip);
+        } else {
+            lv_obj_set_style_text_color(s_wifi_label, COL_RED, 0);
+            lv_label_set_text(s_ip_label, "--");
+        }
+    }
+
+    /* 天气 */
     weather_data_t wx;
     net_time_service_get_weather(&wx);
     if (wx.ready && wx.day_count > 0) {
-        snprintf(buf, sizeof(buf), "%d C / %d C   %s",
-                 wx.days[0].t_max, wx.days[0].t_min, wx.days[0].text_en);
-        lv_label_set_text(s_wx_label, buf);
-    } else {
-        /* 时间到了但天气还没回来：先只显示时间，天气位留占位 */
-        lv_label_set_text(s_wx_label, "--");
-    }
-
-    if (lv_obj_has_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_remove_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
-        ESP_LOGI(TAG, "clock card visible: %s %s", lv_label_get_text(s_time_label),
-                 lv_label_get_text(s_date_label));
+        int show_temp = wx.now_temp ? wx.now_temp : wx.days[0].t_max;
+        snprintf(buf, sizeof(buf), "%d", show_temp);
+        lv_label_set_text(s_now_temp_label, buf);
+        lv_label_set_text(s_now_text_label, wx.now_text[0] ? wx.now_text : wx.days[0].text_en);
+        /* 最高%d 最低%d */
+        snprintf(buf, sizeof(buf), "\xe6\x9c\x80\xe9\xab\x98%d \xe6\x9c\x80\xe4\xbd\x8e%d",
+                 wx.days[0].t_max, wx.days[0].t_min);
+        lv_label_set_text(s_hi_lo_label, buf);
+        snprintf(buf, sizeof(buf), "%d%%", wx.humidity);
+        lv_label_set_text(s_rh_label, buf);
+        /* 风：%s%d级 */
+        snprintf(buf, sizeof(buf), "%s%d\xe7\xba\xa7", wx.wind_dir, wx.wind_scale);
+        lv_label_set_text(s_wind_label, buf);
+        snprintf(buf, sizeof(buf), "%d\xe2\x84\x83", wx.now_temp);
+        lv_label_set_text(s_aqi_label, buf);
+        if (wx.sunrise[0] && wx.sunset[0]) {
+            snprintf(buf, sizeof(buf), "%s/%s", wx.sunrise, wx.sunset);
+            lv_label_set_text(s_sun_label, buf);
+        }
+        /* 图标按天气文字选（中文关键词 UTF-8） */
+        const char *txt = wx.now_text[0] ? wx.now_text : wx.days[0].text_en;
+        /* 晴 / 雨 / 雷 */
+        if (strstr(txt, "\xe6\x99\xb4") || strstr(txt, "Sun") || strstr(txt, "Clear")) {
+            lv_img_set_src(s_wx_icon, &image_sun);
+        } else if (strstr(txt, "\xe9\x9b\xa8") || strstr(txt, "\xe9\x9b\xb7") || strstr(txt, "Rain")) {
+            lv_img_set_src(s_wx_icon, &image_rain);
+        } else {
+            lv_img_set_src(s_wx_icon, &image_cloud);
+        }
     }
 }
 
@@ -387,10 +584,20 @@ void overlay_wallpaper_deinit(void)
         lv_timer_del(s_clock_timer);
         s_clock_timer = NULL;
     }
-    s_clock_card = NULL;
+    s_root = NULL;
+    s_wifi_icon = NULL;
+    s_wifi_label = NULL;
+    s_ip_label = NULL;
     s_time_label = NULL;
     s_date_label = NULL;
-    s_wx_label = NULL;
+    s_wx_icon = NULL;
+    s_now_temp_label = NULL;
+    s_now_text_label = NULL;
+    s_hi_lo_label = NULL;
+    s_rh_label = NULL;
+    s_wind_label = NULL;
+    s_aqi_label = NULL;
+    s_sun_label = NULL;
 
     if (s_wallpaper) {
         lv_obj_del(s_wallpaper);
