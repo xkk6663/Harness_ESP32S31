@@ -16,7 +16,7 @@
 #include "page_splash.h"
 #include "ui_theme.h"
 #include "ui_common.h"
-#include "overlay_wallpaper.h"
+#include "overlay_wp_particles.h"
 
 static const char *TAG = "SPLASH";
 
@@ -62,6 +62,7 @@ static void splash_pressing_cb(lv_event_t *e)
 
     if (dy < SWIPE_UP_DY) {
         s_entered = true;
+        overlay_wp_particles_stop();
         ESP_LOGI(TAG, "swipe up detected, entering main UI");
         if (s_enter_cb) {
             s_enter_cb();
@@ -75,10 +76,12 @@ static lv_obj_t *splash_create(lv_obj_t *parent)
 
     lv_obj_t *page = ui_common_page_root(parent);
 
-    s_wallpaper = overlay_wallpaper_build(page);
-    lv_obj_add_flag(s_wallpaper, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_wallpaper, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(s_wallpaper, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
+    s_wallpaper = overlay_wp_particles_build(page);
+    if (s_wallpaper) {
+        lv_obj_add_flag(s_wallpaper, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_wallpaper, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_wallpaper, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
+    }
 
     s_hint = lv_label_create(page);
     lv_label_set_text(s_hint, LV_SYMBOL_UP"  SWIPE UP TO ENTER");
@@ -92,6 +95,7 @@ static lv_obj_t *splash_create(lv_obj_t *parent)
 
 static void splash_destroy(lv_obj_t *page)
 {
+    overlay_wp_particles_stop();
     lv_obj_del(page);
     s_hint = NULL;
     s_wallpaper = NULL;

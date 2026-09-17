@@ -24,6 +24,7 @@ idf_component_register(SRCS
                         "ui/page_bluetooth.c"
                         "ui/page_rgb.c"
                         "ui/page_system.c"
+                        "ui/overlay_wp_particles.c"
                       INCLUDE_DIRS "."
                                     "ui/ui_manager"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip)

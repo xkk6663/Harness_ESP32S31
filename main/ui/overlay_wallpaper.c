@@ -68,10 +68,7 @@ static void wallpaper_decode_into(lv_obj_t *canvas)
         .outbuf = file_buffer,
     };
     jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
-#if CONFIG_LV_COLOR_16_SWAP
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
-#endif
+    cfg.output_type = JPEG_PIXEL_FORMAT_RGB888;
 
     if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
         ESP_LOGE(TAG, "jpeg_dec_open failed");
@@ -88,8 +85,14 @@ static void wallpaper_decode_into(lv_obj_t *canvas)
         goto cleanup;
     }
     if (jpeg_dec_process(dec, &io) == JPEG_ERR_OK) {
+        size_t pixels = (size_t)info.width * info.height;
+        uint8_t *p = file_buffer;
+        for (size_t i = 0; i < pixels; i++) {
+            uint8_t t = p[0]; p[0] = p[2]; p[2] = t;
+            p += 3;
+        }
         lv_canvas_set_buffer(canvas, file_buffer, info.width, info.height,
-                             LV_COLOR_FORMAT_RGB565);
+                             LV_COLOR_FORMAT_RGB888);
         lv_obj_center(canvas);
         ESP_LOGI(TAG, "wallpaper %dx%d decoded", info.width, info.height);
     } else {
