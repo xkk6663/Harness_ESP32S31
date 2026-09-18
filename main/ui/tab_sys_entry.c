@@ -24,9 +24,9 @@
 #include "page_bluetooth.h"
 #include "page_rgb.h"
 #include "page_system.h"
-#include "middleware/audio_service.h"
-#include "middleware/button_service.h"
-#include "middleware/link_manager.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/periph/button_service.h"
+#include "middleware/net/link_manager.h"
 #include "freertos/queue.h"
 
 static lv_obj_t  *s_vol_slider;

@@ -1501,6 +1501,13 @@ CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=y
 # end of ESP-Driver:I2S Configurations
 
 #
+# ESP-Driver:JPEG-Codec Configurations
+#
+# default:
+# CONFIG_JPEG_ENABLE_DEBUG_LOG is not set
+# end of ESP-Driver:JPEG-Codec Configurations
+
+#
 # ESP-Driver:LEDC Configurations
 #
 # default:
@@ -2062,10 +2069,10 @@ CONFIG_ESP_STDIO_MAX_VFS_ENTRIES=2
 #
 # ESP System Settings
 #
-# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240 is not set
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_320=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_320 is not set
 # default:
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=320
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 
 #
 # Cache config
@@ -3927,6 +3934,46 @@ CONFIG_CU_DIAGNOSTICS_COLOR_ALWAYS=y
 # end of CMake Utilities
 
 #
+# ESP-DL Configuration
+#
+
+#
+# Vision/Image: Pixel Convert Support
+#
+# default:
+CONFIG_PIX_CVT_RGB565_TO_RGB565_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB565_TO_RGB888_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB565_TO_GRAY_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB565_TO_HSV_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB888_TO_RGB888_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB888_TO_RGB565_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB888_TO_GRAY_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_RGB888_TO_HSV_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_GRAY_TO_GRAY_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_HSV_TO_HSV_MASK_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_YUV_TO_RGB888_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_YUV_TO_RGB565_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_YUV_TO_GRAY_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_YUV_TO_HSV_SUPPORT=y
+# default:
+CONFIG_PIX_CVT_YUV_TO_YUV_SUPPORT=y
+# end of Vision/Image: Pixel Convert Support
+# end of ESP-DL Configuration
+
+#
 # Board Support Package (ESP32-S31-Korvo-1)
 #
 # default:
@@ -3961,8 +4008,7 @@ CONFIG_BSP_SPIFFS_MAX_FILES=5
 #
 # default:
 # CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL is not set
-# default:
-CONFIG_BSP_SD_MOUNT_POINT="/sdcard"
+CONFIG_BSP_SD_MOUNT_POINT="/littlefs"
 # end of SD card - Virtual File System
 # end of Storage
 
@@ -4037,8 +4083,31 @@ CONFIG_BSP_I2S_NUM=1
 # CONFIG_CAMERA_MT9D111 is not set
 # default:
 # CONFIG_CAMERA_OV2640 is not set
+CONFIG_CAMERA_OV3660=y
+
+#
+# Auto detect OV3660
+#
 # default:
-# CONFIG_CAMERA_OV3660 is not set
+CONFIG_CAMERA_OV3660_AUTO_DETECT_DVP_INTERFACE_SENSOR=y
+# end of Auto detect OV3660
+
+#
+# Choose supported formats for DVP interface
+#
+# default:
+# CONFIG_CAMERA_OV3660_DVP_JPEG_1280X720_12FPS is not set
+CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y
+# default:
+# CONFIG_CAMERA_OV3660_DVP_RGB565_BE_640X480_10FPS is not set
+# default:
+# CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_240X240_24FPS is not set
+# CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_640X480_10FPS is not set
+# end of Choose supported formats for DVP interface
+
+CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y
+# default:
+CONFIG_CAMERA_OV3660_DVP_IF_FORMAT_INDEX_DEFAULT=0
 # default:
 # CONFIG_CAMERA_OV5640 is not set
 # default:
@@ -4158,6 +4227,22 @@ CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y
 #
 # end of Video Data Preprocessing
 # end of Espressif Video Configuration
+
+#
+# models: human_face_detect
+#
+# CONFIG_HUMAN_FACE_DETECT_MSRMNP_S8_V1 is not set
+CONFIG_ESPDET_PICO_224_224_FACE=y
+# CONFIG_ESPDET_PICO_416_416_FACE is not set
+# default:
+CONFIG_DEFAULT_HUMAN_FACE_DETECT_MODEL=1
+# CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA is not set
+# CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_PARTITION is not set
+CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y
+# default:
+CONFIG_HUMAN_FACE_DETECT_MODEL_LOCATION=2
+CONFIG_HUMAN_FACE_DETECT_MODEL_SDCARD_DIR="models"
+# end of models: human_face_detect
 
 #
 # LED Indicator
@@ -4333,11 +4418,11 @@ CONFIG_LV_USE_OS=0
 # default:
 # CONFIG_LV_COLOR_FORMAT_L8 is not set
 # default:
-# CONFIG_LV_COLOR_FORMAT_RGB565 is not set
+CONFIG_LV_COLOR_FORMAT_RGB565=y
 # default:
 # CONFIG_LV_COLOR_FORMAT_RGB565_SWAPPED is not set
 # default:
-CONFIG_LV_COLOR_FORMAT_RGB888=y
+# CONFIG_LV_COLOR_FORMAT_RGB888 is not set
 # default:
 # CONFIG_LV_COLOR_FORMAT_XRGB8888 is not set
 # default:
@@ -4345,11 +4430,11 @@ CONFIG_LV_COLOR_FORMAT_RGB888=y
 # default:
 # CONFIG_LV_COLOR_FORMAT_ARGB8888_PREMULTIPLIED is not set
 # default:
-# CONFIG_LV_COLOR_DEPTH_UNSET is not set
+CONFIG_LV_COLOR_DEPTH_UNSET=y
 # default:
 # CONFIG_LV_COLOR_DEPTH_32 is not set
 # default:
-CONFIG_LV_COLOR_DEPTH_24=y
+# CONFIG_LV_COLOR_DEPTH_24 is not set
 # default:
 # CONFIG_LV_COLOR_DEPTH_16 is not set
 # default:
@@ -4357,9 +4442,9 @@ CONFIG_LV_COLOR_DEPTH_24=y
 # default:
 # CONFIG_LV_COLOR_DEPTH_1 is not set
 # default:
-CONFIG_LV_COLOR_DEPTH=24
+CONFIG_LV_COLOR_DEPTH=16
 # default:
-CONFIG_LV_COLOR_MIX_ROUND_OFS=128
+CONFIG_LV_COLOR_MIX_ROUND_OFS=0
 # end of Color Settings
 
 # default:
@@ -4481,6 +4566,7 @@ CONFIG_LV_USE_DRAW_SW_ASM=0
 #
 # PPA
 #
+# default:
 # CONFIG_LV_USE_PPA is not set
 # end of PPA
 
@@ -4574,7 +4660,7 @@ CONFIG_LV_INDEV_DEF_GESTURE_ROTATION_THRESHOLD=200
 # Core
 #
 # default:
-# CONFIG_LV_OBJ_STYLE_CACHE is not set
+CONFIG_LV_OBJ_STYLE_CACHE=y
 # default:
 # CONFIG_LV_USE_OBJ_NAME is not set
 # default:
@@ -4612,7 +4698,7 @@ CONFIG_LV_THEME_DEFAULT_TRANSITION_TIME=80
 # default:
 CONFIG_LV_USE_THEME_SIMPLE=y
 # default:
-# CONFIG_LV_USE_THEME_MONO is not set
+CONFIG_LV_USE_THEME_MONO=y
 # end of Themes
 
 #
@@ -4637,8 +4723,7 @@ CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=0
 # CONFIG_LV_USE_LZ4 is not set
 # default:
 # CONFIG_LV_BIN_DECODER_RAM_LOAD is not set
-# default:
-# CONFIG_LV_USE_LODEPNG is not set
+CONFIG_LV_USE_LODEPNG=y
 # default:
 # CONFIG_LV_USE_LIBPNG is not set
 # default:
@@ -4659,7 +4744,7 @@ CONFIG_LV_TXT_ENC_UTF8=y
 # default:
 # CONFIG_LV_TXT_ENC_ASCII is not set
 # default:
-CONFIG_LV_TXT_BREAK_CHARS=" ,.;:-_)}"
+CONFIG_LV_TXT_BREAK_CHARS=" ,.;:-_)]}"
 # default:
 CONFIG_LV_TXT_LINE_BREAK_LONG_LEN=0
 # default:
@@ -4693,7 +4778,7 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_26 is not set
 # default:
-CONFIG_LV_FONT_MONTSERRAT_28=y
+# CONFIG_LV_FONT_MONTSERRAT_28 is not set
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_30 is not set
 # default:
@@ -5016,8 +5101,12 @@ CONFIG_LV_USE_WIN=y
 CONFIG_LV_FS_DEFAULT_DRIVER_LETTER=0
 # default:
 # CONFIG_LV_USE_FS_STDIO is not set
+CONFIG_LV_USE_FS_POSIX=y
+CONFIG_LV_FS_POSIX_LETTER=76
 # default:
-# CONFIG_LV_USE_FS_POSIX is not set
+CONFIG_LV_FS_POSIX_PATH=""
+# default:
+CONFIG_LV_FS_POSIX_CACHE_SIZE=0
 # default:
 # CONFIG_LV_USE_FS_WIN32 is not set
 # default:
@@ -5133,9 +5222,9 @@ CONFIG_LV_CONF_SKIP=y
 # default:
 # CONFIG_LV_USE_ASSERT is not set
 # default:
-CONFIG_LV_USE_ASSERT_MALLOC=y
+# CONFIG_LV_USE_ASSERT_MALLOC is not set
 # default:
-CONFIG_LV_USE_ASSERT_NULL=y
+# CONFIG_LV_USE_ASSERT_NULL is not set
 # default:
 # CONFIG_LV_USE_ASSERT_STYLE is not set
 # default:
@@ -5143,11 +5232,9 @@ CONFIG_LV_USE_ASSERT_NULL=y
 # default:
 # CONFIG_LV_USE_ASSERT_OBJ is not set
 # default:
-CONFIG_LV_ASSERT_HANDLER_INCLUDE="assert.h"
+CONFIG_LV_ASSERT_HANDLER_INCLUDE=""
 # default:
-CONFIG_LV_ASSERT_HANDLER_INCLUDE_IS_NON_EMPTY=y
-# default:
-CONFIG_LV_DISABLE_ASSERT_HANDLER_INCLUDE_WARNING=y
+# CONFIG_LV_DISABLE_ASSERT_HANDLER_INCLUDE_WARNING is not set
 # default:
 # CONFIG_LV_ASSERT_USE_CUSTOM_INCLUDE is not set
 # end of Asserts

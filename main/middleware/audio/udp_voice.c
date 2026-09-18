@@ -15,9 +15,9 @@
 #include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
-#include "middleware/audio_service.h"
-#include "middleware/link_manager.h"
-#include "middleware/session_manager.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/net/link_manager.h"
+#include "middleware/net/session_manager.h"
 #include "udp_voice.h"
 
 static const char *TAG = "UDP_VOICE";

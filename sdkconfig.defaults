@@ -1,4 +1,4 @@
-# This file was generated using idf.py save-defconfig. It can be edited manually.
+﻿# This file was generated using idf.py save-defconfig. It can be edited manually.
 # Espressif IoT Development Framework (ESP-IDF) Project Minimal Configuration
 #
 CONFIG_IDF_TARGET="esp32s31"
@@ -49,7 +49,29 @@ CONFIG_LV_USE_FLOAT=y
 CONFIG_LV_USE_GESTURE_RECOGNITION=y
 
 ## PPA (Pixel Processing Accelerator) on ESP32-S31 ##
-## 注：LVGL 9.5 内置 lv_draw_ppa 仅支持 ESP32-P4（依赖 CONFIG_CACHE_L2_CACHE_LINE_SIZE，S31 无此 Kconfig）
-## 待 LVGL 后续版本适配 S31 后再开启。当前先留空，软件渲染。
-# CONFIG_LV_USE_PPA is not set
+## 娉細LVGL 9.5 鍐呯疆 lv_draw_ppa 浠呮敮鎸?ESP32-P4锛堜緷璧?CONFIG_CACHE_L2_CACHE_LINE_SIZE锛孲31 鏃犳 Kconfig锛?## 寰?LVGL 鍚庣画鐗堟湰閫傞厤 S31 鍚庡啀寮€鍚€傚綋鍓嶅厛鐣欑┖锛岃蒋浠舵覆鏌撱€?# CONFIG_LV_USE_PPA is not set
 # CONFIG_LV_USE_PPA_IMG is not set
+
+CONFIG_LV_USE_FS_POSIX=y
+CONFIG_LV_FS_POSIX_LETTER=76
+CONFIG_LV_FS_POSIX_PATH_MAX=256
+CONFIG_LV_USE_PNG=y
+CONFIG_LV_USE_LODEPNG=y
+CONFIG_CAMERA_OV3660=y
+
+
+## Face detect model in LittleFS ##
+CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y
+CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=n
+CONFIG_DEFAULT_HUMAN_FACE_DETECT_MODEL=1
+CONFIG_ESPDET_PICO_224_224_FACE=y
+CONFIG_HUMAN_FACE_DETECT_MSRMNP_S8_V1=n
+CONFIG_ESPDET_PICO_416_416_FACE=n
+CONFIG_HUMAN_FACE_DETECT_MODEL_SDCARD_DIR="models"
+CONFIG_BSP_SD_MOUNT_POINT="/littlefs"
+
+
+## OV3660 format: 240x240 RGB565 BE (for esp-dl 224x224 input) ##
+CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y
+CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y
+CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_640X480_10FPS=n

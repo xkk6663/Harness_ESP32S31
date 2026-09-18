@@ -15,7 +15,7 @@
 #include "page_rgb.h"
 #include "ui_theme.h"
 #include "ui_common.h"
-#include "middleware/led_service.h"
+#include "middleware/periph/led_service.h"
 
 static lv_obj_t *s_switch;
 static lv_obj_t *s_r_slider;

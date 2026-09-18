@@ -330,3 +330,30 @@
 5. 完成后打勾 + `改动记录.md` 追加 + 代码文件索引更新。
 
 > 默认选型（需求已定，可改）：ASR=sherpa-onnx 离线流式；GUI=PySide6；设备传音=toggle；PC 回讲=按住 PTT；FS=LittleFS；OTA 双槽各 3MB、storage littlefs 9.87MB（阶段 1.5 已落地）。
+
+---
+
+## 阶段三：端侧 AI（摄像头 + 本地人脸检测）— 进行中
+
+> 分支：`端侧人脸识别`（main 停在阶段二收尾 ca85592）
+
+### 3.1 已完成
+- [x] middleware 重构：audio/ net/ periph/ camera/ 四子目录
+- [x] OV3660 DVP 采集（240x240 RGB565_BE_240FPS），双 buffer mmap，lazy init
+- [x] tab_camera：START/HSV/FACE 三按钮横排，canvas 240x240，点击全屏 zoom 2x
+- [x] 软件校正：垂直翻转 + 水平镜像 + RGB565 字节序交换
+- [x] HSV 红色检测（红色框 overlay）
+- [x] 图标从固件迁到 LittleFS（LVGL POSIX FS L: 盘符），app bin 降 ~1.5MB
+- [x] 分区表扩 ota：ota_0/ota_1 各 5MB，littlefs 5.8MB
+- [x] esp-dl + human_face_detect 依赖，模型放 littlefs/models/（不编固件）
+- [x] face_service.cpp：C++ 封装 HumanFaceDetect，C ABI 给 tab_camera
+
+### 3.2 进行中
+- [ ] HSV 红色识别阈值调优（加日志 avg RGB 观察）
+- [ ] FACE 按钮端到端验证（模型从 littlefs 加载 + 人脸框 overlay）
+- [ ] 240x240 RGB565 格式在 sdkconfig.defaults 固化（防 reconfigure 丢配置）
+
+### 3.3 待办
+- [ ] 人脸识别录入（human_face_recognition）后续阶段
+- [ ] YOLO11 颜色/物体识别（模型同样放 littlefs）
+- [ ] 摄像头任务绑核 + 隔帧推理调优（PSRAM 占用监控）

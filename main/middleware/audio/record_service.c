@@ -16,10 +16,10 @@
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "lwip/sockets.h"
-#include "middleware/audio_service.h"
-#include "middleware/fs_service.h"
-#include "middleware/link_manager.h"
-#include "middleware/session_manager.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/periph/fs_service.h"
+#include "middleware/net/link_manager.h"
+#include "middleware/net/session_manager.h"
 #include "record_service.h"
 
 static const char *TAG = "RECORD";

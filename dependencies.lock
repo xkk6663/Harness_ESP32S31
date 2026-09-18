@@ -23,6 +23,44 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/dl_fft:
+    component_hash: 3e8f7d34e04bfa6333f289a6d126745bebe0cee9311b81a6a5d106047f63ef65
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.7.0
+  espressif/esp-dl:
+    component_hash: 233ee8d37dfedeb637fc74713b87bd861ac530cfbcc4c63c57c2e51064cdda31
+    dependencies:
+    - name: espressif/dl_fft
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.6.0'
+    - name: espressif/esp_new_jpeg
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1
+    - name: idf
+      require: private
+      version: '*'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32p4
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    version: 3.3.11
   espressif/esp32_s31_korvo_1:
     component_hash: f5355cee24084c4a78c8a618e671297acae56b42bd6c8886be23cf0695ee22b6
     dependencies:
@@ -210,6 +248,17 @@ dependencies:
     - esp32c61
     - esp32s31
     version: 2.2.0
+  espressif/human_face_detect:
+    component_hash: b6f898ba69e0355641db0f2974f5810fb26c265ab3e1b1a03a37469976ad4591
+    dependencies:
+    - name: espressif/esp-dl
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~3.3.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.4.2
   espressif/led_indicator:
     component_hash: 0694f655b0f0b7694592cfbb5a44ba33840847c5ca44eb639eec8570a4094cd4
     dependencies:
@@ -325,10 +374,12 @@ dependencies:
       type: service
     version: 9.6.0
 direct_dependencies:
+- espressif/esp-dl
 - espressif/esp32_s31_korvo_1
 - espressif/esp_new_jpeg
+- espressif/human_face_detect
 - espressif/zlib
 - idf
-manifest_hash: 4bbd4e0a8e22222984ae924d17fe06682f3835c5eeb7e7e0f13fb2ece08c071a
+manifest_hash: f6460d17078936d1b861b5a1c7410ece2936764ac3f129b05f4c99dba91edc02
 target: esp32s31
 version: 3.0.0

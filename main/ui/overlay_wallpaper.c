@@ -23,22 +23,24 @@
 #include "overlay_wallpaper.h"
 #include "overlay_manager.h"
 #include "ui_theme.h"
-#include "middleware/fs_service.h"
-#include "middleware/net_time_service.h"
-#include "middleware/wifi_manager.h"
+#include "middleware/periph/fs_service.h"
+#include "middleware/net/net_time_service.h"
+#include "middleware/net/wifi_manager.h"
 
 LV_FONT_DECLARE(lv_font_digital_96);
 LV_FONT_DECLARE(lv_font_cn_20);
 LV_FONT_DECLARE(lv_font_cn_30);
 LV_FONT_DECLARE(lv_font_cn_45);
-LV_IMG_DECLARE(image_wifi);
-LV_IMG_DECLARE(image_sun);
-LV_IMG_DECLARE(image_cloud);
-LV_IMG_DECLARE(image_temp);
-LV_IMG_DECLARE(image_humidity);
-LV_IMG_DECLARE(image_wind);
-LV_IMG_DECLARE(image_sunrise);
-LV_IMG_DECLARE(image_rain);
+
+/* Icons loaded from LittleFS via LVGL POSIX FS (letter L) */
+#define ICON_WIFI     "L:/littlefs/icons/wifi.png"
+#define ICON_SUN      "L:/littlefs/icons/sun.png"
+#define ICON_CLOUD    "L:/littlefs/icons/cloud.png"
+#define ICON_TEMP     "L:/littlefs/icons/temp.png"
+#define ICON_HUMIDITY "L:/littlefs/icons/humidity.png"
+#define ICON_WIND     "L:/littlefs/icons/wind.png"
+#define ICON_SUNRISE  "L:/littlefs/icons/sunrise.png"
+#define ICON_RAIN     "L:/littlefs/icons/rain.png"
 
 static const char *TAG = "WP_OVERLAY";
 
@@ -224,7 +226,7 @@ static void clock_widget_create(lv_obj_t *parent)
     lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
 
     /* top bar */
-    s_wifi_icon = mk_icon(frame, &image_wifi, ICON_SCALE_SMALL,
+    s_wifi_icon = mk_icon(frame, ICON_WIFI, ICON_SCALE_SMALL,
                           LV_ALIGN_TOP_LEFT, 12, 8);
 
     s_wifi_label = mk_label(frame, COL_TEXT, &lv_font_cn_30,
@@ -261,7 +263,7 @@ static void clock_widget_create(lv_obj_t *parent)
     /* today weather */
     lv_label_set_text(today_lb, "\xe4\xbb\x8a\xe6\x97\xa5\xe5\xa4\xa9\xe6\xb0\x94");
 
-    s_wx_icon = mk_icon(main_card, &image_cloud, ICON_SCALE_MED,
+    s_wx_icon = mk_icon(main_card, ICON_CLOUD, ICON_SCALE_MED,
                         LV_ALIGN_LEFT_MID, -20, 5);
 
     /* temperature 45px, with C symbol */
@@ -281,21 +283,21 @@ static void clock_widget_create(lv_obj_t *parent)
     /* right side 2x2 small cards */
     /* top-right: humidity */
     lv_obj_t *rh_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 250, 188, 90);
-    mk_icon(rh_card, &image_humidity, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -20, 0);
+    mk_icon(rh_card, ICON_HUMIDITY, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, -30, 0);
     s_rh_label = mk_label(rh_card, COL_TEXT, &lv_font_cn_30,
                           LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* middle-right: wind */
     lv_obj_t *wind_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 250, 188, 90);
-    mk_icon(wind_card, &image_wind, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -20, 0);
+    mk_icon(wind_card, ICON_WIND, ICON_SCALE_SMALL,
+            LV_ALIGN_LEFT_MID, -30, 0);
     s_wind_label = mk_label(wind_card, COL_TEXT, &lv_font_cn_20,
                             LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* bottom-right 1: thermometer (real-time temp) */
     lv_obj_t *t_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 350, 188, 90);
-    mk_icon(t_card, &image_temp, ICON_SCALE_SMALL,
+    mk_icon(t_card, ICON_TEMP, ICON_SCALE_SMALL,
             LV_ALIGN_LEFT_MID, -20, 0);
     s_aqi_label = mk_label(t_card, lv_color_hex(0xFFA500), &lv_font_cn_30,
                            LV_ALIGN_RIGHT_MID, 0, 0);
@@ -303,8 +305,8 @@ static void clock_widget_create(lv_obj_t *parent)
 
     /* bottom-right 2: sunrise/sunset */
     lv_obj_t *sun_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 350, 188, 90);
-    mk_icon(sun_card, &image_sunrise, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -20, 0);
+    mk_icon(sun_card, ICON_SUNRISE, ICON_SCALE_SMALL,
+            LV_ALIGN_CENTER, -30, 0);
     s_sun_label = mk_label(sun_card, COL_TEXT, &lv_font_cn_20,
                            LV_ALIGN_RIGHT_MID, 0, 0);
 
@@ -402,11 +404,11 @@ static void clock_tick(lv_timer_t *t)
         /* icon pick by weather text */
         const char *txt = wx.now_text[0] ? wx.now_text : wx.days[0].text_en;
         if (strstr(txt, "\xe6\x99\xb4") || strstr(txt, "Sun") || strstr(txt, "Clear")) {
-            lv_img_set_src(s_wx_icon, &image_sun);
+            lv_img_set_src(s_wx_icon, ICON_SUN);
         } else if (strstr(txt, "\xe9\x9b\xa8") || strstr(txt, "\xe9\x9b\xb7") || strstr(txt, "Rain")) {
-            lv_img_set_src(s_wx_icon, &image_rain);
+            lv_img_set_src(s_wx_icon, ICON_RAIN);
         } else {
-            lv_img_set_src(s_wx_icon, &image_cloud);
+            lv_img_set_src(s_wx_icon, ICON_CLOUD);
         }
     }
 }

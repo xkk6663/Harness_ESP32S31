@@ -21,7 +21,7 @@
 #include "page_wifi.h"
 #include "ui_theme.h"
 #include "ui_common.h"
-#include "middleware/wifi_manager.h"
+#include "middleware/net/wifi_manager.h"
 
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_start_btn;

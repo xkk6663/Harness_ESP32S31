@@ -13,16 +13,17 @@
 #include "ui/page_splash.h"
 #include "ui/page_main.h"
 #include "ui/overlay_manager.h"
-#include "middleware/audio_service.h"
-#include "middleware/fs_service.h"
-#include "middleware/led_service.h"
-#include "middleware/button_service.h"
-#include "middleware/wifi_manager.h"
-#include "middleware/session_manager.h"
-#include "middleware/link_manager.h"
-#include "middleware/udp_voice.h"
-#include "middleware/record_service.h"
-#include "middleware/net_time_service.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/periph/fs_service.h"
+#include "middleware/periph/led_service.h"
+#include "middleware/periph/button_service.h"
+#include "middleware/net/wifi_manager.h"
+#include "middleware/net/session_manager.h"
+#include "middleware/net/link_manager.h"
+#include "middleware/audio/udp_voice.h"
+#include "middleware/audio/record_service.h"
+#include "middleware/net/net_time_service.h"
+#include "middleware/camera/camera_service.h"
 
 static const char *TAG = "main";
 
@@ -91,6 +92,7 @@ void app_main(void)
     link_manager_init();
     udp_voice_init();
     record_service_init();
+    camera_service_init();
     /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
 
     /* UI framework */

@@ -23,7 +23,7 @@
 #include "ui_theme.h"
 #include "ui_common.h"
 #include "tab_record.h"
-#include "middleware/audio_service.h"
+#include "middleware/audio/audio_service.h"
 
 static const char *TAG = "WAV_PAGE";
 

@@ -385,15 +385,13 @@ static void parse_sun(weather_data_t *out)
     const cJSON *ss = cJSON_GetObjectItemCaseSensitive(root, "sunset");
     if (cJSON_IsString(sr) && sr->valuestring) {
         const char *p = sr->valuestring;
-        size_t len = strlen(p);
-        const char *hm = (len >= 5) ? p + len - 5 : p;
-        snprintf(out->sunrise, sizeof(out->sunrise), "%s", hm);
+        const char *t = strchr(p, 'T');
+        snprintf(out->sunrise, sizeof(out->sunrise), "%.5s", t ? t + 1 : p);
     }
     if (cJSON_IsString(ss) && ss->valuestring) {
         const char *p = ss->valuestring;
-        size_t len = strlen(p);
-        const char *hm = (len >= 5) ? p + len - 5 : p;
-        snprintf(out->sunset, sizeof(out->sunset), "%s", hm);
+        const char *t = strchr(p, 'T');
+        snprintf(out->sunset, sizeof(out->sunset), "%.5s", t ? t + 1 : p);
     }
     ESP_LOGI(TAG, "sun: sunrise=%s sunset=%s", out->sunrise, out->sunset);
     cJSON_Delete(root);

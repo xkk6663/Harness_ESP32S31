@@ -19,7 +19,7 @@
 #include "lvgl.h"
 
 #include "overlay_wp_particles.h"
-#include "middleware/fs_service.h"
+#include "middleware/periph/fs_service.h"
 
 static const char *TAG = "WP_PART";
 
