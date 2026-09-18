@@ -357,3 +357,9 @@
 - [ ] 人脸识别录入（human_face_recognition）后续阶段
 - [ ] YOLO11 颜色/物体识别（模型同样放 littlefs）
 - [ ] 摄像头任务绑核 + 隔帧推理调优（PSRAM 占用监控）
+
+### 3.4 已知问题
+- [ ] FACE 加载偶发 ESP_ERR_NO_MEM（esp_timer_create 堆碎片），基线代码偶发成功
+- [ ] HSV 红色识别阈值需现场调优（摄像头白平衡冲淡红色）
+- [ ] 摄像头长时间运行可能闪屏重启（cam_task 优先级/refresh 需平衡）
+- [ ] 详细经验：docs/项目规划/堆分配与任务竞争经验总结.md
