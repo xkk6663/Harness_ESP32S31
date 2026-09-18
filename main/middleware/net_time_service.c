@@ -369,17 +369,33 @@ static void parse_air_now(weather_data_t *out)
     cJSON_Delete(root);
 }
 
-/** 解析 /v7/astronomy/sun：填 sunrise/sunset */
+/** Parse /v7/astronomy/sun: fill sunrise/sunset (HH:MM only) */
 static void parse_sun(weather_data_t *out)
 {
     cJSON *root = cJSON_Parse(s_http_buf);
-    if (!root) return;
-    const cJSON *sunArr = cJSON_GetObjectItemCaseSensitive(root, "sun");
-    if (cJSON_IsArray(sunArr) && cJSON_GetArraySize(sunArr) >= 1) {
-        const cJSON *sun = cJSON_GetArrayItem(sunArr, 0);
-        snprintf(out->sunrise, sizeof(out->sunrise), "%s", json_str(sun, "sunrise"));
-        snprintf(out->sunset, sizeof(out->sunset), "%s", json_str(sun, "sunset"));
+    if (!root) {
+        ESP_LOGW(TAG, "sun: cJSON parse failed, body: %.200s", s_http_buf);
+        return;
     }
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+    if (code) {
+        ESP_LOGI(TAG, "sun raw body: %.300s", s_http_buf);
+    }
+    const cJSON *sr = cJSON_GetObjectItemCaseSensitive(root, "sunrise");
+    const cJSON *ss = cJSON_GetObjectItemCaseSensitive(root, "sunset");
+    if (cJSON_IsString(sr) && sr->valuestring) {
+        const char *p = sr->valuestring;
+        size_t len = strlen(p);
+        const char *hm = (len >= 5) ? p + len - 5 : p;
+        snprintf(out->sunrise, sizeof(out->sunrise), "%s", hm);
+    }
+    if (cJSON_IsString(ss) && ss->valuestring) {
+        const char *p = ss->valuestring;
+        size_t len = strlen(p);
+        const char *hm = (len >= 5) ? p + len - 5 : p;
+        snprintf(out->sunset, sizeof(out->sunset), "%s", hm);
+    }
+    ESP_LOGI(TAG, "sun: sunrise=%s sunset=%s", out->sunrise, out->sunset);
     cJSON_Delete(root);
 }
 
@@ -425,6 +441,7 @@ static bool fetch_weather_once(void)
     localtime_r(&now_t, &tmv);
     char date[16];
     strftime(date, sizeof(date), "%Y%m%d", &tmv);
+    ESP_LOGI(TAG, "sun req date=%s now_t=%ld", date, (long)now_t);
     snprintf(url, sizeof(url),
              "https://%s/v7/astronomy/sun?location=%s&date=%s&key=%s&lang=zh",
              QWEATHER_API_HOST, QWEATHER_LOC_ID, date, QWEATHER_KEY);
