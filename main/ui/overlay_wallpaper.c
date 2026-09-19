@@ -264,7 +264,7 @@ static void clock_widget_create(lv_obj_t *parent)
     lv_label_set_text(today_lb, "\xe4\xbb\x8a\xe6\x97\xa5\xe5\xa4\xa9\xe6\xb0\x94");
 
     s_wx_icon = mk_icon(main_card, ICON_CLOUD, ICON_SCALE_MED,
-                        LV_ALIGN_LEFT_MID, -20, 5);
+                        LV_ALIGN_CENTER, -30, 5);
 
     /* temperature 45px, with C symbol */
     s_now_temp_label = lv_label_create(main_card);
@@ -284,21 +284,21 @@ static void clock_widget_create(lv_obj_t *parent)
     /* top-right: humidity */
     lv_obj_t *rh_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 250, 188, 90);
     mk_icon(rh_card, ICON_HUMIDITY, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -30, 0);
+            LV_ALIGN_CENTER, -30, 0);
     s_rh_label = mk_label(rh_card, COL_TEXT, &lv_font_cn_30,
                           LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* middle-right: wind */
     lv_obj_t *wind_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 250, 188, 90);
     mk_icon(wind_card, ICON_WIND, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -30, 0);
+            LV_ALIGN_CENTER, -50, 0);
     s_wind_label = mk_label(wind_card, COL_TEXT, &lv_font_cn_20,
                             LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* bottom-right 1: thermometer (real-time temp) */
     lv_obj_t *t_card = card_create(frame, LV_ALIGN_TOP_LEFT, 384, 350, 188, 90);
     mk_icon(t_card, ICON_TEMP, ICON_SCALE_SMALL,
-            LV_ALIGN_LEFT_MID, -20, 0);
+            LV_ALIGN_CENTER, -30, 0);
     s_aqi_label = mk_label(t_card, lv_color_hex(0xFFA500), &lv_font_cn_30,
                            LV_ALIGN_RIGHT_MID, 0, 0);
     lv_label_set_text(s_aqi_label, "--");
@@ -306,7 +306,7 @@ static void clock_widget_create(lv_obj_t *parent)
     /* bottom-right 2: sunrise/sunset */
     lv_obj_t *sun_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 350, 188, 90);
     mk_icon(sun_card, ICON_SUNRISE, ICON_SCALE_SMALL,
-            LV_ALIGN_CENTER, -30, 0);
+            LV_ALIGN_CENTER, -50, 0);
     s_sun_label = mk_label(sun_card, COL_TEXT, &lv_font_cn_20,
                            LV_ALIGN_RIGHT_MID, 0, 0);
 
@@ -462,12 +462,12 @@ static void main_released_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_pull_armed || !s_wallpaper) {
-        s_pull_armed = false;
+    s_pull_armed = false;
         return;
     }
     int32_t y = lv_obj_get_y(s_wallpaper);
     if (y > -BSP_LCD_V_RES + PULL_DOWN_OPEN) {
-        overlay_open(OVERLAY_WALLPAPER);
+            overlay_open(OVERLAY_WALLPAPER);
     } else {
         wallpaper_animate_to(s_wallpaper, -BSP_LCD_V_RES);
     }
@@ -506,7 +506,7 @@ static void wp_released_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_pull_armed || !s_wallpaper) {
-        s_pull_armed = false;
+    s_pull_armed = false;
         return;
     }
     int32_t y = lv_obj_get_y(s_wallpaper);

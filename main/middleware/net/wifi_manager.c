@@ -145,6 +145,7 @@ typedef enum {
 static wifi_evt_cb_t s_evt_cb;
 static wifi_evt_cb_t s_sys_cb;
 static bool s_connected;
+static bool s_enabled = true;
 static char s_ip[16];
 static wifi_role_t s_role = WIFI_ROLE_STA;   /* 默认上电 STA（连已保存路由），UI 可切 AP */
 
@@ -268,6 +269,7 @@ static void next_candidate_or_giveup(void)
         s_have_active = false;
         s_connected = false;
         ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up");
+        s_enabled = false; esp_wifi_stop();  /* auto-disable after 5 retries */
         notify(WIFI_EVT_ALL_FAILED, NULL);
     }
 }
@@ -395,6 +397,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             } else {
                 s_phase = PHASE_IDLE;
                 ESP_LOGW(TAG, "no saved Wi-Fi visible, give up");
+                s_enabled = false; esp_wifi_stop();  /* auto-disable: no saved AP */
                 notify(WIFI_EVT_ALL_FAILED, NULL);
             }
         } else {
@@ -637,6 +640,32 @@ void wifi_manager_connect(const char *ssid, const char *pass)
 }
 
 bool wifi_manager_is_connected(void) { return s_connected; }
+
+void wifi_manager_set_enabled(bool on)
+{
+    s_enabled = on;
+    if (on) {
+        ESP_ERROR_CHECK(esp_wifi_start());
+        if (s_role == WIFI_ROLE_AP) {
+            /* AP mode starts DHCP in start_ap_mode already; just restart */
+            start_ap_mode();
+        } else {
+            wifi_manager_auto_connect();
+        }
+        ESP_LOGI(TAG, "wifi enabled");
+    } else {
+        esp_timer_stop(s_reconnect_timer);
+        s_phase = PHASE_IDLE;
+        s_have_active = false;
+        s_connected = false;
+        s_ip[0] = 0;
+        esp_wifi_stop();
+        ESP_LOGI(TAG, "wifi disabled (radio off)");
+    }
+    notify(WIFI_EVT_DISCONNECTED, NULL);
+}
+
+bool wifi_manager_is_enabled(void) { return s_enabled; }
 
 void wifi_manager_get_ip(char *buf, int len)
 {

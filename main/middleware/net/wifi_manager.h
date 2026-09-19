@@ -100,6 +100,10 @@ void wifi_manager_connect(const char *ssid, const char *pass);
 bool wifi_manager_is_connected(void);
 void wifi_manager_get_ip(char *buf, int len);
 
+/** Wi-Fi master switch: on=start wifi, off=stop wifi completely (radio off). */
+void wifi_manager_set_enabled(bool on);
+bool wifi_manager_is_enabled(void);
+
 /* ---- NVS 凭证管理（可选，供 UI"已保存网络"页面使用）---- */
 
 /** @brief NVS 中已保存的 Wi-Fi 数量 */

@@ -119,18 +119,18 @@ idf.py build
 ```powershell
 cd build
 & "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" -m esptool `
-  --chip esp32s31 -p COM9 -b 460800 --before default-reset --after hard-reset `
+  --chip esp32s31 -p COM9 -b 921600 --before default-reset --after hard-reset `
   write-flash 0x620000 storage.bin
 ```
 
-要点：参数顺序是 **`write-flash <地址> <文件>`**（地址在前）；460800 波特 + esptool 压缩约 35 秒写完 10MB。
+要点：参数顺序是 **`write-flash <地址> <文件>`**（地址在前）；921600 波特 + esptool 压缩约 35 秒写完 10MB。
 
 ### 3.3 注意事项
 - 不要在这条命令后直接跟 `monitor`（见第 4 节）；
 - 成功标志：`Hash of data verified` + `Hard resetting via RTS pin...`，烧完板子自动复位；
 - **ESP32-S31 ROM 不支持整片 `erase-flash`**（报 `does not support function erase_flash`），不要用；直接覆盖烧录即可；
 - 进下载模式偶发 `Invalid head of packet (0x78)` / `Failed to enter flash download mode`：多半是板子在跑旧固件占串口，等 3–4 秒或重插 USB 后重试；
-- 波特率 460800；app 约 1.6MB，`app-flash` 几秒完成。
+- 波特率 921600；app 约 1.6MB，`app-flash` 几秒完成。
 
 ---
 

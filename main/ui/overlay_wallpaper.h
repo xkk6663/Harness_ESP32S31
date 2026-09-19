@@ -34,9 +34,7 @@ lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent);
  */
 void overlay_wallpaper_init(lv_obj_t *tab_btns);
 
-/**
- * @brief Remove the wallpaper layer (called when Page_Main is destroyed).
- */
+/** Remove the wallpaper layer (called when Page_Main is destroyed). */
 void overlay_wallpaper_deinit(void);
 
 /* overlay_manager hooks: snap fully open / snap shut. */

@@ -427,11 +427,11 @@ static bool fetch_weather_once(void)
              QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
     if (http_get_json(url)) parse_weather_now(&tmp);
 
-    /* 3) 空气质量 */
-    snprintf(url, sizeof(url),
-             "https://%s/v7/air/now?location=%s&key=%s&lang=zh",
-             QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
-    if (http_get_json(url)) parse_air_now(&tmp);
+    /* 3) air/now skipped (free plan, 403) */
+    tmp.aqi = 0; tmp.aqi_cat[0] = 0;
+
+
+
 
     /* 4) 日出日落 */
     time_t now_t = time(NULL);

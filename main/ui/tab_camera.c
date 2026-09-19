@@ -218,7 +218,9 @@ void tab_camera_build(lv_obj_t *screen, lv_group_t *group)
     /* Bounding box overlay (child of canvas, hidden by default) */
     s_bbox = lv_obj_create(s_canvas);
     lv_obj_set_size(s_bbox, 10, 10);
-    lv_obj_set_style_border_color(s_bbox, lv_color_hex(0xFF0000), 0);
+    lv_obj_set_style_border_color(s_bbox, lv_color_hex(0xFFFF00), 0);
+    lv_obj_set_style_pad_all(s_bbox, 0, 0);
+    lv_obj_set_style_border_post(s_bbox, true, 0);
     lv_obj_set_style_border_width(s_bbox, 2, 0);
     lv_obj_set_style_border_opa(s_bbox, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(s_bbox, LV_OPA_TRANSP, 0);

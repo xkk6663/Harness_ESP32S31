@@ -22,6 +22,7 @@
 #include "ui_theme.h"
 #include "ui_common.h"
 #include "middleware/net/wifi_manager.h"
+#include "overlay_wallpaper.h"
 
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_start_btn;
@@ -33,6 +34,8 @@ static lv_obj_t *s_connect_btn;
 static lv_timer_t *s_poll_timer;
 static lv_obj_t *s_mode_btn;
 static lv_obj_t *s_mode_lab;
+static lv_obj_t *s_power_btn;
+static lv_obj_t *s_power_lab;
 static lv_obj_t *s_ap_info_label;
 static lv_obj_t *s_clients_label;
 static wifi_role_t s_last_role = (wifi_role_t)-1;
@@ -135,6 +138,15 @@ static void mode_btn_cb(lv_event_t *e)
     wifi_manager_set_role(cur == WIFI_ROLE_AP ? WIFI_ROLE_STA : WIFI_ROLE_AP);
 }
 
+static void power_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    bool on = !wifi_manager_is_enabled();
+    wifi_manager_set_enabled(on);
+    s_state_changed = true;
+    snprintf(s_state_txt, sizeof(s_state_txt), on ? "WiFi ON" : "WiFi OFF");
+}
+
 static void start_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -156,6 +168,11 @@ static void connect_btn_cb(lv_event_t *e)
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
+
+    /* wifi master switch button */
+    bool w_on = wifi_manager_is_enabled();
+    lv_obj_set_style_bg_color(s_power_btn, w_on ? COL_GREEN : COL_RED, 0);
+    lv_label_set_text_static(s_power_lab, w_on ? LV_SYMBOL_OK"  WiFi: ON" : LV_SYMBOL_CLOSE"  WiFi: OFF");
 
     /* 角色变化：按 AP/STA 显示对应控件 */
     wifi_role_t role = wifi_manager_get_role();
@@ -233,6 +250,15 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     s_state_label = lv_label_create(page);
     lv_label_set_text_static(s_state_label, "Not started");
     lv_obj_set_style_text_color(s_state_label, COL_SUBTEXT, 0);
+
+    /* wifi master switch */
+    s_power_btn = lv_button_create(page);
+    lv_obj_set_size(s_power_btn, BSP_LCD_H_RES - 80, 40);
+    lv_obj_set_style_radius(s_power_btn, 10, 0);
+    s_power_lab = lv_label_create(s_power_btn);
+    lv_obj_center(s_power_lab);
+    lv_obj_set_style_text_color(s_power_lab, COL_DARK, 0);
+    lv_obj_add_event_cb(s_power_btn, power_btn_cb, LV_EVENT_CLICKED, NULL);
 
     /* role toggle: AP <-> STA */
     s_mode_btn = lv_button_create(page);
@@ -335,6 +361,7 @@ static void wifi_destroy(lv_obj_t *page)
     s_state_label = s_start_btn = s_ap_list = s_pwd_row = NULL;
     s_pwd_ta = s_kb = s_connect_btn = NULL;
     s_mode_btn = s_mode_lab = s_ap_info_label = s_clients_label = NULL;
+    s_power_btn = s_power_lab = NULL;
     s_last_role = (wifi_role_t)-1;
     s_last_client_count = -1;
 }
