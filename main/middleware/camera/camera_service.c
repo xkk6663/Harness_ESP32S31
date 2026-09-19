@@ -12,6 +12,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include "linux/videodev2.h"
+#include "face_service.h"
 
 #define TAG "CAM"
 #define CAM_W   240
@@ -30,6 +31,7 @@ static void cam_task(void *arg)
 {
     struct v4l2_buffer buf;
     while (s_running) {
+        face_service_poll();  /* async model load if requested, runs on cam_task stack */
         memset(&buf, 0, sizeof(buf));
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
@@ -104,7 +106,7 @@ esp_err_t camera_service_start(camera_frame_cb_t cb, void *user)
     if (ioctl(s_fd, VIDIOC_STREAMON, &type) != 0) { ESP_LOGE(TAG, "STREAMON fail"); goto err; }
 
     s_running = true;
-    xTaskCreatePinnedToCore(cam_task, "cam", 4096, NULL, 5, &s_task, 1);
+    xTaskCreatePinnedToCore(cam_task, "cam", 6144, NULL, 5, &s_task, 1);
     ESP_LOGI(TAG, "stream on");
     return ESP_OK;
 err:

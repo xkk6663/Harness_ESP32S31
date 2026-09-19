@@ -44,6 +44,22 @@ static void on_frame(const uint8_t *rgb565, uint32_t w, uint32_t h, void *user)
 static void refresh(lv_timer_t *t)
 {
     (void)t;
+    /* update face button state (async load completes on cam_task) */
+    face_state_t st = face_service_state();
+    if (st == FACE_RUNNING) {
+        if (s_face_on && !strstr(lv_label_get_text(s_btn_face_label), "ON")) {
+            lv_label_set_text_static(s_btn_face_label, "FACE ON");
+            lv_obj_set_style_bg_color(s_btn_face, lv_color_hex(0x00FF00), 0);
+            lv_label_set_text_static(s_status, "Face ready");
+        }
+    } else if (st == FACE_FAIL) {
+        if (s_face_on) {
+            s_face_on = false;
+            lv_label_set_text_static(s_btn_face_label, "FAIL");
+            lv_obj_set_style_bg_color(s_btn_face, lv_color_hex(0xFF0000), 0);
+            lv_label_set_text_static(s_status, "Face load FAIL");
+        }
+    }
     if (s_frame_new && s_last_frame && s_canvas) {
         s_frame_new = false;
         lv_lock();
@@ -127,19 +143,26 @@ static void hsv_btn_cb(lv_event_t *e)
 static void face_btn_cb(lv_event_t *e)
 {
     (void)e;
-    if (!s_face_on) {
-        if (face_service_start() != ESP_OK) {
-            lv_label_set_text_static(s_status, "Face model load fail");
-            return;
-        }
-    } else {
+    face_state_t st = face_service_state();
+    if (st == FACE_LOADING) return;  /* loading in progress, ignore */
+
+    if (st == FACE_RUNNING) {
+        /* stop */
         face_service_stop();
+        s_face_on = false;
         if (s_face_bbox) lv_obj_add_flag(s_face_bbox, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_static(s_btn_face_label, "FACE");
+        lv_obj_set_style_bg_color(s_btn_face, COL_CYAN, 0);
+        lv_label_set_text_static(s_status, "Face off");
+    } else {
+        /* request async load on cam_task */
+        face_service_request_load();
+        s_face_on = true;
+        s_frame_skip = 99;
+        lv_label_set_text_static(s_btn_face_label, "LOADING...");
+        lv_obj_set_style_bg_color(s_btn_face, lv_color_hex(0xFFFF00), 0);
+        lv_label_set_text_static(s_status, "Loading model...");
     }
-    s_face_on = !s_face_on;
-    s_frame_skip = 99;  /* force immediate detect on enable */
-    lv_label_set_text_static(s_btn_face_label, s_face_on ? "FACE ON" : "FACE");
-    lv_obj_set_style_bg_color(s_btn_face, s_face_on ? lv_color_hex(0x00FF00) : COL_CYAN, 0);
 }
 
 static void btn_cb(lv_event_t *e)
