@@ -10,6 +10,7 @@ idf_component_register(SRCS
                         "middleware/udp_voice.c"
                         "middleware/record_service.c"
                         "middleware/net_time_service.c"
+                        "middleware/sdcard_service.c"
                         "3rd/ringbuf/ringbuf.c"
                         "ui/ui_manager/page_manager.c"
                         "ui/overlay_manager.c"
@@ -19,6 +20,8 @@ idf_component_register(SRCS
                         "ui/tab_call.c"
                         "ui/tab_record.c"
                         "ui/tab_sys_entry.c"
+                        "ui/tab_music.c"
+                        "ui/tab_video.c"
                         "ui/overlay_wallpaper.c"
                         "ui/page_wav_player.c"
                         "ui/page_wifi.c"
@@ -41,7 +44,10 @@ idf_component_register(SRCS
                       INCLUDE_DIRS "."
                                     "ui/ui_manager"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
-                                    esp_http_client cjson mbedtls zlib)
+                                    esp_http_client cjson mbedtls zlib fatfs sdmmc driver
+                                    esp_player esp_audio_render esp_extractor esp_audio_codec
+                                    gmf_core esp_codec_dev media_lib_sal
+                                    esp_video_render esp_video_codec esp_new_jpeg gmf_video lvgl__lvgl)
 
 # =============================================================================
 #  本地密钥注入（编译期宏）—— 和风天气 API Key / API Host

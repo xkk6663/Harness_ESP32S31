@@ -1501,6 +1501,13 @@ CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=y
 # end of ESP-Driver:I2S Configurations
 
 #
+# ESP-Driver:JPEG-Codec Configurations
+#
+# default:
+# CONFIG_JPEG_ENABLE_DEBUG_LOG is not set
+# end of ESP-Driver:JPEG-Codec Configurations
+
+#
 # ESP-Driver:LEDC Configurations
 #
 # default:
@@ -4007,6 +4014,95 @@ CONFIG_BSP_I2S_NUM=1
 # end of Board Support Package (ESP32-S31-Korvo-1)
 
 #
+# Audio Codec Configuration
+#
+
+#
+# Audio Decoder Configuration
+#
+# default:
+# CONFIG_AUDIO_DECODER_AAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_DECODER_MP3_SUPPORT=y
+# default:
+# CONFIG_AUDIO_DECODER_G711_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_AMRNB_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_AMRWB_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_FLAC_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_OPUS_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_VORBIS_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_ADPCM_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_ALAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_DECODER_PCM_SUPPORT=y
+# default:
+# CONFIG_AUDIO_DECODER_SBC_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_LC3_SUPPORT is not set
+# default:
+# CONFIG_AUDIO_DECODER_G722_SUPPORT is not set
+# end of Audio Decoder Configuration
+
+#
+# Audio Simple Decoder Configuration
+#
+# default:
+CONFIG_AUDIO_SIMPLE_DEC_WAV_SUPPORT=y
+# default:
+CONFIG_AUDIO_SIMPLE_DEC_M4A_SUPPORT=y
+# default:
+CONFIG_AUDIO_SIMPLE_DEC_TS_SUPPORT=y
+# default:
+CONFIG_AUDIO_SIMPLE_DEC_OGG_SUPPORT=y
+# end of Audio Simple Decoder Configuration
+
+#
+# Audio Encoder Configuration
+#
+# default:
+CONFIG_AUDIO_ENCODER_AAC_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_G711_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_AMRNB_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_AMRWB_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_OPUS_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_ADPCM_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_ALAC_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_PCM_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_SBC_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_LC3_SUPPORT=y
+# default:
+CONFIG_AUDIO_ENCODER_G722_SUPPORT=y
+# end of Audio Encoder Configuration
+# end of Audio Codec Configuration
+
+#
+# Espressif Audio Render Configuration
+#
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_STACK_SIZE=4096
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_CORE_ID=0
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_PRIORITY=20
+# end of Espressif Audio Render Configuration
+
+#
 # Espressif Camera Sensors Configurations
 #
 
@@ -4117,6 +4213,44 @@ CONFIG_CODEC_TAS5805M_SUPPORT=y
 # end of Audio Codec Device Configuration
 
 #
+# Espressif Extractor Configuration
+#
+# default:
+CONFIG_EXTRACTOR_CUSTOM_SUPPORT=y
+# default:
+CONFIG_WAV_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_MP4_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_TS_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_OGG_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_AVI_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_AUDIO_ES_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_CAF_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_FLV_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_MJPEG_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_EXTRACTOR_HELPER_FILE_IO_CACHE_SIZE=1024
+# end of Espressif Extractor Configuration
+
+#
+# ESP H264 Configuration
+#
+# default:
+# CONFIG_ESP_H264_S31_USE_ASM is not set
+# default:
+CONFIG_ESP_H264_DECODER_IRAM=y
+# default:
+# CONFIG_ESP_H264_DUAL_TASK is not set
+# end of ESP H264 Configuration
+
+#
 # ESP LCD TOUCH
 #
 # default:
@@ -4131,6 +4265,49 @@ CONFIG_ESP_LCD_TOUCH_MAX_BUTTONS=1
 # default:
 # CONFIG_LVGL_PORT_ENABLE_PPA is not set
 # end of ESP LVGL PORT
+
+#
+# ESP_Muxer Configuration
+#
+# default:
+CONFIG_ESP_MUXER_MP4_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_TS_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_OGG_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_WAV_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_FLV_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_CAF_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_AVI_SUPPORT=y
+# end of ESP_Muxer Configuration
+
+#
+# ESP Player
+#
+# default:
+CONFIG_ESP_PLAYER_ENABLE_AUDIO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_VIDEO=y
+
+#
+# At least one of the two options above must stay enabled for a usable player.
+#
+
+#
+# Input IO sources
+#
+# default:
+CONFIG_ESP_PLAYER_ENABLE_FILE_IO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_HTTP_IO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_HLS_IO=y
+# end of Input IO sources
+# end of ESP Player
 
 #
 # Espressif SCCB Configurations
@@ -4160,6 +4337,52 @@ CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y
 # end of Espressif Video Configuration
 
 #
+# Video Codec Configuration
+#
+
+#
+# Video Decoder Configuration
+#
+# default:
+CONFIG_VIDEO_DECODER_SW_H264_SUPPORT=y
+# default:
+CONFIG_VIDEO_DECODER_SW_MJPEG_SUPPORT=y
+# default:
+CONFIG_VIDEO_DECODER_HW_MJPEG_SUPPORT=y
+# end of Video Decoder Configuration
+
+#
+# Video Encoder Configuration
+#
+# default:
+CONFIG_VIDEO_ENCODER_SW_H264_SUPPORT=y
+# default:
+CONFIG_VIDEO_ENCODER_HW_MJPEG_SUPPORT=y
+# default:
+CONFIG_VIDEO_ENCODER_SW_MJPEG_SUPPORT=y
+# end of Video Encoder Configuration
+# end of Video Codec Configuration
+
+#
+# Video Render Configuration
+#
+# default:
+CONFIG_ESP_VIDEO_RENDER_LVGL_BACKEND_SUPPORT=y
+# default:
+CONFIG_ESP_VIDEO_RENDER_WIDGET_SUPPORT=y
+# default:
+# CONFIG_ESP_VIDEO_RENDER_TEXT_WIDGET_SUPPORT is not set
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_STACK_SIZE=20480
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_CORE_ID=0
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_PRIORITY=8
+# default:
+# CONFIG_VIDEO_RENDER_MEASURE_ENABLE is not set
+# end of Video Render Configuration
+
+#
 # LED Indicator
 #
 # default:
@@ -4182,6 +4405,21 @@ CONFIG_LEDC_TIMER_BIT_NUM=13
 CONFIG_LEDC_TIMER_FREQ_HZ=5000
 # end of LEDC Config
 # end of LED Indicator
+
+#
+# Media Library System Abstraction Layer Configuration
+#
+# default:
+CONFIG_MEDIA_LIB_CRYPT_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_SOCKET_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_TLS_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_NETIF_ENABLE=y
+# default:
+# CONFIG_MEDIA_LIB_MEM_AUTO_TRACE is not set
+# end of Media Library System Abstraction Layer Configuration
 
 #
 # USB-OTG

@@ -15,6 +15,7 @@
 #include "ui/overlay_manager.h"
 #include "middleware/audio_service.h"
 #include "middleware/fs_service.h"
+#include "middleware/sdcard_service.h"
 #include "middleware/led_service.h"
 #include "middleware/button_service.h"
 #include "middleware/wifi_manager.h"
@@ -77,6 +78,7 @@ static void on_wifi_evt(wifi_evt_t evt, const char *info)
 void app_main(void)
 {
     ESP_ERROR_CHECK(fs_service_mount());
+    sdcard_service_mount();
     bsp_i2c_init();
     bsp_display_start();
     //bsp_display_brightness_set(50);
