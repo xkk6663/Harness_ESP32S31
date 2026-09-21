@@ -106,6 +106,32 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.0.0~2
+  espressif/esp_bt_audio:
+    component_hash: 3c90fde3650bed4fa049f2ed647b3e6eba490cc5b077f530963ce2010b81fbe9
+    dependencies:
+    - name: espressif/esp_audio_codec
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~2.5
+    - matches:
+      - if: $CONFIG{ESP_BT_AUDIO_GMF_IO_SUPPORT} == True
+      name: espressif/gmf_core
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.0
+    - matches:
+      - if: $CONFIG{ESP_BT_AUDIO_GMF_IO_SUPPORT} == True
+      name: espressif/gmf_io
+      registry_url: https://components.espressif.com
+      require: private
+      version: ~1.0
+    - name: idf
+      require: private
+      version: '>=5.5'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0~1
   espressif/esp_cam_sensor:
     component_hash: 0a2775d95fae99449bb4c044feab6d887e9db309602fad8df6c3fc58bc6e1b6d
     dependencies:
@@ -611,10 +637,11 @@ dependencies:
     version: 9.6.0
 direct_dependencies:
 - espressif/esp32_s31_korvo_1
+- espressif/esp_bt_audio
 - espressif/esp_new_jpeg
 - espressif/esp_player
 - espressif/zlib
 - idf
-manifest_hash: a3a909bb1f664c1157263c0a480d8ca113858f8c88cebba85edde9ac7b92dc0f
+manifest_hash: a92c4e07c88ad0bd23ff51b4dd90099fb877773f97808e52bfbfadb4ca6bbe23
 target: esp32s31
 version: 3.0.0

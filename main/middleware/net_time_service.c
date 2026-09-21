@@ -385,15 +385,13 @@ static void parse_sun(weather_data_t *out)
     const cJSON *ss = cJSON_GetObjectItemCaseSensitive(root, "sunset");
     if (cJSON_IsString(sr) && sr->valuestring) {
         const char *p = sr->valuestring;
-        size_t len = strlen(p);
-        const char *hm = (len >= 5) ? p + len - 5 : p;
-        snprintf(out->sunrise, sizeof(out->sunrise), "%s", hm);
+        const char *t = strchr(p, 'T');
+        snprintf(out->sunrise, sizeof(out->sunrise), "%.5s", t ? t + 1 : p);
     }
     if (cJSON_IsString(ss) && ss->valuestring) {
         const char *p = ss->valuestring;
-        size_t len = strlen(p);
-        const char *hm = (len >= 5) ? p + len - 5 : p;
-        snprintf(out->sunset, sizeof(out->sunset), "%s", hm);
+        const char *t = strchr(p, 'T');
+        snprintf(out->sunset, sizeof(out->sunset), "%.5s", t ? t + 1 : p);
     }
     ESP_LOGI(TAG, "sun: sunrise=%s sunset=%s", out->sunrise, out->sunset);
     cJSON_Delete(root);
@@ -430,11 +428,8 @@ static bool fetch_weather_once(void)
     if (http_get_json(url)) parse_weather_now(&tmp);
 
     /* 3) 空气质量 */
-    snprintf(url, sizeof(url),
-             "https://%s/v7/air/now?location=%s&key=%s&lang=zh",
-             QWEATHER_API_HOST, QWEATHER_LOC_ID, QWEATHER_KEY);
-    if (http_get_json(url)) parse_air_now(&tmp);
-
+    tmp.aqi = 0; tmp.aqi_cat[0] = 0;
+    
     /* 4) 日出日落 */
     time_t now_t = time(NULL);
     struct tm tmv = {0};

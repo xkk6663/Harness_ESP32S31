@@ -4,5 +4,6 @@ dependencies:
   esp_new_jpeg: ^1
   espressif/zlib: ^1.3.2~1
   espressif/esp_player: ^1.0.6
+  espressif/esp_bt_audio: '*'
 description: BSP Display Audio Photo Example
 # esp_littlefs / esp-gmf 由工程本地 components 提供（组件注册表 403，已离线 clone）

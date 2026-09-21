@@ -147,6 +147,7 @@ static wifi_evt_cb_t s_sys_cb;
 static bool s_connected;
 static char s_ip[16];
 static wifi_role_t s_role = WIFI_ROLE_STA;   /* 默认上电 STA（连已保存路由），UI 可切 AP */
+static bool s_enabled = true;                /* 初始化默认打开 Wi-Fi 外设 */
 
 /* AP 客户端表 */
 #define AP_MAX_CLIENTS 4
@@ -269,6 +270,11 @@ static void next_candidate_or_giveup(void)
         s_connected = false;
         ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up");
         notify(WIFI_EVT_ALL_FAILED, NULL);
+        /* 重连 5 次仍失败：自动关闭 Wi-Fi 外设（省电 + 熄灭 RGB 灯） */
+        if (s_enabled) {
+            ESP_LOGW(TAG, "auto-disable Wi-Fi after giving up");
+            wifi_manager_set_enabled(false);
+        }
     }
 }
 
@@ -637,6 +643,39 @@ void wifi_manager_connect(const char *ssid, const char *pass)
 }
 
 bool wifi_manager_is_connected(void) { return s_connected; }
+bool wifi_manager_is_enabled(void)    { return s_enabled; }
+
+void wifi_manager_set_enabled(bool on)
+{
+    if (on == s_enabled) {
+        return;
+    }
+    esp_timer_stop(s_reconnect_timer);
+    s_phase = PHASE_IDLE;
+    s_have_active = false;
+    s_connected = false;
+    s_ip[0] = 0;
+
+    if (!on) {
+        esp_wifi_stop();
+        s_enabled = false;
+        ESP_LOGW(TAG, "Wi-Fi disabled (rf off)");
+        notify(WIFI_EVT_OFF, NULL);
+    } else {
+        esp_err_t err = esp_wifi_start();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+            return;
+        }
+        s_enabled = true;
+        ESP_LOGI(TAG, "Wi-Fi enabled (rf on), role=%d", (int)s_role);
+        if (s_role == WIFI_ROLE_AP) {
+            start_ap_mode();
+        } else {
+            wifi_manager_auto_connect();
+        }
+    }
+}
 
 void wifi_manager_get_ip(char *buf, int len)
 {

@@ -5,6 +5,7 @@ idf_component_register(SRCS
                         "middleware/led_service.c"
                         "middleware/button_service.c"
                         "middleware/wifi_manager.c"
+                        "middleware/bt_audio_service.c"
                         "middleware/session_manager.c"
                         "middleware/link_manager.c"
                         "middleware/udp_voice.c"
@@ -47,6 +48,7 @@ idf_component_register(SRCS
                                     esp_http_client cjson mbedtls zlib fatfs sdmmc driver
                                     esp_player esp_audio_render esp_extractor esp_audio_codec
                                     gmf_core esp_codec_dev media_lib_sal
+                                    esp_bt_audio
                                     esp_video_render esp_video_codec esp_new_jpeg gmf_video lvgl__lvgl)
 
 # =============================================================================

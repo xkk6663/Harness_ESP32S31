@@ -24,6 +24,7 @@
 #include "middleware/udp_voice.h"
 #include "middleware/record_service.h"
 #include "middleware/net_time_service.h"
+#include "middleware/bt_audio_service.h"
 
 static const char *TAG = "main";
 
@@ -80,6 +81,9 @@ void app_main(void)
     ESP_ERROR_CHECK(fs_service_mount());
     sdcard_service_mount();
     bsp_i2c_init();
+    /* BT controller 在 LCD/WiFi/摄像头起来之前 init 并常驻：
+       此时内部 RAM 最空，HCI 内存池一次拿成功；之后开关只动 host */
+    bt_audio_service_controller_init();
     bsp_display_start();
     //bsp_display_brightness_set(50);
     fs_service_init();

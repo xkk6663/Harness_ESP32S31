@@ -35,6 +35,7 @@ static lv_obj_t *s_mode_btn;
 static lv_obj_t *s_mode_lab;
 static lv_obj_t *s_ap_info_label;
 static lv_obj_t *s_clients_label;
+static lv_obj_t *s_wifi_sw;
 static wifi_role_t s_last_role = (wifi_role_t)-1;
 static int s_last_client_count = -1;
 
@@ -69,6 +70,10 @@ static void wifi_evt_cb(wifi_evt_t evt, const char *info)
         break;
     case WIFI_EVT_ALL_FAILED:
         snprintf(s_state_txt, sizeof(s_state_txt), "Connect failed");
+        s_state_changed = true;
+        break;
+    case WIFI_EVT_OFF:
+        snprintf(s_state_txt, sizeof(s_state_txt), "Wi-Fi OFF");
         s_state_changed = true;
         break;
     default:
@@ -128,6 +133,14 @@ static void ap_click_cb(lv_event_t *e)
     lv_keyboard_set_textarea(s_kb, s_pwd_ta);
 }
 
+static void wifi_sw_cb(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(s_wifi_sw, LV_STATE_CHECKED);
+    wifi_manager_set_enabled(on);
+    snprintf(s_state_txt, sizeof(s_state_txt), on ? "Wi-Fi ON" : "Wi-Fi OFF");
+    s_state_changed = true;
+}
+
 static void mode_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -156,6 +169,31 @@ static void connect_btn_cb(lv_event_t *e)
 static void poll_cb(lv_timer_t *t)
 {
     (void)t;
+
+    /* Wi-Fi 外设关闭：同步开关状态，并隐藏所有连接/扫描/角色控件 */
+    bool enabled = wifi_manager_is_enabled();
+    bool sw_on = lv_obj_has_state(s_wifi_sw, LV_STATE_CHECKED);
+    if (sw_on != enabled) {
+        lv_obj_remove_event_cb(s_wifi_sw, wifi_sw_cb);
+        if (enabled) { lv_obj_add_state(s_wifi_sw, LV_STATE_CHECKED); }
+        else { lv_obj_remove_state(s_wifi_sw, LV_STATE_CHECKED); }
+        lv_obj_add_event_cb(s_wifi_sw, wifi_sw_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    if (!enabled) {
+        lv_obj_add_flag(s_mode_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_start_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ap_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_pwd_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ap_info_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_clients_label, LV_OBJ_FLAG_HIDDEN);
+        s_last_role = (wifi_role_t)-1;   /* 重新打开时按当前角色刷新 */
+        if (s_scan_done) { s_scan_done = false; }
+        if (s_state_changed) {
+            s_state_changed = false;
+            lv_label_set_text(s_state_label, s_state_txt);
+        }
+        return;
+    }
 
     /* 角色变化：按 AP/STA 显示对应控件 */
     wifi_role_t role = wifi_manager_get_role();
@@ -233,6 +271,24 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     s_state_label = lv_label_create(page);
     lv_label_set_text_static(s_state_label, "Not started");
     lv_obj_set_style_text_color(s_state_label, COL_SUBTEXT, 0);
+
+    /* Wi-Fi 电源开关（打开/关闭外设） */
+    lv_obj_t *pw_row = lv_obj_create(page);
+    lv_obj_set_size(pw_row, BSP_LCD_H_RES - 80, 44);
+    lv_obj_set_style_bg_color(pw_row, COL_DARK, 0);
+    lv_obj_set_style_border_color(pw_row, COL_BORDER, 0);
+    lv_obj_set_style_border_width(pw_row, 1, 0);
+    lv_obj_set_style_radius(pw_row, 10, 0);
+    lv_obj_set_flex_flow(pw_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(pw_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(pw_row, 12, 0);
+    lv_obj_set_style_pad_right(pw_row, 12, 0);
+    lv_obj_remove_flag(pw_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *pw_lab = lv_label_create(pw_row);
+    lv_label_set_text_static(pw_lab, LV_SYMBOL_WIFI"  Wi-Fi 电源");
+    lv_obj_set_style_text_color(pw_lab, COL_TEXT, 0);
+    s_wifi_sw = lv_switch_create(pw_row);
+    lv_obj_add_event_cb(s_wifi_sw, wifi_sw_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* role toggle: AP <-> STA */
     s_mode_btn = lv_button_create(page);
@@ -334,7 +390,7 @@ static void wifi_destroy(lv_obj_t *page)
     lv_obj_del(page);
     s_state_label = s_start_btn = s_ap_list = s_pwd_row = NULL;
     s_pwd_ta = s_kb = s_connect_btn = NULL;
-    s_mode_btn = s_mode_lab = s_ap_info_label = s_clients_label = NULL;
+    s_mode_btn = s_mode_lab = s_ap_info_label = s_clients_label = s_wifi_sw = NULL;
     s_last_role = (wifi_role_t)-1;
     s_last_client_count = -1;
 }

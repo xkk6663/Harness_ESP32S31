@@ -38,6 +38,7 @@ typedef enum {
     WIFI_EVT_GOT_IP,
     WIFI_EVT_SCAN_DONE,
     WIFI_EVT_ALL_FAILED,
+    WIFI_EVT_OFF,                 /* Wi-Fi 外设被关闭（用户关或 5 次失败自动关） */
     WIFI_EVT_AP_UP,              /* AP 热点已开启（板子就绪） */
     WIFI_EVT_STA_JOINED,         /* 有客户端连上 AP */
     WIFI_EVT_STA_LEFT,           /* 有客户端从 AP 断开 */
@@ -99,6 +100,13 @@ void wifi_manager_connect(const char *ssid, const char *pass);
 
 bool wifi_manager_is_connected(void);
 void wifi_manager_get_ip(char *buf, int len);
+
+/**
+ * @brief 打开/关闭 Wi-Fi 外设（射频电源）。关 = esp_wifi_stop()，保留 netif/event；
+ *        开 = esp_wifi_start() 并按当前角色自动连接/开热点。初始化默认打开。
+ */
+void wifi_manager_set_enabled(bool on);
+bool wifi_manager_is_enabled(void);
 
 /* ---- NVS 凭证管理（可选，供 UI"已保存网络"页面使用）---- */
 
