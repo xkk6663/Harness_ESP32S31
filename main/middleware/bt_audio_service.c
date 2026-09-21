@@ -29,6 +29,10 @@
 #include "esp_bt_audio_classic.h"
 #include "esp_bt_audio_media.h"
 
+#include "bt_push_service.h"
+
+#include "session_manager.h"
+
 static const char *TAG = "BT_SVC";
 
 static bt_audio_evt_cb_t s_evt_cb = NULL;
@@ -93,8 +97,18 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
     }
     case ESP_BT_AUDIO_EVENT_STREAM_STATE_CHG: {
         esp_bt_audio_event_stream_st_t *st = (esp_bt_audio_event_stream_st_t *)event_data;
-        ESP_LOGI(TAG, "stream state=%d", st->state);
-        if (s_evt_cb) s_evt_cb(st->state ? BT_EVT_STREAM_ON : BT_EVT_STREAM_OFF, NULL, s_evt_ctx);
+        ESP_LOGI(TAG, "stream %p state=%d", st->stream_handle, st->state);
+
+        /* 转发给推流服务：带 stream_handle + 完整四态语义
+           （ALLOCATED / STARTED / STOPPED / RELEASED），由它驱动 local2bt pipeline */
+        bt_push_service_on_stream_state(st->stream_handle, st->state);
+
+        /* UI 层仍按原 BOOL 语义收（page_bluetooth 不用改）：
+           只有真正 STARTED 才算"正在推流" */
+        if (s_evt_cb) {
+            bool on = (st->state == ESP_BT_AUDIO_STREAM_STATE_STARTED);
+            s_evt_cb(on ? BT_EVT_STREAM_ON : BT_EVT_STREAM_OFF, NULL, s_evt_ctx);
+        }
         break;
     }
     case ESP_BT_AUDIO_EVENT_MEDIA_CTRL_CMD: {
@@ -240,18 +254,43 @@ esp_err_t bt_audio_service_disconnect(void)
 esp_err_t bt_audio_service_play_source(const char *path)
 {
     if (!s_on) return ESP_ERR_INVALID_STATE;
-    ESP_LOGI(TAG, "play source: %s (TODO: local2bt wiring)", path ? path : "(null)");
-    return esp_bt_audio_media_start(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC, NULL);
+    if (!path) return ESP_ERR_INVALID_ARG;
+
+    /* 推流占用音频通路（codec/PSRAM 带宽），与通话/录音互斥 */
+    if (session_manager_begin(SESSION_BT_PUSH) != ESP_OK) {
+        ESP_LOGW(TAG, "play denied: another session active (%d)", session_manager_get_mode());
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* 1) uri 交给 push 服务暂存（等 ALLOCATED 事件拿到 stream 才真正下发） */
+    esp_err_t err = bt_push_service_set_uri(path);
+    if (err != ESP_OK) {
+        session_manager_end(SESSION_BT_PUSH);
+        ESP_LOGE(TAG, "set_uri failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* 2) 触发 A2DP 流；后续由 STREAM_STATE_CHG 驱动 pipeline（set_uri 内部已调用） */
+    return ESP_OK;
 }
 
 esp_err_t bt_audio_service_pause_source(void)
 {
     if (!s_on) return ESP_ERR_INVALID_STATE;
-    return esp_bt_audio_media_stop(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC);
+    /* 暂停只停 pipeline（保留 A2DP 链路），以便 resume 继续推同一首 */
+    return bt_push_service_pause();
+}
+
+esp_err_t bt_audio_service_resume_source(void)
+{
+    if (!s_on) return ESP_ERR_INVALID_STATE;
+    return bt_push_service_resume();
 }
 
 esp_err_t bt_audio_service_stop_source(void)
 {
     if (!s_on) return ESP_ERR_INVALID_STATE;
-    return esp_bt_audio_media_stop(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC);
+    esp_err_t err = bt_push_service_stop();
+    session_manager_end(SESSION_BT_PUSH);
+    return err;
 }

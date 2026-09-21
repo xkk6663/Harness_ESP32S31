@@ -79,6 +79,7 @@ esp_err_t bt_audio_service_disconnect(void);
 /** Source：推送控制（已连接时调用）。path 为 /sdcard/music/xxx.mp3 */
 esp_err_t bt_audio_service_play_source(const char *path);
 esp_err_t bt_audio_service_pause_source(void);
+esp_err_t bt_audio_service_resume_source(void);
 esp_err_t bt_audio_service_stop_source(void);
 
 #ifdef __cplusplus

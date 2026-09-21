@@ -25,6 +25,7 @@
 #include "middleware/record_service.h"
 #include "middleware/net_time_service.h"
 #include "middleware/bt_audio_service.h"
+#include "middleware/bt_push_service.h"
 
 static const char *TAG = "main";
 
@@ -84,6 +85,12 @@ void app_main(void)
     /* BT controller 在 LCD/WiFi/摄像头起来之前 init 并常驻：
        此时内部 RAM 最空，HCI 内存池一次拿成功；之后开关只动 host */
     bt_audio_service_controller_init();
+
+    /* 方案 B（P1 时机前置）：趁同一个空窗把 A2DP Source 的 GMF pool/pipeline/task
+       一次建好（PSRAM 为主），之后全程复用不销毁，避免晚分配踩碎 bluedroid 静态队列。
+       详见 docs/项目规划/蓝牙本地推流方案B-延迟常驻.md */
+    bt_push_service_early_init();
+
     bsp_display_start();
     //bsp_display_brightness_set(50);
     fs_service_init();

@@ -18,6 +18,7 @@ typedef enum {
     SESSION_IDLE = 0,
     SESSION_UDP_CALL,
     SESSION_TCP_RECORD,
+    SESSION_BT_PUSH,     /* A2DP Source 本地推流（占用音频通路，与通话/录音互斥） */
 } session_mode_t;
 
 void session_manager_init(void);

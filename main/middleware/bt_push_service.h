@@ -4,12 +4,19 @@
 
 /**
  * @file bt_push_service.h
- * @brief A2DP Source 推送服务：把 SD 卡 MP3 通过蓝牙推到耳机。
+ * @brief A2DP Source 推送服务（方案 B「延迟常驻」）：把 SD 卡 MP3 推到蓝牙耳机。
  *
  * 数据流：io_file(MP3) -> aud_dec -> aud_asrc -> aud_enc(SBC) -> io_bt
- * 由 bt_audio_service 的 STREAM_STATE_CHG 事件驱动：
- *   - stream ALLOCATED (SOURCE/MEDIA)：绑 stream、set uri、run
- *   - stream STOPPED：stop/reset pipeline
+ *
+ * 方案 B 设计要点（对应 docs/项目规划/蓝牙本地推流方案B-延迟常驻.md §2）：
+ *  - P1 时机前置：pool 在 bt_push_service_early_init() 建，抢开机内部 RAM 最空的窗口
+ *    （与 bt_audio_service_controller_init 同一个窗口，在 LCD/WiFi/摄像头之前）；
+ *  - P2 显式外置：GMF task 栈 stack_in_ext=true 进 PSRAM；pool 元素/IO 在外部 RAM；
+ *  - P3 建一次不毁：pipeline 首次 ALLOCATED 才建，STOPPED/RELEASED 只停不毁；
+ *  - P4 销毁异步：真正的 destroy 只在 reaper 任务上下文执行，绝不在 BT 事件回调里做。
+ *
+ * 事件驱动：由 bt_audio_service 在 STREAM_STATE_CHG 里调用
+ * bt_push_service_on_stream_state(stream, state)。
  */
 
 #ifndef BT_PUSH_SERVICE_H
@@ -23,20 +30,42 @@
 extern "C" {
 #endif
 
-/** 初始化 local2bt pipeline（建 pool + pipeline + task）。开机调一次 */
-esp_err_t bt_push_service_init(void);
+/**
+ * @brief 开机早期预建 GMF pool（抢内部 RAM 最空窗口）。
+ * @note  必须在 bsp_display_start() 之前调用；失败只打日志不 abort（蓝牙非必需功能）。
+ */
+void bt_push_service_early_init(void);
 
-/** 选一首 MP3 推送。内部会等 stream ALLOCATED 后自动跑 pipeline */
-esp_err_t bt_push_service_play(const char *path);
+/**
+ * @brief 登记待推送的本地文件路径。
+ * @note  uri 在 STREAM ALLOCATED 事件到来时才真正下发给 pipeline，
+ *        因为那一刻才拿得到 stream handle。
+ * @param path SD 卡上的 MP3 绝对路径，如 /sdcard/music/a.mp3
+ */
+esp_err_t bt_push_service_set_uri(const char *path);
 
-/** 暂停/停止推送 */
+/** 暂停推流（已连接且正在推流时有效） */
 esp_err_t bt_push_service_pause(void);
+
+/** 从暂停恢复推流 */
+esp_err_t bt_push_service_resume(void);
+
+/** 停止推流并复位 pipeline（不销毁 pipeline/task） */
 esp_err_t bt_push_service_stop(void);
 
 /** 当前是否在推流 */
 bool bt_push_service_is_playing(void);
 
-/** 由 bt_audio_service 在 STREAM_STATE_CHG 事件里调用 */
+/** 请求异步销毁 pipeline（蓝牙关闭时调用；实际销毁在 reaper 任务里做） */
+void bt_push_service_request_destroy(void);
+
+/**
+ * @brief 由 bt_audio_service 在 STREAM_STATE_CHG 事件里调用。
+ * @param stream  stream handle（透传自 esp_bt_audio_event_stream_st_t）
+ * @param state   ESP_BT_AUDIO_STREAM_STATE_* 四态
+ * @note  本函数跑在 BT/GMF 事件线程上下文，只做轻量登记与 pipeline 启动，
+ *        不做任何 destroy。
+ */
 void bt_push_service_on_stream_state(void *stream, int state);
 
 #ifdef __cplusplus

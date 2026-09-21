@@ -319,6 +319,51 @@
 
 ---
 
+## 附：蓝牙本地推流（A2DP Source）—— 方案 B2 实现中（2026-09-21）
+
+> 目标：SD 卡 MP3 → 蓝牙耳机/音箱（A2DP Source）。
+> 方案文档：`docs/项目规划/蓝牙本地推流方案B-延迟常驻.md`。
+> 决策：**B2**（`early_init` 建 pool+pipeline+task，全程复用不销毁）；推流纳入 `SESSION_BT_PUSH` 互斥；UI 复用 `tab_btpush.c/h`，挂为第 6 个主 tab；首次验证用 SD 卡 MP3。
+
+### 代码改动（已完成，待编译验证）
+- [x] `middleware/bt_push_service.c/h`：重写为方案 B2。pool+`io_file`/`aud_dec`/`aud_asrc`/`aud_enc`/`io_bt` + pipeline + GMF task 全在 `bt_push_service_early_init()` 建好；uri/weight 放 PSRAM；所有阻塞操作（set_in_uri/loading_jobs/run/stop/reset/pause/resume）走命令队列由 `bt_push_proc` 串行执行，BT 事件线程只做登记+reconfig（P1~P4）；
+- [x] `middleware/bt_audio_service.c`：`STREAM_STATE_CHG` 转发 `stream_handle`+完整四态给 push 服务（原先把四态压成 bool，丢了 handle）；`play_source` 接 `bt_push_service_set_uri()`；新增 `resume_source`；play/stop 门控 `SESSION_BT_PUSH`；
+- [x] `middleware/session_manager.h`：新增 `SESSION_BT_PUSH` 枚举；
+- [x] `app/main.c`：在 `bt_audio_service_controller_init()` 之后、`bsp_display_start()` 之前插入 `bt_push_service_early_init()`；
+- [x] `main/CMakeLists.txt`：SRCS 注册 `bt_push_service.c`+`tab_btpush.c`；PRIV_REQUIRES 加 `gmf_audio`/`gmf_io`；
+- [x] `ui/page_main.c`：新增第 6 个 tab「BTPUSH」；`ui/tab_btpush.c` pause/resume 接新 API。
+
+### 关键坑：编码器全家桶导致固件暴涨 558KB（F22）
+- **现象**：加完推流代码后固件 4.71MB → 5.25MB，超出 ota_0(5MB) 256KB，`app_check_size` 失败；
+- **根因**：`bt_push_service.c` 首次调用 `esp_audio_enc_register_default()`。该函数是**全家桶注册**（AAC/G711/AMR/AMRWB/OPUS/ADPCM/ALAC/PCM/SBC/LC3/G722），引用后链接器不再 GC 掉未用编码器，全被链入。而 A2DP Source **只需要 SBC**。sdkconfig 里编码器原本 11 个全开；
+- **解决**：`sdkconfig` 关掉 9 个无用编码器（AAC/G711/AMRNB/AMRWB/OPUS/ADPCM/ALAC/LC3/G722），保留 **SBC + PCM**；解码器侧本就只有 MP3+PCM，不动。备份 `sdkconfig.bak_before_enc_trim`；
+- **注**：`esp_hal_asrc`（S31 硬件重采样 HAL，~100KB）是推流刚需，不可裁。
+- [ ] 复测确认固件回到 5MB 以内（`ota_0` 装得下，无需改分区）。
+
+### 闭环验证步骤（用户手动执行）
+```
+tools\build.ps1                                # 或 idf.py build
+idf.py -p COM9 -b 921600 app-flash
+python docs\_serial_capture.py --port COM9 --secs 20
+```
+期望日志序列（新增标记，便于过滤）：
+```
+BT_PUSH: early init: free internal=... largest=... free PSRAM=...
+BT_PUSH: ready (early, resident): internal free=...
+BT_SVC : ON, device name=Korvo_XXXX, role=SOURCE
+BT_SVC : connect role=SRC addr=..
+BT_SVC : connection CONNECTED addr=..
+BT_PUSH: uri queued: file:///sdcard/music/xxx.mp3
+BT_SVC : stream 0x... state=0                ← ALLOCATED
+BT_PUSH: stream ALLOCATED, prepare pipeline
+BT_PUSH: codec type=.. sr=.. ch=..           ← SBC 协商参数
+BT_SVC : stream 0x... state=1                ← STARTED
+BT_PUSH: pipeline run
+```
+**失败判据**：`panic` / `Guru` / `assert` / `Cache error` / `mem pool` 出现即失败。
+
+---
+
 ## 当前下一步
 
 **先做阶段 2。** 阶段 1.5（分区表 + LittleFS）已于 2026-09-15 完成并回归通过。

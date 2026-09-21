@@ -99,13 +99,15 @@ static void on_pause_click(lv_event_t *e)
 {
     (void)e;
     if (s_paused) {
-        bt_audio_service_play_source(s_current >= 0 ? s_tracks[s_current] : NULL);
+        bt_audio_service_resume_source();
         s_paused = false;
         lv_label_set_text(lv_obj_get_child(s_pause_btn, 0), LV_SYMBOL_PAUSE" Pause");
+        ESP_LOGI(TAG, "resumed");
     } else {
         bt_audio_service_pause_source();
         s_paused = true;
         lv_label_set_text(lv_obj_get_child(s_pause_btn, 0), LV_SYMBOL_PLAY" Resume");
+        ESP_LOGI(TAG, "paused");
     }
 }
 
