@@ -6,8 +6,8 @@
 #include "freertos/queue.h"
 #include "lvgl.h"
 #include "tab_record.h"
-#include "ui_theme.h"
-#include "middleware/record_service.h"
+#include "ui/common/ui_theme.h"
+#include "middleware/audio/record_service.h"
 
 static QueueHandle_t s_evt_q; static lv_timer_t *s_timer; static lv_obj_t *s_btn; static lv_obj_t *s_btn_label; static lv_obj_t *s_status; static lv_obj_t *s_bar;
 static void on_record(const record_event_t *evt) { if (s_evt_q) xQueueSend(s_evt_q, evt, 0); }

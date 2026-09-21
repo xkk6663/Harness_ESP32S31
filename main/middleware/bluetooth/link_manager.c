@@ -10,12 +10,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+/* ★ F35：任务栈外置 PSRAM（idf_additions.h 提供 WithCaps 系列；esp_heap_caps.h 提供 caps 宏） */
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "link_manager.h"
-#include "udp_voice.h"
+#include "middleware/audio/udp_voice.h"
 
 static const char *TAG = "LINK";
 static int s_sock = -1;
@@ -32,7 +35,15 @@ void link_manager_init(void)
 {
     s_mux = xSemaphoreCreateMutex();
     assert(s_mux);
-    BaseType_t ok = xTaskCreatePinnedToCore(link_task, "link_manager", 8192, NULL, 4, NULL, 0);
+    /* ★ 栈外置 PSRAM（F35）：链路任务栈只被 CPU 使用，无 DMA 要求。
+       失败即报错 —— 若这里返回 pdFAIL，说明 PSRAM 外置栈路径被配置关掉了，
+       不是"内存不够"（此时 PSRAM 还富余十几 MB）。 */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(link_task, "link_manager", 8192, NULL, 4, NULL, 0,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "link_manager task create failed (stack->PSRAM); check "
+                      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY");
+    }
     assert(ok == pdPASS);
     ESP_LOGI(TAG, "init done, UDP %d", LINK_SIGNAL_PORT);
 }

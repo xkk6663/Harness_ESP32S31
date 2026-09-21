@@ -18,8 +18,8 @@
 #include "esp_heap_caps.h"
 
 #include "page_system.h"
-#include "ui_theme.h"
-#include "ui_common.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
 
 /* 实时监视控件（页面销毁时清空，timer 同步删除） */
 static lv_obj_t *s_storage_bar;

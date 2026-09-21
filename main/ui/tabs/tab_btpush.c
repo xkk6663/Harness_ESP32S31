@@ -19,10 +19,10 @@
 #include "lvgl.h"
 
 #include "tab_btpush.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "middleware/sdcard_service.h"
-#include "middleware/bt_audio_service.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "middleware/system/sdcard_service.h"
+#include "middleware/bluetooth/bt_audio_service.h"
 
 static const char *TAG = "TAB_BTPUSH";
 

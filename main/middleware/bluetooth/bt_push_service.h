@@ -68,6 +68,28 @@ void bt_push_service_request_destroy(void);
  */
 void bt_push_service_on_stream_state(void *stream, int state);
 
+/**
+ * @brief 注册"播放自然结束"回调（★ 2026-09-22 新增）。
+ *
+ * 背景：GMF pipeline 把文件读尽后会发 FINISHED，但 **A2DP 流不会自动停** ——
+ * 设备端持续以为在播，session 也不释放，表现为"播完了不退出、要手动 stop"。
+ * 修复方式：push 层在收到 FINISHED/ERROR 时回调本函数，
+ * 由 bt_audio_service 统一收尾（media_stop + session_manager_end + 通知 UI）。
+ *
+ * @note 回调在 GMF 事件线程上下文执行，**不得**直接调用阻塞的
+ *       esp_bt_audio_media_stop()，应只投递命令/置标志。
+ * @param cb 回调函数，可为 NULL 取消注册
+ */
+void bt_push_service_set_finished_cb(void (*cb)(void));
+
+/**
+ * @brief 该曲是否已自然播完（供 UI 轮询/收尾判断）。
+ */
+bool bt_push_service_is_finished(void);
+
+/** 清除"播完"标志（上层收尾完成后调用） */
+void bt_push_service_clear_finished(void);
+
 #ifdef __cplusplus
 }
 #endif

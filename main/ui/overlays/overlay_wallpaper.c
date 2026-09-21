@@ -22,10 +22,10 @@
 
 #include "overlay_wallpaper.h"
 #include "overlay_manager.h"
-#include "ui_theme.h"
-#include "middleware/fs_service.h"
-#include "middleware/net_time_service.h"
-#include "middleware/wifi_manager.h"
+#include "ui/common/ui_theme.h"
+#include "middleware/system/fs_service.h"
+#include "middleware/network/net_time_service.h"
+#include "middleware/network/wifi_manager.h"
 
 LV_FONT_DECLARE(lv_font_digital_96);
 LV_FONT_DECLARE(lv_font_cn_20);

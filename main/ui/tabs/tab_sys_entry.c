@@ -17,16 +17,15 @@
 #include "lvgl.h"
 
 #include "tab_sys_entry.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "page_manager.h"
-#include "page_wifi.h"
-#include "page_bluetooth.h"
-#include "page_rgb.h"
-#include "page_system.h"
-#include "middleware/audio_service.h"
-#include "middleware/button_service.h"
-#include "middleware/link_manager.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "ui/ui_manager/page_manager.h"
+#include "ui/pages/page_wifi.h"
+#include "ui/pages/page_bluetooth.h"
+#include "ui/pages/page_rgb.h"
+#include "ui/pages/page_system.h"
+#include "middleware/system/button_service.h"
+#include "middleware/bluetooth/link_manager.h"
 #include "freertos/queue.h"
 
 static lv_obj_t  *s_vol_slider;
@@ -60,12 +59,9 @@ static void volume_event_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int vol = lv_slider_get_value(slider);
+    /* 只写中央音量状态；出口由 button_service 的音量回调统一分发
+       （蓝牙已连 → AVRCP 给耳机，否则 → 本地 codec） */
     button_service_set_volume(vol);
-    audio_cmd_t cmd = {
-        .id = AUDIO_CMD_SET_VOLUME,
-        .value = vol,
-    };
-    audio_service_post_cmd(&cmd);
 }
 
 static void vol_timer_cb(lv_timer_t *t)
@@ -74,14 +70,11 @@ static void vol_timer_cb(lv_timer_t *t)
     QueueHandle_t q = button_service_get_vol_queue();
     btn_vol_msg_t msg;
     while (q && xQueueReceive(q, &msg, 0) == pdPASS) {
+        /* 只同步 UI 显示；音量出口已由 button_service 的音量回调分发，
+           这里再发一次本地 codec 会在蓝牙模式下误调本地音量 */
         if (s_vol_slider) {
             lv_slider_set_value(s_vol_slider, msg.volume, true);
         }
-        audio_cmd_t cmd = {
-            .id = AUDIO_CMD_SET_VOLUME,
-            .value = msg.volume,
-        };
-        audio_service_post_cmd(&cmd);
     }
     link_ui_evt_t link_evt;
     while (s_link_evt_q && xQueueReceive(s_link_evt_q, &link_evt, 0) == pdPASS) {

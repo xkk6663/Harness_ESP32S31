@@ -10,14 +10,16 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"   /* xTaskCreatePinnedToCoreWithCaps（栈外置 PSRAM，F35） */
 #include "freertos/queue.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
-#include "middleware/audio_service.h"
-#include "middleware/link_manager.h"
-#include "middleware/session_manager.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/bluetooth/link_manager.h"
+#include "middleware/audio/session_manager.h"
 #include "udp_voice.h"
 
 static const char *TAG = "UDP_VOICE";
@@ -62,7 +64,15 @@ void udp_voice_init(void)
 {
     s_cmd_q = xQueueCreate(8, sizeof(voice_cmd_id_t));
     assert(s_cmd_q);
-    BaseType_t ok = xTaskCreatePinnedToCore(control_task, "udp_voice_ctl", 8192, NULL, 5, NULL, 0);
+    /* ★ 栈外置 PSRAM（F35）：8KB 栈放内部 RAM 是本项目最大单笔内部占用之一。
+       栈只被 CPU 访问、不要求 DMA 可达，属规范 §1.1 里"该外置"的那一类。
+       TCB 仍在内部（IDF 强制），可忽略。 */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(control_task, "udp_voice_ctl", 8192, NULL, 5, NULL, 0,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "ctl task create failed (stack->PSRAM); check "
+                      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY");
+    }
     assert(ok == pdPASS);
     ESP_LOGI(TAG, "init done, tx=%d rx=%d", UDP_VOICE_TX_PORT, UDP_VOICE_RX_PORT);
 }
@@ -124,7 +134,8 @@ static void control_task(void *arg)
             if (!link_manager_is_online()) { notify_evt(VOICE_EVT_NO_PEER); break; }
             ensure_audio_start();
             s_tx_active = true;
-            xTaskCreatePinnedToCore(tx_task, "udp_voice_tx", 8192, NULL, 7, &s_tx_task, 0);
+            xTaskCreatePinnedToCoreWithCaps(tx_task, "udp_voice_tx", 8192, NULL, 7, &s_tx_task, 0,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             ESP_LOGI(TAG, "TX_ON");
             notify_evt(VOICE_EVT_TX_ON);
             break;
@@ -150,7 +161,8 @@ static void control_task(void *arg)
                 break;
             }
             s_rx_active = true;
-            xTaskCreatePinnedToCore(rx_task, "udp_voice_rx", 8192, NULL, 7, &s_rx_task, 0);
+            xTaskCreatePinnedToCoreWithCaps(rx_task, "udp_voice_rx", 8192, NULL, 7, &s_rx_task, 0,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             ESP_LOGI(TAG, "RX_ON");
             notify_evt(VOICE_EVT_RX_ON);
             break;

@@ -108,6 +108,8 @@ static float *s_asrc_weight = NULL;
 static volatile bool s_pipe_ready = false;    /* pool+pipe+task 建好 */
 static volatile bool s_playing = false;       /* 正在推流 */
 static volatile bool s_uri_pending = false;   /* 有待下发的 uri */
+static volatile bool s_finished = false;      /* ★ 本曲已自然播完，待上层收尾 */
+static void (*s_finished_cb)(void) = NULL;    /* ★ 播完回调（在 GMF 事件线程触发） */
 static bool s_media_registered = false;
 
 /* ------------------------------------------------------------------ */
@@ -232,9 +234,23 @@ static esp_gmf_err_t pipe_event_cb(esp_gmf_event_pkt_t *pkt, void *ctx)
     if (pkt->sub == ESP_GMF_EVENT_STATE_FINISHED) {
         ESP_LOGI(TAG, "playback finished");
         s_playing = false;
+        /* ★ 2026-09-22 修复"播完不退出"：
+           此前只置 s_playing=false 就完事，A2DP 流仍保持 STARTED ——
+           设备端持续以为在播，session 也不释放。
+           现在通知上层收尾（media_stop + session_end + UI 复位）。
+           ★ 本函数跑在 GMF 事件线程，绝不能直接调阻塞的 media_stop，
+             只置标志 + 回调；上层负责投递到安全上下文执行。 */
+        s_finished = true;
+        if (s_finished_cb) {
+            s_finished_cb();
+        }
     } else if (pkt->sub == ESP_GMF_EVENT_STATE_ERROR) {
         ESP_LOGE(TAG, "pipeline error");
         s_playing = false;
+        s_finished = true;   /* 出错同样需要收尾，避免卡在"以为在播" */
+        if (s_finished_cb) {
+            s_finished_cb();
+        }
     }
     return ESP_GMF_ERR_OK;
 }
@@ -459,6 +475,7 @@ esp_err_t bt_push_service_set_uri(const char *path)
     /* io_file 需要 file:// 前缀 */
     snprintf(s_uri, URI_LEN, "file://%s", path);
     s_uri_pending = true;
+    s_finished = false;   /* ★ 新一曲开始：清掉上一曲的播完标志 */
     ESP_LOGI(TAG, "uri queued: %s", s_uri);
 
     /* 触发 A2DP 流；真正的 pipeline 准备在 stream ALLOCATED 事件里做 */
@@ -496,6 +513,22 @@ esp_err_t bt_push_service_stop(void)
 bool bt_push_service_is_playing(void)
 {
     return s_playing;
+}
+
+/* ★ 2026-09-22：播完（或出错）收尾支持 */
+void bt_push_service_set_finished_cb(void (*cb)(void))
+{
+    s_finished_cb = cb;
+}
+
+bool bt_push_service_is_finished(void)
+{
+    return s_finished;
+}
+
+void bt_push_service_clear_finished(void)
+{
+    s_finished = false;
 }
 
 void bt_push_service_request_destroy(void)

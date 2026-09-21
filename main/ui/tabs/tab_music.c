@@ -30,9 +30,9 @@
 #include "esp_gmf_alc.h"
 
 #include "tab_music.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "middleware/sdcard_service.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "middleware/system/sdcard_service.h"
 
 static const char *TAG = "TAB_MUSIC";
 

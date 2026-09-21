@@ -5,7 +5,7 @@
  */
 #pragma once
 
-#include "page_manager.h"
+#include "ui/ui_manager/page_manager.h"
 
 #ifdef __cplusplus
 extern "C" {

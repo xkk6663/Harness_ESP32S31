@@ -17,6 +17,7 @@ static const char *TAG = "BTN_SVC";
 
 static button_handle_t s_btns[BTN_ID_NUM];
 static btn_evt_cb_t    s_evt_cb;
+static btn_vol_out_cb_t s_vol_out_cb;   /* 统一音量出口：蓝牙 AVRCP 或本地 codec */
 
 /* Volume state (protected by s_vol_mutex) */
 static int             s_volume = 70;
@@ -89,9 +90,15 @@ static void adjust_volume(int delta)
     s_volume += delta;
     if (s_volume < VOL_MIN) s_volume = VOL_MIN;
     if (s_volume > VOL_MAX) s_volume = VOL_MAX;
-    ESP_LOGI(TAG, "volume -> %d", s_volume);
+    int vol = s_volume;
+    ESP_LOGI(TAG, "volume -> %d", vol);
     xSemaphoreGive(s_vol_mutex);
     publish_volume();
+    /* 统一音量出口：硬件键与 UI 滑块走同一条路，
+       由上层决定发蓝牙 AVRCP 还是本地 codec */
+    if (s_vol_out_cb) {
+        s_vol_out_cb(vol);
+    }
 }
 
 static void button_event_cb(void *button_handle, void *user_data)
@@ -165,6 +172,11 @@ void button_service_set_evt_cb(btn_evt_cb_t cb)
     s_evt_cb = cb;
 }
 
+void button_service_set_vol_out_cb(btn_vol_out_cb_t cb)
+{
+    s_vol_out_cb = cb;
+}
+
 QueueHandle_t button_service_get_vol_queue(void)
 {
     return s_vol_queue;
@@ -182,4 +194,8 @@ void button_service_set_volume(int vol)
     if (vol > VOL_MAX) vol = VOL_MAX;
     s_volume = vol;
     xSemaphoreGive(s_vol_mutex);
+    /* 与硬件按键走同一出口：UI 滑块拖动能同样作用到蓝牙音量 */
+    if (s_vol_out_cb) {
+        s_vol_out_cb(vol);
+    }
 }

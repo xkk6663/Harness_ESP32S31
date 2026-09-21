@@ -62,7 +62,24 @@ void bt_audio_service_init(bt_audio_evt_cb_t cb, void *ctx);
  *  失败只打日志不 abort（蓝牙非必需功能）。 */
 void bt_audio_service_controller_init(void);
 
-/** 打开/关闭蓝牙射频与 host（true: esp_bt_audio_init；false: deinit） */
+/** 打开/关闭蓝牙射频与 host（true: esp_bt_audio_init；false: deinit）
+ *
+ *  ★ 关于"为什么 host 不能像 controller 那样开机常驻"（重要，避免误改）：
+ *   - `bt_audio_service_controller_init()` 常驻的是 **controller/HCI 内存池**，
+ *     那是**真正的一次性分配**，必须在开机空窗期拿;
+ *   - 但 **host（bluedroid）无法常驻**：`esp_bt_audio_deinit()` →
+ *     `bt_audio_host_bluedroid_stack_deinit()` → `esp_bluedroid_disable()` +
+ *     `esp_bluedroid_deinit()` → `btc_deinit()`，会把 BTU/BTC 任务与全部队列
+ *     **真的全部释放**（见 `btc_main.c: btc_deinit_bluetooth()` 里的
+ *     `vSemaphoreDelete` / `bte_main_shutdown`）。所以下一次打开就是**真正的重新 init**，
+ *     照样可能因为内存不足而崩 —— 常驻 host 并不可行；
+ *   - 另外 BTA 层（A2DP/AVRCP）必须在 controller 之后初始化，无法提到开机空窗期。
+ *   → 结论：**每次 set_power(true) 都是一次有风险的重分配，闸门必须每次都走**。
+ *
+ *  @return ESP_OK 成功；
+ *          ESP_ERR_INVALID_STATE controller 未就绪（早期 init 失败）；
+ *          ESP_ERR_NO_MEM 内部 RAM 不足，**主动拒绝打开**。
+ *          —— 调用方（UI）应把 ESP_ERR_NO_MEM 提示给用户，而不是当成功处理。 */
 esp_err_t bt_audio_service_set_power(bool on);
 bool bt_audio_service_is_on(void);
 
@@ -81,6 +98,30 @@ esp_err_t bt_audio_service_play_source(const char *path);
 esp_err_t bt_audio_service_pause_source(void);
 esp_err_t bt_audio_service_resume_source(void);
 esp_err_t bt_audio_service_stop_source(void);
+
+/** 是否已连接对端（音量分发据此判断音量归蓝牙管还是本地 codec 管） */
+bool bt_audio_service_is_connected(void);
+
+/**
+ * @brief 设置蓝牙耳机音量（0..90，内部映射到 AVRCP 0..127）
+ *
+ * 默认使用 AVRCP 绝对音量：一步到位，屏幕档位与耳机音量严格一致
+ * （A2DP 1.3+ 耳机普遍支持）。未连接时返回 ESP_ERR_INVALID_STATE，
+ * 调用方应回退到本地 codec。
+ *
+ * 注意：esp_bt_audio 的绝对音量接口只要 AVRCP CT 连上就会注册，
+ * 因此**无法从返回值判断耳机是否真的执行了**。若遇到个别老耳机
+ * 不响应绝对音量，用 bt_audio_service_set_abs_volume(false) 切相对模式。
+ *
+ * @param volume 目标音量 0..90（与 button_service 的 VOL_MIN/VOL_MAX 一致）
+ */
+esp_err_t bt_audio_service_set_volume(int volume);
+
+/**
+ * @brief 切换蓝牙音量下发模式（运行时可用）
+ * @param use_absolute true: 绝对音量（默认，推荐）；false: 相对音量（逐格加减）
+ */
+void bt_audio_service_set_abs_volume(bool use_absolute);
 
 #ifdef __cplusplus
 }

@@ -35,6 +35,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+/* ★ F35：任务栈外置 PSRAM */
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 
 #include "net_time_service.h"
 
@@ -43,6 +46,10 @@ static const char *TAG = "NET_TIME";
 #define NET_TIME_TASK_STACK   8192      /* 业务任务栈不得 < 8192（HTTP + cJSON 会吃栈） */
 #define NET_TIME_TASK_PRIO    4
 #define NET_TIME_TASK_CORE    0
+
+/* 还没联网时的轮询间隔：等 net_time_service_notify_network_up() 置位 s_net_up。
+   取 1s —— 够快（拿到 IP 后 1s 内就开始拉天气），又不占 CPU。 */
+#define NET_TIME_WAIT_NET_MS  1000
 
 /* HTTP 一次读取 1KB；和风 7 天 JSON 约 1.5~2KB，缓冲留足 */
 #define NET_TIME_HTTP_BUF     8192
@@ -53,6 +60,12 @@ static TaskHandle_t      s_task;
 static bool              s_time_valid;   /* SNTP 已校时 */
 static weather_data_t    s_weather;
 static char              s_http_buf[NET_TIME_HTTP_BUF];
+
+/* ★ 网络可用标志：由 net_time_service_notify_network_up() 置位。
+ *   任务是"先建、再等网"：建任务只依赖内存（开机必然够），不等网。
+ *   这样即使 IP 事件早于本模块初始化而漏掉、或连上又断、或换网重连，
+ *   只要任何一次拿到 IP 的通知到达，任务都能自己起来 —— 不存在"漏一次就永久不启动"。 */
+static volatile bool     s_net_up;
 
 /* ==================== 和风天气状况 → 英文 ==================== */
 
@@ -495,13 +508,22 @@ static void net_time_task(void *arg)
     setenv("TZ", NET_TIME_NTP_TZ, 1);
     tzset();
 
+    /* ① 先等联网（最多 1s 一轮，s_net_up 由 notify_network_up 置位） */
+    while (!s_net_up) {
+        vTaskDelay(pdMS_TO_TICKS(NET_TIME_WAIT_NET_MS));
+    }
+    ESP_LOGI(TAG, "network up, start SNTP + weather");
+
+    /* ② 首轮：校时 + 拉天气 */
     sntp_sync_once();
     fetch_weather_once();
 
+    /* ③ 常驻循环：定时刷新，或被 notify_network_up / start 的通知提前唤醒 */
     for (;;) {
-        /* 定时等待：被 net_time_service_start() 的通知提前唤醒则立即重试 */
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(QWEATHER_REFRESH_SEC * 1000)) > 0) {
             ESP_LOGI(TAG, "refresh requested by notify");
+            /* 重新联网场景：IP 可能已换，短暂等下 DHCP/DNS 就绪 */
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
         if (!s_time_valid) {
             sntp_sync_once();
@@ -515,9 +537,8 @@ static void net_time_task(void *arg)
 void net_time_service_start(void)
 {
     if (s_task) {
-        /* 已在运行：给个通知让它立刻刷新一轮（重新联网场景） */
+        ESP_LOGI(TAG, "already running (notify refresh, net_up=%d)", (int)s_net_up);
         xTaskNotifyGive(s_task);
-        ESP_LOGI(TAG, "already running, refresh notified");
         return;
     }
 
@@ -527,16 +548,36 @@ void net_time_service_start(void)
         return;
     }
 
-    if (xTaskCreatePinnedToCore(net_time_task, "net_time", NET_TIME_TASK_STACK,
-                                NULL, NET_TIME_TASK_PRIO, &s_task,
-                                NET_TIME_TASK_CORE) != pdPASS) {
-        ESP_LOGE(TAG, "task create failed");
+    /* ★ 栈外置 PSRAM（F35）：栈里有 NET_TIME_HTTP_BUF(8KB 的外置静态缓冲不占栈，
+       但 esp_http_client/cJSON 的栈帧不小)，仍属"仅 CPU 访问"一类。 */
+    if (xTaskCreatePinnedToCoreWithCaps(net_time_task, "net_time", NET_TIME_TASK_STACK,
+                                        NULL, NET_TIME_TASK_PRIO, &s_task,
+                                        NET_TIME_TASK_CORE,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGE(TAG, "task create failed (stack->PSRAM); check "
+                      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY");
         s_task = NULL;
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         return;
     }
 
     ESP_LOGI(TAG, "net_time service started, ntp=%s loc=%s",
              NET_TIME_NTP_SERVER, QWEATHER_LOC_ID);
+}
+
+void net_time_service_notify_network_up(void)
+{
+    s_net_up = true;
+    if (s_task) {
+        xTaskNotifyGive(s_task);   /* 已在运行：立刻刷新一轮 */
+    } else {
+        /* ★ 任务还没建就收到通知：**现在建**。
+           这条分支专门兜"IP 事件早于本模块初始化"（开机自动连接时很容易发生）——
+           以前这两种情况都要求由 app 层调用 start()，漏一次就永久不启动。 */
+        ESP_LOGI(TAG, "network up before service start, creating task now");
+        net_time_service_start();
+    }
 }
 
 bool net_time_service_time_valid(void)

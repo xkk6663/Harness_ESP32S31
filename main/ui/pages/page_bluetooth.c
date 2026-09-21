@@ -14,15 +14,18 @@
 
 #include <string.h>
 
+#include "esp_log.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 
 #include "page_bluetooth.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "middleware/bt_audio_service.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "middleware/bluetooth/bt_audio_service.h"
 
 #define MAX_FOUND 12
+
+static const char *TAG = "PAGE_BT";
 
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_bt_sw;
@@ -77,6 +80,12 @@ static void bt_evt_cb(bt_evt_t evt, const void *data, void *ctx)
         snprintf(s_state_txt, sizeof(s_state_txt), "Streaming");
         s_state_changed = true;
         break;
+    /* ★ 2026-09-22 补：此前只处理 STREAM_ON，播完自动收尾后状态文本会卡在
+       "Streaming" —— 连接其实还在，只是推流结束，应回落到 "Connected"。 */
+    case BT_EVT_STREAM_OFF:
+        snprintf(s_state_txt, sizeof(s_state_txt), "Connected");
+        s_state_changed = true;
+        break;
     default:
         break;
     }
@@ -117,7 +126,21 @@ static void bt_sw_cb(lv_event_t *e)
 {
     (void)e;
     bool on = lv_obj_has_state(s_bt_sw, LV_STATE_CHECKED);
-    bt_audio_service_set_power(on);
+    esp_err_t ret = bt_audio_service_set_power(on);
+
+    if (on && ret != ESP_OK) {
+        /* 打开失败（多半是内部 RAM 不足，被主动拒绝）：把开关弹回 OFF，
+           否则 UI 显示"已开"而实际没起来，用户会一直等扫描结果。 */
+        ESP_LOGW(TAG, "BT power on failed: %s", esp_err_to_name(ret));
+        lv_obj_remove_event_cb(s_bt_sw, bt_sw_cb);
+        lv_obj_remove_state(s_bt_sw, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(s_bt_sw, bt_sw_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        snprintf(s_state_txt, sizeof(s_state_txt),
+                 ret == ESP_ERR_NO_MEM ? "Not enough RAM" : "Power on failed");
+        s_state_changed = true;
+        return;
+    }
+
     if (!on) s_dev_cnt = 0;
     snprintf(s_state_txt, sizeof(s_state_txt), on ? "Powering on..." : "Powering off...");
     s_state_changed = true;

@@ -17,6 +17,11 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
+/* ★ F35：任务栈外置 PSRAM 需要这两个头
+   - idf_additions.h → xTaskCreateWithCaps / xTaskCreatePinnedToCoreWithCaps
+   - esp_heap_caps.h → MALLOC_CAP_SPIRAM / MALLOC_CAP_8BIT */
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
 #include "audio_service.h"
 #include "3rd/ringbuf/ringbuf.h"
@@ -105,8 +110,10 @@ void audio_service_init(void)
     spk_rb_mux = xSemaphoreCreateMutex();
     assert(mic_rb_mux && spk_rb_mux);
 
-    /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里） */
-    xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
+    /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里）
+       ★ 栈外置 PSRAM（F35）：只在 CPU 上压栈，不需要 DMA 可达 */
+    xTaskCreateWithCaps(audio_task, "audio_task", 8192, NULL, 6, NULL,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "audio_service ready");
 }
 
@@ -153,9 +160,14 @@ esp_err_t audio_stream_start(void)
     stream_active = true;
     ringbuffer_reset(&mic_tx_rb);
     ringbuffer_reset(&spk_rx_rb);
-    BaseType_t ok = xTaskCreatePinnedToCore(audio_stream_task, "audio_stream", 8192,
-                                             NULL, 8, &stream_task_handle, 1);
+    /* ★ 栈外置 PSRAM（F35）：stream 任务栈里是 20ms 采样的临时帧，
+       纯 CPU 访问，不需要 DMA 可达。TCB 仍强制落内部（IDF 行为）。 */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(audio_stream_task, "audio_stream", 8192,
+                                                    NULL, 8, &stream_task_handle, 1,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (ok != pdPASS) {
+        ESP_LOGE(TAG, "stream task create failed (stack->PSRAM); check "
+                      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY");
         stream_active = false;
         esp_codec_dev_close(mic_codec_dev);
         esp_codec_dev_close(spk_codec_dev);

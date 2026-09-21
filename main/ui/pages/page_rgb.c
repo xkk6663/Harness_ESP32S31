@@ -13,9 +13,9 @@
 #include "lvgl.h"
 
 #include "page_rgb.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "middleware/led_service.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "middleware/system/led_service.h"
 
 static lv_obj_t *s_switch;
 static lv_obj_t *s_r_slider;

@@ -9,6 +9,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+/* ★ F35：任务栈外置 PSRAM */
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "LED_SVC";
 
@@ -120,7 +123,9 @@ void led_service_init(void)
     /* create in app_main context (proven to work); task only serializes commands */
     ESP_ERROR_CHECK(bsp_led_indicator_create(s_leds, NULL, BSP_LED_NUM));
     s_q = xQueueCreate(8, sizeof(led_cmd_t));
-    xTaskCreate(led_task, "led_task", 4096, NULL, 5, NULL);
+    /* ★ 栈外置 PSRAM（F35）：led 任务只做命令串行化，无 DMA 需求 */
+    xTaskCreateWithCaps(led_task, "led_task", 4096, NULL, 5, NULL,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     /* boot: red breathing = not connected */
     set_color(255, 0, 0, true);
     ESP_LOGI(TAG, "RGB LED init: GPIO37, red breathe=disconnected");

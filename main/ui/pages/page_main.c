@@ -11,19 +11,20 @@
  */
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 
 #include "page_main.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "tab_call.h"
-#include "tab_record.h"
-#include "tab_sys_entry.h"
-#include "tab_music.h"
-#include "tab_btpush.h"
-#include "tab_video.h"
-#include "overlay_wallpaper.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "ui/tabs/tab_call.h"
+#include "ui/tabs/tab_record.h"
+#include "ui/tabs/tab_sys_entry.h"
+#include "ui/tabs/tab_music.h"
+#include "ui/tabs/tab_btpush.h"
+#include "ui/tabs/tab_video.h"
+#include "ui/overlays/overlay_wallpaper.h"
 #include "page_wav_player.h"
 
 static const char *TAG = "PAGE_MAIN";
@@ -41,9 +42,28 @@ static void tab_changed_event(lv_event_t *e)
     }
 }
 
+/* ★ F35 一次性体检：主页面（含 6 个 tab）创建前后各打一行内部 RAM。
+   现象是"切到 SYS tab 开蓝牙时 internal free 只剩 7.7KB"，而这 7.7KB
+   与开机时的 193KB 差了 185KB。光看总量分不出是谁吃的，
+   所以在"整页 UI 建完"这个天然分界点上量一次：
+     - 若此处已掉到很低 → 凶手在**页面/选项卡创建**（LVGL 对象、字体、图片资源）；
+     - 若此处还很宽裕、只是开蓝牙时才低 → 凶手在**运行期常驻消费者**
+       （WiFi/LWIP 缓冲、TLS、后台任务栈）。
+   只做诊断用，定位完可删。 */
+static void diag_dump_internal(const char *tag)
+{
+    ESP_LOGI(TAG, "[diag] %s: internal free=%u largest=%u | PSRAM free=%u",
+             tag,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 static lv_obj_t *main_create(lv_obj_t *parent)
 {
     lv_obj_t *page = ui_common_page_root(parent);
+
+    diag_dump_internal("before page build");
 
     s_tabview = lv_tabview_create(page);
     lv_tabview_set_tab_bar_size(s_tabview, 48);
@@ -99,6 +119,8 @@ static lv_obj_t *main_create(lv_obj_t *parent)
 
     /* Audio completion callbacks (re-enable buttons). */
     page_wav_player_register_audio_events();
+
+    diag_dump_internal("after page build");
 
     ESP_LOGI(TAG, "main page created");
     return page;

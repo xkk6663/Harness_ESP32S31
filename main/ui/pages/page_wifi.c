@@ -19,9 +19,9 @@
 #include "bsp/esp-bsp.h"
 
 #include "page_wifi.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "middleware/wifi_manager.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "middleware/network/wifi_manager.h"
 
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_start_btn;
@@ -361,7 +361,7 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     lv_obj_center(cl);
     lv_obj_add_event_cb(s_connect_btn, connect_btn_cb, LV_EVENT_CLICKED, NULL);
 
-    /* register wifi event flags */
+    /* register wifi event flags（UI 专属槽位；app 级通知走 sys_cb，两者互不覆盖） */
     wifi_manager_set_evt_cb(wifi_evt_cb);
 
     /* reflect current connection state on entry */
@@ -374,6 +374,14 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
             snprintf(s_state_txt, sizeof(s_state_txt), "Not started");
         }
         lv_label_set_text(s_state_label, s_state_txt);
+
+        /* ★ 进页面补一次"已联网"判定：GOT_IP 可能在 WiFi 页面存在之前就发生过
+           （开机自动连），那样 UI 协程永远收不到该事件，天气/校时也就不会启动。
+           以 wifi_manager 的实际连接状态为准补发，等价于"现在就是刚拿到 IP"。
+           注意用 get_role() != WIFI_ROLE_AP 排除 AP 热点（热点自身不算联网）。 */
+        if (ip[0] && wifi_manager_get_role() != WIFI_ROLE_AP) {
+            wifi_evt_cb(WIFI_EVT_GOT_IP, ip);
+        }
     }
 
     s_poll_timer = lv_timer_create(poll_cb, 200, NULL);
@@ -387,6 +395,9 @@ static void wifi_destroy(lv_obj_t *page)
         lv_timer_del(s_poll_timer);
         s_poll_timer = NULL;
     }
+    /* 注销本页的事件回调。evt_cb 是"UI 页面专属"槽位（与 app 层的 sys_cb 分开），
+       不注销的话页面销毁后回调仍指向本文件的静态变量。 */
+    wifi_manager_set_evt_cb(NULL);
     lv_obj_del(page);
     s_state_label = s_start_btn = s_ap_list = s_pwd_row = NULL;
     s_pwd_ta = s_kb = s_connect_btn = NULL;

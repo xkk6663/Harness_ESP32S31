@@ -28,13 +28,13 @@ extern "C" {
 
 /* ---- 和风天气配置（编译期可用 -D 覆盖，避免把私钥散落到代码逻辑里） ---- */
 #ifndef QWEATHER_KEY
-#define QWEATHER_KEY        "YOUR_QWEATHER_KEY"   /* TODO: 填入自己的和风 API Key */
+#define QWEATHER_KEY        "a7928653a66a4b82ad2fe36a7a835bf4"   /* TODO: 填入自己的和风 API Key */
 #endif
 #ifndef QWEATHER_LOC_ID
 #define QWEATHER_LOC_ID     "101280101"           /* 广州 */
 #endif
 #ifndef QWEATHER_API_HOST
-#define QWEATHER_API_HOST   "devapi.qweather.com" /* 免费版 / 老版订阅地址 */
+#define QWEATHER_API_HOST   "ke67cgkc3a.re.qweatherapi.com" /* 免费版 / 老版订阅地址 */
 #endif
 #ifndef QWEATHER_REFRESH_SEC
 #define QWEATHER_REFRESH_SEC 3600                 /* 天气刷新周期：1 小时 */
@@ -79,8 +79,22 @@ typedef struct {
  * @brief 启动校时与天气服务（WiFi 拿到 IP 后调用）
  * @note  非阻塞：仅创建常驻任务，实际联网请求由服务任务完成；
  *        重复调用安全（已在运行则直接返回）。
+ *        **注意**：任务建好后会先等"网络可用"再开始请求，见
+ *        net_time_service_notify_network_up()。
  */
 void net_time_service_start(void);
+
+/**
+ * @brief 通知"网络已可用"（STA 拿到 IP 时调用）
+ *
+ * 这是**幂等**的，且能兜住两种情况：
+ *   1) 服务任务已建 → 立刻通知它刷新一轮；
+ *   2) 服务任务还没建（IP 事件早于本模块初始化，开机自动连接时很常见）→ 现在建任务。
+ *
+ * 推荐直接用它替代 net_time_service_start() 作为 WIFI_EVT_GOT_IP 的响应，
+ * 这样"漏掉一次事件就永久不启动"的隐患从根上消失。
+ */
+void net_time_service_notify_network_up(void);
 
 /**
  * @brief SNTP 是否已完成校时（系统时间是否可信）

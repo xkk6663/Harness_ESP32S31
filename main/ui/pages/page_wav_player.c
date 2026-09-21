@@ -20,10 +20,10 @@
 #include "freertos/queue.h"
 
 #include "page_wav_player.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "tab_record.h"
-#include "middleware/audio_service.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "ui/tabs/tab_record.h"
+#include "middleware/audio/audio_service.h"
 
 static const char *TAG = "WAV_PAGE";
 

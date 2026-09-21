@@ -14,9 +14,9 @@
 #include "lvgl.h"
 
 #include "page_splash.h"
-#include "ui_theme.h"
-#include "ui_common.h"
-#include "overlay_wp_particles.h"
+#include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
+#include "ui/overlays/overlay_wp_particles.h"
 
 static const char *TAG = "SPLASH";
 
@@ -77,11 +77,18 @@ static lv_obj_t *splash_create(lv_obj_t *parent)
     lv_obj_t *page = ui_common_page_root(parent);
 
     s_wallpaper = overlay_wp_particles_build(page);
-    if (s_wallpaper) {
-        lv_obj_add_flag(s_wallpaper, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(s_wallpaper, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_wallpaper, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
+
+    /* ⚠ 事件必须挂在**粒子画布**上，不能挂在 page / s_wallpaper 上（F31）。
+     *   画布铺满全屏且 CLICKABLE，LVGL 的命中测试停在它身上，
+     *   挂在它祖先上的 PRESSED/PRESSING 永远收不到 ——
+     *   表现为"上拉要划两次才对"，第一次的位移全被吞掉。 */
+    lv_obj_t *touch_layer = overlay_wp_particles_canvas();
+    if (!touch_layer) {
+        touch_layer = page;   /* 画布建失败（PSRAM 不足）时兜底 */
     }
+    lv_obj_add_flag(touch_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(touch_layer, splash_pressed_cb,  LV_EVENT_PRESSED,  NULL);
+    lv_obj_add_event_cb(touch_layer, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
 
     s_hint = lv_label_create(page);
     lv_label_set_text(s_hint, LV_SYMBOL_UP"  SWIPE UP TO ENTER");

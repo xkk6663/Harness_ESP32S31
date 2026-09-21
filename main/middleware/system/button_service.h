@@ -60,6 +60,16 @@ typedef enum {
 typedef void (*btn_evt_cb_t)(btn_id_t id, btn_evt_t evt);
 
 /**
+ * @brief 音量输出回调类型
+ * @param volume 新音量 0..90
+ * @note  每当音量发生变化（硬件按键 或 UI 滑块）时触发，**两个入口统一走这里**。
+ *        上层在此决定「把音量发往哪个出口」：蓝牙已连接 → AVRCP 推给耳机；
+ *        否则 → 本地 ES8389 codec。这样避免"按键能调、滑块不能调"的分裂。
+ *        在触发 set_volume 的线程上下文执行，不要做阻塞操作。
+ */
+typedef void (*btn_vol_out_cb_t)(int volume);
+
+/**
  * @brief 音量变化消息（发送到音量事件队列）
  */
 typedef struct {
@@ -88,8 +98,17 @@ int button_service_get_volume(void);
 
 /**
  * @brief 设置当前音量（线程安全，UI 滑块拖动时同步）
+ * @note  会触发已注册的音量输出回调（btn_vol_out_cb_t），
+ *        使硬件按键与 UI 滑块走同一条音量出口
  */
 void button_service_set_volume(int vol);
+
+/**
+ * @brief 注册音量输出回调（覆盖式，后注册者生效）
+ * @note  硬件按键与 UI 滑块的音量变化都会走这个回调，
+ *        上层在此分发到蓝牙 AVRCP 或本地 codec
+ */
+void button_service_set_vol_out_cb(btn_vol_out_cb_t cb);
 
 #ifdef __cplusplus
 }

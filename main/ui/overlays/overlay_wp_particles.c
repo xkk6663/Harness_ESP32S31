@@ -19,7 +19,7 @@
 #include "lvgl.h"
 
 #include "overlay_wp_particles.h"
-#include "middleware/fs_service.h"
+#include "middleware/system/fs_service.h"
 
 static const char *TAG = "WP_PART";
 
@@ -195,8 +195,15 @@ lv_obj_t *overlay_wp_particles_build(lv_obj_t *parent)
     lv_canvas_set_buffer(s_canvas, s_buf, s_w, s_h, LV_COLOR_FORMAT_RGB888);
     lv_obj_center(s_canvas);
 
-    /* touch: repel particles from finger */
-    lv_obj_add_event_cb(s_canvas, wp_touch_cb, LV_EVENT_ALL, NULL);
+    /* touch: repel particles from finger
+     *
+     * ⚠ 只监听 PRESSING/RELEASED，**不要注册 LV_EVENT_ALL**。
+     *   注册 ALL 会让 canvas 成为"事件目标"，LVGL 命中测试停在它身上，
+     *   父级（splash 的壁纸层）永远收不到 PRESSED/PRESSING ——
+     *   表现为"上拉要划两次才生效"（见 F31）。
+     *   这里只做粒子避让的视觉反馈，顺带保留 CLICKABLE 即可。 */
+    lv_obj_add_event_cb(s_canvas, wp_touch_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(s_canvas, wp_touch_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
 
     for (int i = 0; i < PARTICLE_COUNT; i++) spawn(&s_p[i], true);
@@ -213,4 +220,9 @@ void overlay_wp_particles_stop(void)
         ESP_LOGI(TAG, "particles timer stopped");
         lv_timer_del(s_timer); s_timer = NULL;
     }
+}
+
+lv_obj_t *overlay_wp_particles_canvas(void)
+{
+    return s_canvas;
 }

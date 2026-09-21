@@ -12,7 +12,7 @@
 #include "bsp/esp-bsp.h"
 #include "ui_common.h"
 #include "ui_theme.h"
-#include "page_manager.h"
+#include "ui/ui_manager/page_manager.h"
 
 #define TITLE_BAR_H   48
 #define ROW_H         56

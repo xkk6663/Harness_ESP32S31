@@ -8,9 +8,9 @@
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "tab_call.h"
-#include "ui_theme.h"
-#include "middleware/link_manager.h"
-#include "middleware/udp_voice.h"
+#include "ui/common/ui_theme.h"
+#include "middleware/bluetooth/link_manager.h"
+#include "middleware/audio/udp_voice.h"
 
 typedef struct { uint8_t kind; char ip[16]; } call_ui_evt_t;
 enum {

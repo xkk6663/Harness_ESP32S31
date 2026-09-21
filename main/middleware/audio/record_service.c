@@ -11,15 +11,17 @@
 #include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"   /* xTaskCreatePinnedToCoreWithCaps（栈外置 PSRAM，F35） */
 #include "freertos/queue.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "lwip/sockets.h"
-#include "middleware/audio_service.h"
-#include "middleware/fs_service.h"
-#include "middleware/link_manager.h"
-#include "middleware/session_manager.h"
+#include "middleware/audio/audio_service.h"
+#include "middleware/system/fs_service.h"
+#include "middleware/bluetooth/link_manager.h"
+#include "middleware/audio/session_manager.h"
 #include "record_service.h"
 
 static const char *TAG = "RECORD";
@@ -59,7 +61,9 @@ void record_service_init(void)
     s_cmd_q = xQueueCreate(8, sizeof(record_cmd_id_t));
     assert(s_cmd_q);
     link_manager_add_evt_cb(link_cb);
-    BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 8192, NULL, 5, NULL, 0);
+    /* ★ 栈外置 PSRAM（F35）：理由同 udp_voice —— 仅在 CPU 上压栈，无需内部 RAM */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(record_task, "record_service", 8192, NULL, 5, NULL, 0,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     assert(ok == pdPASS);
     ESP_LOGI(TAG, "init done, local cap=%u bytes", (unsigned)RECORD_MAX_PCM_BYTES);
 }

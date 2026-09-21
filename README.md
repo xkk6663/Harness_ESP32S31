@@ -62,8 +62,10 @@ Agent 读日志：panic? 功能日志? 静默?
 - middleware 层不得 `#include "lvgl.h"`；
 - UI 事件回调里不得直接建硬件任务、不得操作 codec / I2S / I2S 寄存器；
 - 业务任务栈 ≥ 8192 字节；
-- 新增 `.c` 必须注册 `main/CMakeLists.txt` 的 `SRCS`；
+- 新增 `.c` 必须注册 `main/CMakeLists.txt` 的 `SRCS`（放进对应领域分组）；
+- `#include` 必须写从 `main/` 根开始的**完整路径**，禁止裸文件名（见 F25）；
 - 高频音频链路（每 20 ms）禁止 `ESP_LOGI`。
+
 
 ---
 
@@ -91,19 +93,19 @@ display_audio_photo/
 ├── main/
 │   ├── app/main.c                # app_main() 初始化顺序 + 上滑自动播开机提示音
 │   ├── middleware/               # 硬件业务，不 include LVGL
-│   │   ├── audio_service.c/h     # ES8389 + I2S + 常驻任务+命令队列（文件播放/录音/流式）
-│   │   ├── fs_service.c/h        # LittleFS 挂载 + JPEG 解码缓冲
-│   │   ├── led_service.c/h        # RGB LED（GPIO37 WS2812，命令队列）
-│   │   ├── button_service.c/h    # 4 路 ADC 分压按键 + 音量队列
-│   │   ├── wifi_manager.c/h      # STA 扫描/连接/IP
-│   │   ├── udp_voice.c/h         # （阶段二待建）UDP 通话
-│   │   └── tcp_record.c/h        # （阶段三待建）TCP 录音
+│   │   ├── audio/                # audio_service / record_service / udp_voice / session_manager
+│   │   ├── bluetooth/            # bt_audio_service（A2DP+AVRCP）/ bt_push_service / link_manager
+│   │   ├── network/              # wifi_manager / net_time_service（SNTP + 和风天气）
+│   │   └── system/               # button_service / led_service / fs_service / sdcard_service
 │   ├── ui/                       # LVGL 界面（PageManager 栈式导航）
-│   │   ├── page_splash.c/h       # 开屏壁纸 + 上滑进主界面
-│   │   ├── page_main.c/h         # CALL / REC / SYS tab
-│   │   ├── page_wifi.c/page_rgb.c/page_system.c/page_wav_player.c
-│   │   ├── ui_manager/page_manager.c/h
-│   │   └── overlay_wallpaper.c    # 壁纸浮层
+│   │   ├── ui_manager/           # page_manager.c/h 页面注册/切换/返回栈
+│   │   ├── pages/                # page_splash / page_main / page_wifi / page_bluetooth
+│   │   │                         #   page_system / page_rgb / page_wav_player
+│   │   ├── tabs/                 # tab_call / tab_record / tab_sys_entry / tab_music
+│   │   │                         #   tab_btpush / tab_video
+│   │   ├── overlays/             # overlay_manager / overlay_wallpaper / overlay_wp_particles
+│   │   ├── common/               # ui_common（控件工厂）+ ui_theme.h（颜色/字体宏唯一来源）
+│   │   └── assets/               # fonts/ 字体 + icons/ 图标（生成物，勿手改）
 │   └── 3rd/ringbuf/              # 第三方纯 C 环形缓冲
 ├── docs/
 │   ├── 工程规范/                 # Agent 写代码前必读（01~11 + 附录）
@@ -116,6 +118,9 @@ display_audio_photo/
 ├── partitions.csv                # OTA 双 3MB + storage littlefs
 └── CMakeLists.txt
 ```
+
+> 分层规则、各目录职责与归位判断见 [`docs/工程规范/01_工程分层架构.md`](docs/工程规范/01_工程分层架构.md)。
+
 
 ---
 
@@ -208,9 +213,14 @@ idf.py -p COM9 flash
 - [x] Wi-Fi STA（扫描/连接/状态灯）
 - [x] 分区表 OTA 双 3MB + SPIFFS→LittleFS 迁移；开机提示音（16k/mono）
 - [x] 工程规范 11 篇 + 闭环 SOP（含分场景烧录、日志规范）
-- [ ] M2 UDP 通话（audio 流式改造 + link_manager + udp_voice + PC 端）
+- [x] M2 UDP 通话（link_manager + udp_voice + PC 端）
+- [x] 下拉壁纸实时天气仪表盘（SNTP + 和风天气）
+- [x] 阶段 A/B：SD 卡存储 + ESP-GMF 音频/视频播放（MUSIC / VIDEO tab）
+- [x] 蓝牙 A2DP Source 本地推流（方案 B2）+ 音量统一归蓝牙管
+- [x] **ui / middleware 目录分层重构（方案 A）**
 - [ ] M3 TCP 录音 + M3.5 远程文件管理/文件浏览器 + M4 多任务调度
 - [ ] M6 OTA A/B 升级
+
 
 详见 [`docs/项目规划/todolist.md`](docs/项目规划/todolist.md)。
 

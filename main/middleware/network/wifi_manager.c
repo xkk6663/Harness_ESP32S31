@@ -6,6 +6,7 @@
 
 #include "wifi_manager.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -23,6 +24,28 @@
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
 
 static const char *TAG = "WIFI_MGR";
+
+/* ★ F35 一次性诊断：内部 RAM 追踪。用于定位"开机 206KB → 25 秒后 29KB"的
+   177KB 亏损中，WiFi/LWIP 到底占了多少。定位完连同调用点一起删除。 */
+#define WIFI_DIAG(stage)                                                        \
+    ESP_LOGI(TAG, "[diag] %s: internal free=%u largest=%u | DMA free=%u | PSRAM free=%u", \
+             (stage),                                                           \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),            \
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),   \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),                 \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM))
+
+/* ★ F35 追查"每次重试掉 10KB"的真因（t=2363→6778 重试 2 次掉 21732 B）。
+   把重试路径拆成「进入前 / connect 后 / 断开事件里」三个点，
+   就能判定这 10KB 是【每次 connect 都新申请】还是【失败后不释放】。
+   注意 reconnect_timer_cb 里**没有** esp_wifi_set_config，
+   所以重试不是"重新初始化"，只是再喊一次 esp_wifi_connect()。 */
+#define WIFI_DIAG_RETRY(phase)                                                  \
+    ESP_LOGW(TAG, "[diag-retry] %s: retry_num=%d internal free=%u largest=%u | PSRAM free=%u", \
+             (phase), s_retry_num,                                              \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),            \
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),   \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM))
 
 #define MAX_AP                  16
 #define WIFI_NVS_NAMESPACE      "wifi_cfg"
@@ -250,13 +273,20 @@ static void reconnect_timer_cb(void *arg)
     (void)arg;
     if (s_phase == PHASE_TRYING) {
         s_retry_num++;
-        ESP_LOGW(TAG, "retry \"%s\" (%d/%d)", s_cur_ssid,
+        /* ★ 修正计数语义（F35）：s_retry_num 是"已完成尝试次数"，
+           apply_candidate 里首次连接时它为 0（第 1 次已在跑）。
+           所以这里是第 (s_retry_num + 1) 次尝试。
+           旧代码打印同样表达式，但因 WIFI_MAX_RETRY 语义含混，
+           日志读起来像"重试 5 次"而实际是"共尝试 5 次" —— 现已明确。 */
+        ESP_LOGW(TAG, "retry \"%s\" (attempt %d/%d)", s_cur_ssid,
                  s_retry_num + 1, WIFI_MAX_RETRY);
+        WIFI_DIAG_RETRY("before esp_wifi_connect");
         esp_wifi_connect();
+        WIFI_DIAG_RETRY("after  esp_wifi_connect");
     }
 }
 
-/* 当前候选 5 次失败后：切换下一个，或全部放弃 */
+/* 当前候选达到 WIFI_MAX_RETRY 次尝试后：切换下一个，或全部放弃 */
 static void next_candidate_or_giveup(void)
 {
     s_cand_idx++;
@@ -269,11 +299,13 @@ static void next_candidate_or_giveup(void)
         s_have_active = false;
         s_connected = false;
         ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up");
+        WIFI_DIAG("give up (before rf off)");
         notify(WIFI_EVT_ALL_FAILED, NULL);
-        /* 重连 5 次仍失败：自动关闭 Wi-Fi 外设（省电 + 熄灭 RGB 灯） */
+        /* 达到 WIFI_MAX_RETRY 次尝试仍失败：自动关闭 Wi-Fi 外设（省电 + 熄灭 RGB 灯） */
         if (s_enabled) {
             ESP_LOGW(TAG, "auto-disable Wi-Fi after giving up");
             wifi_manager_set_enabled(false);
+            WIFI_DIAG("after rf off");
         }
     }
 }
@@ -350,6 +382,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             (wifi_event_sta_disconnected_t *)event_data;
         s_connected = false;
         ESP_LOGW(TAG, "disconnected from \"%s\", reason=%d", s_cur_ssid, d->reason);
+        /* ★ 关键观测点：一次失败的 auth/assoc 之后，它申请的那部分是否归还了。
+           与上一轮 `after esp_wifi_connect` 相减 = 本次失败尝试的净残留。 */
+        WIFI_DIAG_RETRY("in DISCONNECTED evt");
 
         if (s_phase == PHASE_TRYING) {
             /* 连接阶段失败：计数重试 */
@@ -358,7 +393,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 esp_timer_start_once(s_reconnect_timer,
                                      WIFI_RECONNECT_DELAY_MS * 1000);
             } else {
-                ESP_LOGW(TAG, "\"%s\" failed after %d attempts",
+                ESP_LOGW(TAG, "\"%s\" failed after %d attempts, trying next",
                          s_cur_ssid, WIFI_MAX_RETRY);
                 next_candidate_or_giveup();
             }
@@ -370,10 +405,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             notify(WIFI_EVT_DISCONNECTED, NULL);
         }
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
+        WIFI_DIAG("in SCAN_DONE evt (before get_ap_records)");
         s_ap_count = 0;
         uint16_t num = 0;
         if (esp_wifi_scan_get_ap_num(&num) == ESP_OK && num > 0) {
+            /* ★ F35 注意：这里用的是裸 calloc（不是 heap_caps_*）。
+               本工程 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0 时裸 calloc 可能落 PSRAM，
+               但**落点不由我们控制**，且 num 来自 AP 数量（扫描结果多就大）。
+               本次日志里扫到 7 个 AP，PSRAM 同时掉了 2.25MB —— 说明大头在 PSRAM；
+               但"内部也掉 21.7KB"这件事需要靠 [diag-retry] 定位到底是
+               重连还是这块 rec 缓存。 */
             wifi_ap_record_t *rec = calloc(num, sizeof(wifi_ap_record_t));
+            ESP_LOGI(TAG, "[diag] scan rec buf: num=%u size=%u ptr=%p",
+                     (unsigned)num, (unsigned)(num * sizeof(wifi_ap_record_t)), rec);
             if (rec) {
                 uint16_t got = num;
                 if (esp_wifi_scan_get_ap_records(&got, rec) == ESP_OK) {
@@ -391,6 +435,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             }
         }
         ESP_LOGI(TAG, "scan done: %d APs", s_ap_count);
+        WIFI_DIAG("in SCAN_DONE evt (after free rec)");
 
         if (s_phase == PHASE_SCANNING) {
             /* 上电自动连接流程：匹配候选并开始尝试 */
@@ -431,13 +476,23 @@ void wifi_manager_init(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    /* ★ F35 一次性体检：WiFi 是"内部 RAM 从 206KB 掉到 29KB"这段里
+       唯一规模够（数十~上百 KB）且只能用内部 RAM 的消费者。
+       所以在它的每个阶段前后各量一次，把最大的一块钉出来。
+       定位完可删。 */
+    WIFI_DIAG("enter init");
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    WIFI_DIAG("after netif+event_loop");
+
     esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();   /* AP 模式需要独立 netif 起 DHCP server */
+    WIFI_DIAG("after create netifs");
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    WIFI_DIAG("after esp_wifi_init");
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                &wifi_event_handler, NULL));
@@ -458,9 +513,12 @@ void wifi_manager_init(void)
     /* 默认上电 STA 模式：开发板自动连已保存路由；UI 可切 AP 开热点 */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    WIFI_DIAG("after esp_wifi_start");   /* ★ 这一行最可能是"大头"所在 */
+
     wifi_manager_auto_connect();
 
     ESP_LOGI(TAG, "wifi STA init done, auto-connecting saved creds");
+    WIFI_DIAG("exit init");
 }
 
 /* AP DHCP 不下发默认网关(option 3)与 DNS(option 6)：
@@ -604,6 +662,10 @@ void wifi_manager_auto_connect(void)
     esp_wifi_scan_start(&scan_cfg, false);
 }
 
+/* 两个回调槽位语义不同、**必须分开**（见 wifi_manager.h 注释）：
+ *   sys_cb —— app 层持有，**进程级**，只注册一次，绝不能被 UI 覆盖；
+ *   evt_cb —— UI 页面持有，随页面进出增删，后注册即接管，传 NULL 注销。
+ * 合成一个槽位会导致"进一次 WiFi 页面就把 app 的通知顶掉"，天气/校时从此不启动。 */
 void wifi_manager_set_evt_cb(wifi_evt_cb_t cb) { s_evt_cb = cb; }
 void wifi_manager_set_sys_cb(wifi_evt_cb_t cb) { s_sys_cb = cb; }
 
