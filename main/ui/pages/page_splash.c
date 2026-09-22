@@ -86,7 +86,7 @@ static lv_obj_t *splash_create(lv_obj_t *parent)
     if (!touch_layer) {
         touch_layer = page;   /* 画布建失败（PSRAM 不足）时兜底 */
     }
-    lv_obj_add_flag(touch_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(touch_layer, true);
     lv_obj_add_event_cb(touch_layer, splash_pressed_cb,  LV_EVENT_PRESSED,  NULL);
     lv_obj_add_event_cb(touch_layer, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
 

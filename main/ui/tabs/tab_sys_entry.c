@@ -113,7 +113,7 @@ static void row_click_cb(lv_event_t *e)
 
 void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
 {
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(screen, false);
     lv_obj_set_style_bg_color(screen, COL_BG, 0);
 
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);

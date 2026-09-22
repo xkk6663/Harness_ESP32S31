@@ -103,25 +103,22 @@ esp_err_t bt_audio_service_stop_source(void);
 bool bt_audio_service_is_connected(void);
 
 /**
- * @brief 设置蓝牙耳机音量（0..90，内部映射到 AVRCP 0..127）
+ * @brief 设置蓝牙耳机音量（0..100，映射为推流数字增益）
  *
- * 默认使用 AVRCP 绝对音量：一步到位，屏幕档位与耳机音量严格一致
- * （A2DP 1.3+ 耳机普遍支持）。未连接时返回 ESP_ERR_INVALID_STATE，
- * 调用方应回退到本地 codec。
+ * ★ 2026-09-22 起实现方式改为「推流数字增益」：
+ *   推流路径（SD→解码→ASRC→SBC→蓝牙）**不经过本地 codec**，改本地 codec
+ *   音量对耳机无效；而耳机侧又不接受 AVRCP 音量指令（AVRCP RC 通道建不起来，
+ *   vol_ops 整张表从未注册，绝对/相对都返回 ESP_ERR_INVALID_STATE）。
+ *   因此改为在 local2bt pipeline 内的 aud_alc 元素上做编码前 PCM 的数字衰减 ——
+ *   我们是 A2DP 源，这段 PCM 完全可控，必然生效且与耳机能力无关。
  *
- * 注意：esp_bt_audio 的绝对音量接口只要 AVRCP CT 连上就会注册，
- * 因此**无法从返回值判断耳机是否真的执行了**。若遇到个别老耳机
- * 不响应绝对音量，用 bt_audio_service_set_abs_volume(false) 切相对模式。
+ * 生效条件：仅在**正在推流**时接管音量；否则返回 ESP_ERR_INVALID_STATE，
+ *   调用方应回退到本地 codec（扬声器播放 / 开机提示音的正确出口）。
  *
- * @param volume 目标音量 0..90（与 button_service 的 VOL_MIN/VOL_MAX 一致）
+ * @param volume 目标音量 0..100（0 = 静音，100 = 满幅）
+ * @return ESP_OK 成功；ESP_ERR_INVALID_STATE 表示未推流或 ALC 未就绪，应回退本地 codec
  */
 esp_err_t bt_audio_service_set_volume(int volume);
-
-/**
- * @brief 切换蓝牙音量下发模式（运行时可用）
- * @param use_absolute true: 绝对音量（默认，推荐）；false: 相对音量（逐格加减）
- */
-void bt_audio_service_set_abs_volume(bool use_absolute);
 
 #ifdef __cplusplus
 }

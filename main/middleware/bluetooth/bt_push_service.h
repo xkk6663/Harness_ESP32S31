@@ -90,6 +90,21 @@ bool bt_push_service_is_finished(void);
 /** 清除"播完"标志（上层收尾完成后调用） */
 void bt_push_service_clear_finished(void);
 
+/**
+ * @brief 设置推流数字音量（★ 2026-09-22 新增）。
+ *
+ * 为什么要"数字音量"：推流路径 SD→解码→ASRC→SBC→蓝牙**不经过本地 codec**，
+ * 改本地 codec 音量对耳机无效；而耳机侧不接受 AVRCP 音量指令
+ * （vol_ops 从未注册）。我们是 A2DP 源，编码前 PCM 完全可控，
+ * 因此在 pipeline 内 aud_asrc 与 aud_enc 之间插 aud_alc 做数字衰减。
+ *
+ * @note  未推流时调用同样有效：增益保存在常驻的 ALC 元素里，推流时自动生效。
+ * @note  代价是低音量时音质略有损失（SBC 有效位数变少）。
+ * @param vol 音量档位 0..100（0 = 静音，100 = 不衰减）；越界会被夹到区间内
+ * @return ESP_OK 成功；ESP_ERR_INVALID_STATE 表示 pipeline/ALC 尚未就绪
+ */
+esp_err_t bt_push_service_set_volume(int vol);
+
 #ifdef __cplusplus
 }
 #endif

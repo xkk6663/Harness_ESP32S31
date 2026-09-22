@@ -26,7 +26,7 @@ static void drain(lv_timer_t *timer)
 static void record_btn_cb(lv_event_t *e) { (void)e; record_service_post_cmd(record_service_is_active() ? RECORD_CMD_STOP : RECORD_CMD_START); }
 void tab_record_build(lv_obj_t *screen, lv_group_t *group)
 {
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE); lv_obj_set_style_bg_color(screen, COL_BG, 0); lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN); lv_obj_set_flex_align(screen, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER); lv_obj_set_style_pad_row(screen, 16, 0); lv_obj_set_style_pad_top(screen, 24, 0);
+    lv_obj_set_scrollable(screen, false); lv_obj_set_style_bg_color(screen, COL_BG, 0); lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN); lv_obj_set_flex_align(screen, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER); lv_obj_set_style_pad_row(screen, 16, 0); lv_obj_set_style_pad_top(screen, 24, 0);
     lv_obj_t *title = lv_label_create(screen); lv_label_set_text_static(title, LV_SYMBOL_SAVE "  RECORD & SYNC"); lv_obj_set_style_text_color(title, COL_CYAN, 0); lv_obj_set_style_text_font(title, UI_FONT, 0);
     lv_obj_t *card = lv_obj_create(screen); lv_obj_set_size(card, BSP_LCD_H_RES - 40, 280); lv_obj_set_style_bg_color(card, COL_CARD, 0); lv_obj_set_style_border_color(card, COL_BORDER, 0); lv_obj_set_style_border_width(card, 1, 0); lv_obj_set_style_radius(card, 16, 0); lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN); lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER); lv_obj_set_style_pad_row(card, 18, 0);
     s_status = lv_label_create(card); lv_label_set_text_static(s_status, "Ready  |  PC online = STREAM"); lv_obj_set_style_text_color(s_status, COL_TEXT, 0); lv_obj_set_style_text_font(s_status, UI_FONT, 0);

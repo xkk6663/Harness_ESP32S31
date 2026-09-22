@@ -53,38 +53,20 @@ static bool s_last_addr_valid = false;
 /* ---- 连接状态：音量分发据此决定"归蓝牙管"还是"归本地 codec 管" ---- */
 static volatile bool s_connected = false;
 
-/* ---- 蓝牙音量状态 ----
- * 音量体系换算（★ 三层量纲，别搞混）：
- *   ① 本地 s_volume        0..90    （button_service 的 VOL_MAX=90）
- *   ② esp_bt_audio 应用层  0..100   ← 我们调 esp_bt_audio_vol_set_absolute 时传这个
- *   ③ AVRCP absolute       0..127   ← 协议线上值，由库内部转换，我们永远不直接碰
+/* ---- 蓝牙音量（★ 2026-09-22 起走推流数字增益，AVRCP 音量已整体移除） ----
+ * 历史上这里维护过一套"本地 0..90 → esp_bt_audio 应用层 0..100 → AVRCP 0..127"
+ * 的三层量纲换算，以及绝对/相对音量的自动降级逻辑。该方案最终被证实
+ * **在本工程不可用**（AVRCP RC 通道建不起来，见下方长注释），已整体删除。
  *
- * ★★ 不要把 ②③ 弄反（这正是 2026-09-21 修复的 bug）：
- *   库内 bt_audio_avrcp_ct.c:136 的 vol_to_avrc() 期望入参是 **0..100**：
- *       return (uint8_t)((app_vol * 127) / 100);
- *   早期版本我们在 local_vol_to_avrcp() 里已经先映射到了 0..127，
- *   库再乘一次 127/100 → 双重映射溢出。90 档时 127*127/100 = 161，
- *   超出 AVRCP 上限 127 被截断，耳机音量条直接顶满。
- *   所以本文件的映射目标必须是 **0..100**，不是 0..127。
+ * 现在音量只有一条路：bt_push_service_set_volume() —— 在 local2bt pipeline
+ * 的 aud_alc 元素上做"编码前 PCM"的数字衰减。本地档位 0..100 直接映射到 dB
+ * 增益，不再有任何协议层量纲换算。
  *
- * 关于「绝对 vs 相对」：
- *   esp_bt_audio 的 vol_ops.set_absolute 在 AVRCP CT **连接建立**后才会注册
- *   （见 bt_audio_avrcp_ct.c:567-601，触发事件是 ESP_AVRC_CT_CONNECTION_STATE_EVT
- *    且 conn_stat.connected），未注册时 esp_bt_audio_vol_set_absolute 会打出
- *   "vol_ops.set_absolute is not registered" 并返回 ESP_ERR_INVALID_STATE。
- *   也就是说：**耳机支不支持 Absolute Volume，协议层返回都是 ESP_OK**，
- *   我们无法从返回值判断成功与否。因此不做"自动降级"（那只是假象）。
- *   默认走绝对音量（A2DP 1.3+ 耳机普遍支持，且两端档位严格一致）；
- *   遇到个别老耳机不听指挥时，用 bt_audio_service_set_abs_volume(false)
- *   运行时切到相对音量模式。
- *
- * ★★★ 前提条件（2026-09-21 补）：上面那句"连接建立后就会注册"在本工程
- *   曾经**永远不成立** —— 上游 A2DP SRC 路径漏调 BTA_AvOpenRc()，导致
- *   AVRCP CT 连接从未建立。已在本文件用 avrcp_ensure_ct_link() 修复，
- *   详见该函数上方注释。
+ * 保留的认知（仍有用）：esp_bt_audio 的 vol_ops 只有在 AVRCP CT **连接建立**
+ * 后才注册；未注册时调用会打 "vol_ops.set_absolute is not registered" 并返回
+ * ESP_ERR_INVALID_STATE。而**耳机支不支持 Absolute Volume，协议层返回都是
+ * ESP_OK**，无法从返回值判断成功与否 —— 这也正是当初"降级兜底"必然失败的根因。
  */
-#define BT_VOL_APP_MAX      100   /* esp_bt_audio 应用层量纲上限（勿改） */
-#define BT_VOL_LOCAL_MAX    90
 
 /* ---- 开蓝牙 host 前的内部 RAM 门槛 ----
  * bluedroid host 起来时要一口气建出 BTU/BTC 任务、各层队列和信号量。
@@ -108,232 +90,28 @@ static volatile bool s_connected = false;
 #define BT_HOST_MIN_FREE_INTERNAL     (48 * 1024)
 #define BT_HOST_MIN_LARGEST_BLOCK     (24 * 1024)
 
-/* 记录上次成功下发的目标档位（本地量纲），相对模式据此算差值 */
-static int s_last_sent_vol = -1;
-/* 是否使用绝对音量（true: 绝对，收音机式直接设定；false: 相对，逐格加减） */
-static bool s_use_abs_vol = true;
-/* vol sync 短命任务是否在跑。
- * ★ 用途是**防重入**：连接事件可能因重连/双角色回调被触发多次，
- *   若不拦就会并发创建多个 sync_vol_task，同时下发音量造成跳档与任务泄漏。
- *   由事件回调置 true，由 sync_vol_task 在每条退出路径（含提前 return）置 false。 */
-static volatile bool s_sync_task_running = false;
-
-/* 本地档位(0..90) → esp_bt_audio 应用层量纲(0..100)。
- * ★ 目标量纲是 0..100 而非 0..127 —— 库内部还会再乘一次 127/100，
- *   这里若直接给 127 就会双重映射溢出（见文件上方 BT_VOL_APP_MAX 注释）。
- * 四舍五入：vol/90*100 */
-static int local_vol_to_app(int vol)
-{
-    if (vol < 0) vol = 0;
-    if (vol > BT_VOL_LOCAL_MAX) vol = BT_VOL_LOCAL_MAX;
-    return (vol * BT_VOL_APP_MAX + BT_VOL_LOCAL_MAX / 2) / BT_VOL_LOCAL_MAX;
-}
-
-/* ============================================================================
- * AVRCP CT 连接补建（★ 2026-09-21 修复 "set_absolute is not registered"）
- * ============================================================================
- * 现象：
- *   A2DP 推流一切正常，但按键调音量必失败：
- *     E BT_AUD_OPS: Operation failed: vol_ops.set_absolute is not registered
- *     W BT_SVC:      set abs vol failed: ESP_ERR_INVALID_STATE
+/* ---------------------------------------------------------------------------
+ * 推流数字音量（★ 2026-09-22 起，AVRCP 音量整条链路已移除）
+ * ---------------------------------------------------------------------------
+ * 为什么放弃 AVRCP：
+ *   1) 本工程是 A2DP SRC，上游 IDF 的 SRC 路径**不建立 AVRCP RC 通道** ——
+ *      BTA_AvOpenRc() 全 IDF 只有一个调用点，位于 peer_sep == AVDT_TSEP_SRC
+ *      分支内；本工程对端是 sink，永远走不到那一支。
+ *   2) 应用层手工补调 BTA_AvOpenRc() 后，实测耳机侧仍不建立 AVCTP 通道，
+ *      ESP_AVRC_CT_CONNECTION_STATE_EVT 始终不来 → vol_ops 整张表从未注册。
+ *   3) 于是 set_absolute 与 set_relative **必然同时**返回 ESP_ERR_INVALID_STATE
+ *      （两者在同一张表里一起赋值），"绝对失败就降级相对"的兜底思路天然无效。
+ *   4) main.c 的 "fallback to local codec" 同样无用：推流路径
+ *      （SD→解码→ASRC→SBC→蓝牙）根本不经过本地 ES8389。
  *
- * 根因（上游 ESP-IDF bluedroid A2DP SRC 路径缺陷）：
- *   vol_ops.set_absolute 只在 ESP_AVRC_CT_CONNECTION_STATE_EVT 且 connected=true
- *   时注册（bt_audio_avrcp_ct.c:567-601）。而该事件的源头是 BTA_AV_RC_OPEN_EVT
- *   → btc_rc_handler → handle_rc_connect → btc_avrc_ct_cb_to_app()。
- *   要产生 BTA_AV_RC_OPEN_EVT，BTA 层必须真正建立 AVRCP 连接：
+ * 现方案：音量交给 local2bt pipeline 里的 aud_alc 做数字衰减
+ *   （见 bt_push_service.c / bt_push_service_set_volume()）——
+ *   我们是源，这段 PCM 完全可控，必然生效且与耳机能力无关。
  *
- *     BTA_AvOpenRc(handle)                       [bta_av_api.c:571]
- *       → BTA_AV_API_RC_OPEN_EVT
- *       → bta_av_rc_opened()                     [bta_av_act.c:465]
- *       → (*p_cback)(BTA_AV_RC_OPEN_EVT, ...)    [bta_av_act.c:551]
- *
- *   而 BTA_AvOpenRc() 在整份 IDF 里**只有一个调用点**：
- *     btc_av.c:561，位于 `if (btc_av_cb.peer_sep == AVDT_TSEP_SRC)` 分支内。
- *   本工程角色是 A2DP SRC，连接建立后 peer_sep == AVDT_TSEP_SNK（对端是 sink），
- *   于是走 btc_av.c:565 的 else-if 分支 —— **那一支里没有 BTA_AvOpenRc()**。
- *   结果：AVRCP CT 连接从未建立 → vol_ops 从未注册 → 绝对/相对音量全废。
- *
- *   旁证（源码内部自相矛盾，证明这是缺陷而非设计）：
- *     - btc_av.c:861 / 1050（src 断开路径）：peer_sep == AVDT_TSEP_SRC 才 CloseRc
- *     - btc_av.c:2079（src deinit 路径）：peer_sep == AVDT_TSEP_SNK 才 CloseRc ← 相反
- *     - bta_av_aact.c:3010 的 bta_av_open_rc() 里 `p_scb->use_rc` 才是设计中的
- *       开关，但 bta_av_open_rc() 全 IDF 无调用点（死函数）。
- *
- * 修法：应用层主动补这一脚。
- *   1) 拿 BTA handle：btc_a2d_conn_handle_get()（btc_av.c:2275，公开非 static，
- *      声明在 btc_av.h:313，本工程固件已链接，map 里 .text 地址 0x400d19ae）。
- *      它返回的就是 btc_av_cb.bta_handle —— 与 btc_av.c:561 用的是同一个值，
- *      即 BTA_AvRegister(BTA_AV_CHNL_AUDIO) 分配出的 hndl（本工程 = (0+1)|0x40 = 0x41）。
- *   2) 调 BTA_AvOpenRc(handle)（map 地址 0x400f49c4）。
- *      ★ 必须走这条旁路，**不能**再调一次 esp_a2d_source_connect()：
- *        btc_profile_queue.c:43 的连接队列按 uuid 去重，同 uuid 会被静默丢弃。
- *
- * 为什么不用 IDF 私有头：
- *   两个函数都在 libbt.a 里是全局符号；直接 extern 声明可避免把
- *   btc/profile/std/include 这类内部目录加进本组件的 INCLUDE_DIRS，
- *   也就不会在上游 minor 升级时因头文件路径变动而编译失败。
- *
- * 时机：必须在 A2DP 连接**完全建立之后**（此时 SCB 已存在，bta_av_rc_opened
- *   才能通过 peer_addr 匹配到 SCB 并把 rc_handle 回填给 p_scb）。
- *   放在 sync_vol_task 的 800ms 延时窗口里，天然晚于连接事件。
- * ==========================================================================*/
-extern uint16_t btc_a2d_conn_handle_get(void);
-extern void     BTA_AvOpenRc(uint16_t handle);
-
-/* 只在每次 A2DP 连接后补建一次，避免重复下发 */
-static bool s_avrcp_link_requested = false;
-
-/* AVRCP CT 补建的重试账本。
- * ★ 2026-09-22：原实现把"已发出请求"当成"已建立连接"—— BTA_AvOpenRc() 一发出
- *   就把 s_avrcp_link_requested 置 true，若 RC 建立失败（对端拒绝 / 超时 /
- *   BTA 侧尚未就绪）标志仍为 true，后续**永不再试** → 死锁，
- *   表现为"按键永远 set_absolute is not registered"。
- *   现在改为：只有确认建链成功（收到 CT 连接事件）才置 true；
- *   失败则留在 false，下次按键或下次 sync 任务会再试。
- *   另加重试计数上限，避免对端根本不支持时无限重试刷屏。 */
-static int s_avrcp_retry = 0;
-#define AVRCP_MAX_RETRY  5
-
-/* 绝对音量连续失败计数：到阈值就自动降级到相对模式。
- * ★ 意义：与其让用户面对"按键永远没反应"，不如降级成"能调但由耳机自己按格走"。
- *   相对模式下发的是 AV/C 面板 passthrough 按键，不依赖 AVRCP CT 连接。 */
-static int s_abs_fail_count = 0;
-#define ABS_FAIL_DOWNGRADE  3
-
-/* 前向声明：bt_audio_service_init() 在定义之前注册它 */
-static void on_push_finished(void);
-
-static void avrcp_ensure_ct_link(void)
-{
-    if (s_avrcp_link_requested) {
-        return;   /* 已确认建链成功，无需重复 */
-    }
-
-    uint16_t hndl = btc_a2d_conn_handle_get();
-    if (hndl == 0) {
-        /* bta_handle 还没被 BTA_AV_REGISTER_EVT 填上，说明 BTA 侧尚未就绪。
-           ★ 不置 s_avrcp_link_requested —— 让调用方稍后可以再试。 */
-        ESP_LOGW(TAG, "avrcp link: bta handle not ready (retry %d/%d), skip",
-                 s_avrcp_retry, AVRCP_MAX_RETRY);
-        s_avrcp_retry++;
-        return;
-    }
-
-    if (s_avrcp_retry >= AVRCP_MAX_RETRY) {
-        /* 已试够次数仍未成功：大概率对端不支持 AVRCP CT（或拒绝了 RC 通道）。
-           ★ 不再重试，避免刷屏；音量将走相对模式兜底（见 set_volume）。 */
-        ESP_LOGW(TAG, "avrcp link: giving up after %d tries (peer likely no AVRCP CT)",
-                 s_avrcp_retry);
-        s_avrcp_link_requested = true;   /* 置位以止住重试；语义改为"已放弃" */
-        return;
-    }
-
-    BTA_AvOpenRc(hndl);
-    s_avrcp_retry++;
-    ESP_LOGI(TAG, "avrcp link: BTA_AvOpenRc(0x%04x) issued (try %d/%d)",
-             hndl, s_avrcp_retry, AVRCP_MAX_RETRY);
-    /* ★ 注意：这里**不置** s_avrcp_link_requested —— 等 CT 连接事件确认。 */
-}
-
-/* ★ 为什么不用"CT 连接事件"来确认建链成功：
- *   esp_bt_audio 的公开事件枚举里**没有** AVRCP CT 连接事件
- *   （只有 CONNECTION_STATE_CHG / VOL_ABSOLUTE / VOL_RELATIVE 等，见
- *   esp_bt_audio_event.h）。库内部在 bt_audio_avrcp_ct.c:567 收到
- *   ESP_AVRC_CT_CONNECTION_STATE_EVT 时才注册 vol_ops.set_absolute，
- *   但那个事件**不透出到应用层**，我们无从直接观测。
- *
- *   因此改用**主动探测**：直接调一次 set_absolute，
- *   返回 ESP_OK → 说明已注册（链路通）；返回 INVALID_STATE → 还没好。
- *   这是唯一可靠的判据，因为库对"耳机支不支持绝对音量"一律返回 ESP_OK，
- *   只有"未注册"才返回 INVALID_STATE。
- *
- * ★ 探测副作用：成功时耳机会真的被设一次音量。这是可接受的 ——
- *   探测值就是当前档位，本来就是我们要下发的值。
- */
-static bool avrcp_probe_ready(void)
-{
-    if (s_avrcp_link_requested) {
-        return true;
-    }
-    esp_err_t ret = esp_bt_audio_vol_set_absolute((uint32_t)local_vol_to_app(
-                        s_last_sent_vol >= 0 ? s_last_sent_vol : BT_VOL_LOCAL_MAX / 2));
-    if (ret == ESP_OK) {
-        s_avrcp_link_requested = true;
-        s_avrcp_retry = 0;
-        ESP_LOGI(TAG, "avrcp link: CONFIRMED ready (probe set_absolute OK)");
-        return true;
-    }
-    return false;
-}
-
-
-static void sync_vol_task(void *arg)
-{
-    (void)arg;
-    /* 等 A2DP 连接完全建立（连接事件通常早于 SCB/profile 就绪） */
-    vTaskDelay(pdMS_TO_TICKS(800));
-
-    if (!s_connected || !s_on) {
-        s_sync_task_running = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    /* ① 补建 AVRCP CT 连接（上游 SRC 路径漏了这一脚，详见函数上方注释），
-          然后用**主动探测**确认是否真的可用。
-          ★ 2026-09-22：BTA 侧就绪时刻不确定（首次 RF 全校准 + 136kHz RC 慢时钟
-          都会让链路建立明显变慢），单次尝试极易打空。改为轮询：
-          每 300ms 一轮，每轮「补建一次 + 探测一次」，最多 10 轮（≈3s 窗口）。 */
-    for (int i = 0; i < 10; i++) {
-        if (!s_connected || !s_on) {
-            s_sync_task_running = false;
-            vTaskDelete(NULL);
-            return;
-        }
-        avrcp_ensure_ct_link();
-        if (avrcp_probe_ready()) {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(300));
-    }
-
-    if (!s_avrcp_link_requested) {
-        ESP_LOGW(TAG, "avrcp link: still not ready after ~3s, "
-                      "vol will use relative fallback");
-        s_use_abs_vol = false;
-    }
-
-    if (!s_connected || !s_on) {
-        s_sync_task_running = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    /* ② 下发当前档位 */
-    int vol = button_service_get_volume();
-    int target = local_vol_to_app(vol);
-    if (s_use_abs_vol) {
-        esp_err_t ret = esp_bt_audio_vol_set_absolute((uint32_t)target);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "vol sync to headset: local %d -> app %d (ret=%s)",
-                     vol, target, esp_err_to_name(ret));
-            s_last_sent_vol = vol;
-        } else {
-            /* ★ 绝对音量用不了 —— 自动降级到相对模式，保证"按键能调音量"
-                 这个最基本诉求。相对模式走 AV/C 面板按键，不依赖 CT 连接。 */
-            ESP_LOGW(TAG, "vol sync: abs failed (%s), fallback to relative mode",
-                     esp_err_to_name(ret));
-            s_use_abs_vol = false;
-            s_last_sent_vol = vol;   /* 相对模式以当前档位为基准 */
-        }
-    } else {
-        s_last_sent_vol = vol;   /* 相对模式也以当前档位为基准 */
-    }
-
-    s_sync_task_running = false;
-    vTaskDelete(NULL);
-}
+ * 本文件只负责"要不要接管"：仅在真正推流时接管音量，
+ *   否则返回 ESP_ERR_INVALID_STATE，让上层继续用本地 codec
+ *   （扬声器播放 / 开机提示音的正确出口）。
+ * ------------------------------------------------------------------------- */
 
 /* 当前阶段只做 Source（推送 SD 音乐到耳机）；Sink 模式后续再开。
    同时注册 SRC+SNK 会导致 esp_a2d_sink_init 返回 INVALID_STATE（profile 状态机冲突）。 */
@@ -381,34 +159,10 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
                  c->connected ? "CONNECTED" : "DISCONNECTED",
                  c->addr[0], c->addr[1], c->addr[2], c->addr[3], c->addr[4], c->addr[5]);
         s_connected = c->connected;
-        if (!c->connected) {
-            /* 断开后重置音量下发基准：重连时 sync_vol_task 会重新下发一次当前档位。
-               注意这里**不重置模式开关 s_use_abs_vol** —— 它是对端能力的选择结果
-               （由 bt_audio_service_set_abs_volume 设置），换一副耳机前一直有效。
-               同理重置 AVRCP 补建标志：BTA 侧 RC 连接已随 A2DP 一起关闭，
-               下次连上需要重新补建。 */
-            s_last_sent_vol = -1;
-            s_avrcp_link_requested = false;
-            s_avrcp_retry = 0;   /* 重连给足重试预算 */
-            /* ★ 不复位 s_use_abs_vol / s_abs_fail_count：降级是对端能力的结果，
-               换一副耳机前一直有效（与 s_use_abs_vol 语义一致）。 */
-        }
         if (s_evt_cb) s_evt_cb(c->connected ? BT_EVT_CONNECTED : BT_EVT_DISCONNECTED, c->addr, s_evt_ctx);
-        if (c->connected) {
-            /* 连上后把本地当前档位同步到耳机，避免屏幕显示与耳机实际音量不一致。
-               AVRCP 通常比 A2DP 稍晚就绪，起一个短延时任务错开这个窗口。 */
-            if (!s_sync_task_running) {
-                s_sync_task_running = true;
-                /* 2.5KB 短命任务（同步完即退出）。也一并外置 PSRAM（F35）：
-                   本文件在"内存最紧张"的 BT 连上瞬间被调用，正是最不能夺内部 RAM 的时刻。 */
-                BaseType_t ok = xTaskCreateWithCaps(sync_vol_task, "bt_vol_sync", 2560, NULL, 5, NULL,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (ok != pdPASS) {
-                    s_sync_task_running = false;
-                    ESP_LOGW(TAG, "vol sync task create failed (stack->PSRAM)");
-                }
-            }
-        }
+        /* ★ 2026-09-22：连接/断开都不再需要"音量同步任务" ——
+           数字增益保存在常驻的 ALC 元素里，推流开始时自动生效
+           （见 STREAM_STATE_CHG 分支与 bt_push_service_set_volume）。 */
         break;
     }
     case ESP_BT_AUDIO_EVENT_STREAM_STATE_CHG: {
@@ -418,6 +172,14 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
         /* 转发给推流服务：带 stream_handle + 完整四态语义
            （ALLOCATED / STARTED / STOPPED / RELEASED），由它驱动 local2bt pipeline */
         bt_push_service_on_stream_state(st->stream_handle, st->state);
+
+        /* ★ 推流开始时把当前档位同步成数字增益：用户在未推流期间调音量
+           走的是本地 codec 路径（见 bt_audio_service_set_volume），
+           ALC 元素里存的可能是旧档位，这里补一次。 */
+        if (st->state == ESP_BT_AUDIO_STREAM_STATE_ALLOCATED ||
+            st->state == ESP_BT_AUDIO_STREAM_STATE_STARTED) {
+            bt_push_service_set_volume(button_service_get_volume());
+        }
 
         /* UI 层仍按原 BOOL 语义收（page_bluetooth 不用改）：
            只有真正 STARTED 才算"正在推流" */
@@ -447,6 +209,13 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
         break;
     }
 }
+
+/* 前向声明：bt_audio_service_init() 在 on_push_finished 定义之前就要注册它。
+ * ★ 2026-09-22 补：此前删 AVRCP 音量代码块时，把这条声明连同被删区间一起误删了，
+ *   导致 bt_audio_service_init 里报 'on_push_finished' undeclared。
+ *   注意此处是**作为函数指针传递**（后面跟 ')' 不是 '('），所以编译期只在
+ *   "未声明标识符"这一层报错，而不是"未定义函数"。 */
+static void on_push_finished(void);
 
 void bt_audio_service_init(bt_audio_evt_cb_t cb, void *ctx)
 {
@@ -647,9 +416,8 @@ static void push_finish_cleanup_task(void *arg)
     esp_bt_audio_media_stop(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC);
     session_manager_end(SESSION_BT_PUSH);   /* ★ 这一步此前完全缺失 */
     bt_push_service_clear_finished();
-    s_last_sent_vol = -1;
 
-    /* 通知 UI 回到"已停止"态（page_bluetooth / tab_btpush 复用 BT_EVT_STREAM_OFF） */
+    /* 通知 UI 回到"已停止"态（page_bluetooth / tab_audio 复用 BT_EVT_STREAM_OFF） */
     if (s_evt_cb) {
         s_evt_cb(BT_EVT_STREAM_OFF, NULL, s_evt_ctx);
     }
@@ -717,78 +485,25 @@ esp_err_t bt_audio_service_stop_source(void)
 
 bool bt_audio_service_is_connected(void) { return s_connected; }
 
+/* button_service 的档位上限（其 VOL_MAX 是 .c 里的私有宏，这里显式对齐）。
+ * ★ 必须折算：数字增益按 0..100 满幅映射，若直接传 0..90，
+ *   90 档算出来只有约 -0.9 dB，用户会感觉"音量没推满"。
+ * ⚠ 若 button_service 改了 VOL_MAX，这里要同步。 */
+#define BT_VOL_LOCAL_MAX   90
+
 esp_err_t bt_audio_service_set_volume(int volume)
 {
-    if (!s_on || !s_connected) {
+    if (!s_on) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    /* ① 绝对音量：一步到位，两端档位严格一致（A2DP 1.3+ 耳机普遍支持） */
-    if (s_use_abs_vol) {
-        esp_err_t ret = esp_bt_audio_vol_set_absolute((uint32_t)local_vol_to_app(volume));
-        if (ret == ESP_OK) {
-            s_last_sent_vol = volume;
-            s_abs_fail_count = 0;
-        } else {
-            ESP_LOGW(TAG, "set abs vol failed: %s (%d consecutive)",
-                     esp_err_to_name(ret), s_abs_fail_count + 1);
-            if (ret == ESP_ERR_INVALID_STATE) {
-                /* ① 补建一次（若还没放弃重试） */
-                avrcp_ensure_ct_link();
-                /* ② 探测：万一其实已经好了（补建刚生效），立刻重试一次 */
-                if (avrcp_probe_ready()) {
-                    ret = esp_bt_audio_vol_set_absolute((uint32_t)local_vol_to_app(volume));
-                    if (ret == ESP_OK) {
-                        s_last_sent_vol = volume;
-                        s_abs_fail_count = 0;
-                        ESP_LOGI(TAG, "set abs vol OK after re-probe");
-                        return ret;
-                    }
-                }
-                /* ③ 连续失败到阈值 → 自动降级相对模式，保证"按键能调音量" */
-                if (++s_abs_fail_count >= ABS_FAIL_DOWNGRADE) {
-                    ESP_LOGW(TAG, "abs vol failed %d times, downgrade to RELATIVE mode",
-                             s_abs_fail_count);
-                    s_use_abs_vol = false;
-                    s_last_sent_vol = volume;
-                }
-            }
-        }
-        return ret;
+    /* ★ 2026-09-22：音量改为「推流数字增益」，不再走 AVRCP（原因见文件上方注释）。
+     * 只在真正推流时接管：否则返回 ESP_ERR_INVALID_STATE，
+     * 让上层（main.c on_volume_change）继续走本地 codec ——
+     * 那是扬声器播放 / 开机提示音的正确出口。 */
+    if (!s_connected || !bt_push_service_is_playing()) {
+        return ESP_ERR_INVALID_STATE;
     }
-
-    /* ② 相对音量：按与上次目标档位的差值，逐格发 ±N
-     *    （个别老耳机不听 Absolute Volume 时可切到这个模式） */
-    int base = (s_last_sent_vol >= 0) ? s_last_sent_vol : (BT_VOL_LOCAL_MAX / 2);
-    int diff_ticks = local_vol_to_app(volume) - local_vol_to_app(base);
-    if (diff_ticks == 0) {
-        return ESP_OK;   /* 档位未变，无需下发 */
-    }
-
-    bool up = (diff_ticks > 0);
-    int steps = (diff_ticks > 0) ? diff_ticks : -diff_ticks;
-    /* 上限保护：拖滑块时避免一次刷爆 AVRCP（正常一次按键最多 20 格） */
-    if (steps > 32) {
-        steps = 32;
-    }
-    esp_err_t ret = ESP_OK;
-    for (int i = 0; i < steps; i++) {
-        ret = esp_bt_audio_vol_set_relative(up);
-        if (ret != ESP_OK) {
-            break;
-        }
-    }
-    if (ret == ESP_OK) {
-        s_last_sent_vol = volume;
-    }
-    ESP_LOGD(TAG, "vol rel %s x%d -> local %d, ret=%s",
-             up ? "up" : "down", steps, volume, esp_err_to_name(ret));
-    return ret;
-}
-
-void bt_audio_service_set_abs_volume(bool use_absolute)
-{
-    s_use_abs_vol = use_absolute;
-    s_last_sent_vol = -1;   /* 切模式后基准失效，重新基线 */
-    ESP_LOGI(TAG, "volume mode -> %s", use_absolute ? "absolute" : "relative");
+    /* 本地 0..90 → 数字增益量纲 0..100（四舍五入） */
+    int v100 = (volume * 100 + BT_VOL_LOCAL_MAX / 2) / BT_VOL_LOCAL_MAX;
+    return bt_push_service_set_volume(v100);
 }

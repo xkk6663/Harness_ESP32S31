@@ -39,6 +39,7 @@
 
 #include "tab_video.h"
 #include "ui/common/ui_theme.h"
+#include "ui/common/ui_common.h"
 #include "middleware/system/sdcard_service.h"
 
 static const char *TAG = "TAB_VIDEO";
@@ -182,18 +183,11 @@ static int init_codec(void)
     return 0;
 }
 
-/* 初始化 LCD panel（复用 BSP） */
-static int init_lcd(void)
-{
-    const bsp_display_config_t disp_cfg = { .dummy = 0 };
-    esp_err_t ret = bsp_display_new(&disp_cfg, &s_lcd_panel, &s_lcd_io);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "bsp_display_new failed: %s, trying existing panel", esp_err_to_name(ret));
-        /* 已经初始化过了，拿不到 handle，先返回 0 继续 */
-        return -1;
-    }
-    return 0;
-}
+/* ★ 2026-09-22 删除 init_lcd()：
+ *   本工程走 LVGL backend，面板已由 BSP 初始化，init_player() 里明确注明
+ *   "不需要单独初始化 LCD"；init_lcd() 从未被调用 → -Wunused-function。
+ *   s_lcd_panel / s_lcd_io 不受影响，它们改由 init_player() 中的
+ *   bsp_display_get_panel() / bsp_display_get_io() 取得（见本文件下方）。 */
 
 /* 初始化播放器 */
 static int init_player(void)
@@ -322,27 +316,58 @@ static void on_item_click(lv_event_t *e)
 void tab_video_build(lv_obj_t *parent, lv_group_t *g)
 {
     s_parent = parent;
+    scan_videos();
     init_player();
 
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(parent, 10, 0);
+    lv_obj_set_style_pad_top(parent, 14, 0);
+    lv_obj_set_style_pad_bottom(parent, 10, 0);
 
-    s_title = lv_label_create(parent);
-    lv_label_set_text(s_title, "SD card video");
+    /* ① 顶栏：标题 + 片源数量（对齐 tab_audio / tab_call 的卡片风格） */
+    lv_obj_t *header = ui_common_card(parent, BSP_LCD_H_RES - 40, 48, 12);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(header, 16, 0);
+
+    s_title = lv_label_create(header);
+    lv_label_set_text_static(s_title, LV_SYMBOL_VIDEO "  VIDEO LIBRARY");
+    lv_obj_set_style_text_color(s_title, COL_CYAN, 0);
     lv_obj_set_style_text_font(s_title, UI_FONT, 0);
-    lv_obj_align(s_title, LV_ALIGN_TOP_MID, 0, 10);
 
-    s_list = lv_list_create(parent);
-    lv_obj_set_size(s_list, 700, 300);
-    lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_t *cnt = lv_label_create(header);
+    lv_label_set_text_fmt(cnt, "%d clip%s", s_video_count,
+                          s_video_count == 1 ? "" : "s");
+    lv_obj_set_style_text_color(cnt, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(cnt, UI_FONT, 0);
 
-    scan_videos();
+    /* ② 片源列表（占满剩余高度，内部滚动） */
+    s_list = ui_common_list(parent);
+    lv_obj_set_width(s_list, BSP_LCD_H_RES - 40);
+    lv_obj_set_flex_grow(s_list, 1);
+
     for (int i = 0; i < s_video_count; i++) {
         const char *name = strrchr(s_videos[i], '/');
         name = name ? name + 1 : s_videos[i];
-        lv_obj_t *btn = lv_list_add_btn(s_list, LV_SYMBOL_VIDEO, name);
+        lv_obj_t *btn = ui_common_list_add_button(s_list, LV_SYMBOL_VIDEO, name);
         lv_obj_add_event_cb(btn, on_item_click, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
+    if (s_video_count == 0) {
+        lv_obj_t *empty = lv_label_create(s_list);
+        lv_label_set_text_static(empty, "No clips found in /sdcard/videos");
+        lv_obj_set_style_text_color(empty, COL_SUBTEXT, 0);
+        lv_obj_set_style_text_font(empty, UI_FONT, 0);
+    }
+
+    /* ③ 底部提示 */
+    lv_obj_t *foot = lv_label_create(parent);
+    lv_label_set_text_static(foot, "Tap a clip - video takes over the panel");
+    lv_obj_set_style_text_color(foot, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(foot, UI_FONT, 0);
+
     (void)g;
 }
 

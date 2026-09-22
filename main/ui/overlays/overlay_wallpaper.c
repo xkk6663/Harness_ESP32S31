@@ -153,7 +153,7 @@ lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent)
     lv_obj_set_style_border_width(layer, 0, 0);
     lv_obj_set_style_radius(layer, 0, 0);
     lv_obj_set_style_pad_all(layer, 0, 0);
-    lv_obj_clear_flag(layer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(layer, false);
 
     lv_obj_t *canvas = lv_canvas_create(layer);
     lv_obj_center(canvas);
@@ -182,7 +182,7 @@ static lv_obj_t *card_create(lv_obj_t *parent, lv_align_t align,
     lv_obj_set_style_border_color(c, COL_BORDER, 0);
     lv_obj_set_style_border_width(c, 1, 0);
     lv_obj_set_style_pad_all(c, 8, 0);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(c, false);
     return c;
 }
 
@@ -221,7 +221,7 @@ static void clock_widget_create(lv_obj_t *parent)
     lv_obj_set_style_border_color(frame, COL_CYAN, 0);
     lv_obj_set_style_border_width(frame, 1, 0);
     lv_obj_set_style_pad_all(frame, 0, 0);
-    lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(frame, false);
 
     /* top bar */
     s_wifi_icon = mk_icon(frame, &image_wifi, ICON_SCALE_SMALL,
@@ -523,7 +523,7 @@ void overlay_wallpaper_init(lv_obj_t *tab_btns)
     s_wallpaper = overlay_wallpaper_build(lv_layer_top());
     clock_widget_create(s_wallpaper);
     lv_obj_set_y(s_wallpaper, -BSP_LCD_V_RES);
-    lv_obj_add_flag(s_wallpaper, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(s_wallpaper, true);
     lv_obj_add_event_cb(s_wallpaper, wp_pressed_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_wallpaper, wp_pressing_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(s_wallpaper, wp_released_cb, LV_EVENT_RELEASED, NULL);
@@ -532,7 +532,7 @@ void overlay_wallpaper_init(lv_obj_t *tab_btns)
         lv_obj_add_event_cb(s_tab_btns, main_pressed_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_tab_btns, main_pressing_cb, LV_EVENT_PRESSING, NULL);
         lv_obj_add_event_cb(s_tab_btns, main_released_cb, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_flag(s_tab_btns, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_obj_set_gesture_bubble(s_tab_btns, true);
     }
 
     if (!s_clock_timer) {

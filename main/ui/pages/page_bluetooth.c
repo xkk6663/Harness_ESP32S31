@@ -175,13 +175,13 @@ static void poll_cb(lv_timer_t *t)
 
     /* 控件可见性：关蓝牙时只留开关 */
     if (on) {
-        lv_obj_clear_flag(s_role_btn, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_scan_btn, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_dev_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_role_btn, false);
+        lv_obj_set_hidden(s_scan_btn, false);
+        lv_obj_set_hidden(s_dev_list, false);
     } else {
-        lv_obj_add_flag(s_role_btn, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_scan_btn, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_dev_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_role_btn, true);
+        lv_obj_set_hidden(s_scan_btn, true);
+        lv_obj_set_hidden(s_dev_list, true);
     }
 
     /* 角色按钮文案 */
@@ -227,7 +227,7 @@ static lv_obj_t *bt_create(lv_obj_t *parent)
     lv_obj_set_flex_align(pw_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_left(pw_row, 12, 0);
     lv_obj_set_style_pad_right(pw_row, 12, 0);
-    lv_obj_remove_flag(pw_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(pw_row, false);
     lv_obj_t *pw_lab = lv_label_create(pw_row);
     lv_label_set_text_static(pw_lab, LV_SYMBOL_BLUETOOTH"  Bluetooth Power");
     lv_obj_set_style_text_color(pw_lab, COL_TEXT, 0);

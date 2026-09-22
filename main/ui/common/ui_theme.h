@@ -22,9 +22,11 @@ extern "C" {
 #define COL_BG        lv_color_hex(0x0F2547)  /* page background            */
 #define COL_DARK      lv_color_hex(0x0B1120)  /* deepest background / glyph */
 #define COL_CARD      lv_color_hex(0x1E3A5F)  /* card / panel surface       */
+#define COL_CARD_HI   lv_color_hex(0x27476E)  /* raised row surface (list)  */
 #define COL_TABBAR    lv_color_hex(0x102A4C)  /* main tab bar background    */
 #define COL_BORDER    lv_color_hex(0x3B5A82)  /* hairline border            */
 #define COL_CYAN      lv_color_hex(0x22D3EE)  /* accent / active            */
+#define COL_ACCENT_DIM lv_color_hex(0x0E7490) /* accent dimmed (pressed/sel) */
 #define COL_GREEN     lv_color_hex(0x34D399)  /* ok / standby dot           */
 #define COL_RED       lv_color_hex(0xF87171)  /* record / danger            */
 #define COL_TEXT      lv_color_hex(0xE2E8F0)  /* primary text               */

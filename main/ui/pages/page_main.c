@@ -21,8 +21,7 @@
 #include "ui/tabs/tab_call.h"
 #include "ui/tabs/tab_record.h"
 #include "ui/tabs/tab_sys_entry.h"
-#include "ui/tabs/tab_music.h"
-#include "ui/tabs/tab_btpush.h"
+#include "ui/tabs/tab_audio.h"
 #include "ui/tabs/tab_video.h"
 #include "ui/overlays/overlay_wallpaper.h"
 #include "page_wav_player.h"
@@ -75,8 +74,9 @@ static lv_obj_t *main_create(lv_obj_t *parent)
 
     lv_obj_t *tab_call = lv_tabview_add_tab(s_tabview, LV_SYMBOL_AUDIO"  CALL");
     lv_obj_t *tab_rec  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SAVE"  REC");
-    lv_obj_t *tab_mus  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_LIST"  MUSIC");
-    lv_obj_t *tab_bpus = lv_tabview_add_tab(s_tabview, LV_SYMBOL_BLUETOOTH"  BTPUSH");
+    /* ★ 2026-09-22：原 MUSIC 与 BTPUSH 两页合并为 AUDIO，
+       播放出口由页内模式按钮切换（本地扬声器 / 蓝牙推流）。 */
+    lv_obj_t *tab_aud  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_LIST"  AUDIO");
     lv_obj_t *tab_vid  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_VIDEO"  VIDEO");
     lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
 
@@ -94,7 +94,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     uint32_t n = lv_obj_get_child_cnt(s_tab_btns);
     for (uint32_t i = 0; i < n; i++) {
         lv_obj_t *child = lv_obj_get_child(s_tab_btns, i);
-        lv_obj_add_flag(child, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_event_bubble(child, true);
     }
 
     /* Encoder groups (only created when an encoder indev exists) */
@@ -109,8 +109,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
 
     tab_call_build(tab_call, s_group_call);
     tab_record_build(tab_rec, s_group_rec);
-    tab_music_build(tab_mus, NULL);
-    tab_btpush_build(tab_bpus, NULL);
+    tab_audio_build(tab_aud, NULL);
     tab_video_build(tab_vid, NULL);
     tab_sys_entry_build(tab_sys, s_group_sys);
 
@@ -130,8 +129,7 @@ static void main_destroy(lv_obj_t *page)
 {
     tab_call_destroy();
     tab_record_destroy();
-    tab_music_destroy();
-    tab_btpush_destroy();
+    tab_audio_destroy();
     tab_video_destroy();
     tab_sys_entry_destroy();
     overlay_wallpaper_deinit();

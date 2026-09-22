@@ -105,7 +105,7 @@ static const wx_code_map_t s_wx_map[] = {
  * @note  cJSON 解析出来的 text 是中文；优先按 icon 主码查表，
  *        查不到则回退到中文关键字匹配，最后回退到 "N/A"。
  */
-static const char *wx_text_to_en(const char *icon, const char *text)
+static const __attribute__((unused)) char *wx_text_to_en(const char *icon, const char *text)
 {
     if (icon && icon[0]) {
         int code = atoi(icon);
@@ -369,8 +369,13 @@ static void parse_weather_now(weather_data_t *out)
     cJSON_Delete(root);
 }
 
-/** 解析 /v7/air/now：填 aqi/aqi_cat */
-static void parse_air_now(weather_data_t *out)
+/** 解析 /v7/air/now：填 aqi/aqi_cat
+ *
+ * ★ 2026-09-22：当前 UI 不再展示 AQI（壁纸右下角那张卡已改为"实时温度计"），
+ *   故本函数暂无调用点。解析逻辑本身是完整可用的，保留待日后接回，
+ *   加 __attribute__((unused)) 消除 -Wunused-function。
+ *   若确定不再需要 AQI，可连同 weather_data_t 里的 aqi / aqi_cat 一起删除。 */
+static void __attribute__((unused)) parse_air_now(weather_data_t *out)
 {
     cJSON *root = cJSON_Parse(s_http_buf);
     if (!root) return;

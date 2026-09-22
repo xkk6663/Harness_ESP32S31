@@ -38,6 +38,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <math.h>   /* ★ 数字音量换算：log10f / lroundf */
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -57,6 +59,7 @@
 #include "esp_gmf_asrc.h"
 #include "esp_gmf_io_bt.h"
 #include "esp_gmf_err.h"
+#include "esp_gmf_alc.h"   /* ★ 数字音量：ALC 元素的增益接口 */
 
 #include "esp_bt_audio_media.h"
 #include "esp_bt_audio_stream.h"
@@ -111,6 +114,56 @@ static volatile bool s_uri_pending = false;   /* 有待下发的 uri */
 static volatile bool s_finished = false;      /* ★ 本曲已自然播完，待上层收尾 */
 static void (*s_finished_cb)(void) = NULL;    /* ★ 播完回调（在 GMF 事件线程触发） */
 static bool s_media_registered = false;
+
+/* ★ 数字音量（2026-09-22）
+ * 背景：本工程推流路径是 SD→解码→ASRC→SBC 编码→蓝牙，**完全不经过本地 codec**，
+ *   所以"改本地 codec 音量"对耳机毫无作用；而耳机侧又不接受 AVRCP 音量指令
+ *   （vol_ops 整张表从未注册，绝对/相对都返回 ESP_ERR_INVALID_STATE）。
+ * 出路：我们是 A2DP 源，**编码前的 PCM 完全由我们掌控** —— 在 aud_asrc 与 aud_enc
+ *   之间插一个 ALC 元素做数字衰减，耳机必然听得到，与它支不支持 AVRCP 无关。
+ * 代价：低音量时数字衰减使 SBC 有效位数变少，音质略有损失。 */
+static esp_gmf_element_handle_t s_alc_el = NULL;   /* pipeline 内的 aud_alc 实例 */
+static int                      s_vol    = 100;    /* 本地档位 0..100，默认满幅 */
+
+/* 本地档位(0..100) → dB 增益。对数律贴合听感：
+ *   100 -> 0 dB（不衰减）· 50 -> -6 dB · 25 -> -12 dB · 0 -> -64 dB（听不见）
+ * ★ 用 -64 而不是"低于 -64"来静音：头文件写明支持范围就是 [-64, 63]，
+ *   取下界比依赖"低于下界即 mute"的隐式行为更安全。 */
+static int8_t vol_to_gain_db(int vol)
+{
+    if (vol <= 0) {
+        return -64;
+    }
+    if (vol >= 100) {
+        return 0;
+    }
+    float db = 20.0f * log10f((float)vol / 100.0f);
+    if (db < -64.0f) {
+        db = -64.0f;
+    }
+    return (int8_t)lroundf(db);
+}
+
+/* 把档位下发到 ALC 元素。
+ * ★ 必须**逐声道**下发：ALC 是 per-channel 增益，只设 ch0 会造成左右不平衡。
+ *   声道数取元素配置（由上游音频信息协商而来）；首次尚未协商时即初始值 2。
+ * ★ 元素句柄常驻（P3：建一次不毁），未推流时调用也安全 ——
+ *   ALC 先把增益存着，内部句柄 reopen 时会自动重新套用（见 esp_gmf_alc.c）。 */
+static void alc_apply_gain(int vol)
+{
+    if (!s_alc_el) {
+        return;
+    }
+    esp_ae_alc_cfg_t *cfg = (esp_ae_alc_cfg_t *)OBJ_GET_CFG(s_alc_el);
+    uint8_t nch = (cfg && cfg->channel >= 1) ? cfg->channel : 2;
+    if (nch > 2) {
+        nch = 2;   /* 本链路最多立体声（ASRC dest_ch ≤ 2） */
+    }
+    int8_t db = vol_to_gain_db(vol);
+    for (uint8_t i = 0; i < nch; i++) {
+        esp_gmf_alc_set_gain(s_alc_el, i, db);
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* 工具                                                                */
@@ -284,6 +337,9 @@ static void proc_task(void *arg)
         case CMD_RUN:
             ESP_LOGI(TAG, "pipeline run");
             esp_gmf_pipeline_run(s_pipe);
+            /* ★ run 之后元素才拿到真实音频参数（采样率/声道数）并可能 reopen
+               内部句柄，这里再下发一次音量，确保新开的 ALC 实例带上正确增益。 */
+            alc_apply_gain(s_vol);
             break;
 
         case CMD_STOP_RESET:
@@ -362,6 +418,17 @@ void bt_push_service_early_init(void)
         goto fail;
     }
 
+    /* ★ 数字音量元素：aud_alc 插在 asrc 与 enc 之间，
+       作用于"已重采样到耳机协商参数"的 PCM，最省算力且不受编码器影响。
+       这里的配置只是初值，真实采样率/声道数由上游音频信息协商后自动更新。 */
+    esp_ae_alc_cfg_t alc_cfg = DEFAULT_ESP_GMF_ALC_CONFIG();
+    if (esp_gmf_alc_init(&alc_cfg, &el) == ESP_GMF_ERR_OK) {
+        esp_gmf_pool_register_element(s_pool, el, NULL);
+    } else {
+        ESP_LOGE(TAG, "aud_alc init failed");
+        goto fail;
+    }
+
     esp_audio_enc_config_t enc_cfg = {
         .type = ESP_AUDIO_TYPE_SBC,
         .cfg = NULL,
@@ -395,13 +462,24 @@ void bt_push_service_early_init(void)
         goto fail;
     }
 
-    /* 建 pipeline：io_file -> aud_dec -> aud_asrc -> aud_enc -> io_bt */
-    const char *el_names[] = {"aud_dec", "aud_asrc", "aud_enc"};
-    if (esp_gmf_pool_new_pipeline(s_pool, "io_file", el_names, 3, "io_bt", &s_pipe) != ESP_GMF_ERR_OK) {
+    /* 建 pipeline：io_file -> aud_dec -> aud_asrc -> aud_alc -> aud_enc -> io_bt */
+    const char *el_names[] = {"aud_dec", "aud_asrc", "aud_alc", "aud_enc"};
+    if (esp_gmf_pool_new_pipeline(s_pool, "io_file", el_names, 4, "io_bt", &s_pipe) != ESP_GMF_ERR_OK) {
         ESP_LOGE(TAG, "new_pipeline failed");
         goto fail;
     }
     esp_gmf_pipeline_set_event(s_pipe, pipe_event_cb, NULL);
+
+    /* ★ 取管内 aud_alc 实例句柄（音量控制要用），并把已存档位下发一次。
+       ALC 元素随 pipeline 常驻（P3：建一次不毁），故句柄长期有效 ——
+       这也意味着**未推流时也能设音量**，增益会被元素保存、推流时自然生效。 */
+    if (esp_gmf_pipeline_get_el_by_name(s_pipe, "aud_alc", &s_alc_el) != ESP_GMF_ERR_OK
+        || s_alc_el == NULL) {
+        s_alc_el = NULL;
+        ESP_LOGW(TAG, "aud_alc not in pipeline; digital volume unavailable");
+    } else {
+        alc_apply_gain(s_vol);
+    }
 
     /* 建 GMF task：栈进 PSRAM（P2），核 1，prio 15 */
     esp_gmf_task_cfg_t task_cfg = DEFAULT_ESP_GMF_TASK_CONFIG();
@@ -531,6 +609,27 @@ void bt_push_service_clear_finished(void)
     s_finished = false;
 }
 
+/* ★ 数字音量入口（2026-09-22）：把本地档位(0..100)转成编码前 PCM 的 dB 增益。
+ *   未推流时调用同样有效 —— 增益存在常驻的 ALC 元素里，推流时自动生效。 */
+esp_err_t bt_push_service_set_volume(int vol)
+{
+    if (vol < 0) {
+        vol = 0;
+    }
+    if (vol > 100) {
+        vol = 100;
+    }
+    s_vol = vol;
+    if (!s_alc_el) {
+        /* pipeline 尚未建好（early_init 失败或还没跑）——
+           档位已记下，元素就绪时由 early_init 末尾统一下发。 */
+        return ESP_ERR_INVALID_STATE;
+    }
+    alc_apply_gain(vol);
+    ESP_LOGI(TAG, "digital vol %d -> %d dB", vol, (int)vol_to_gain_db(vol));
+    return ESP_OK;
+}
+
 void bt_push_service_request_destroy(void)
 {
     /* P4：这里只投递命令，销毁动作在 proc_task 上下文里做 */
@@ -574,6 +673,9 @@ void bt_push_service_on_stream_state(void *stream, int state)
 
         /* asrc：把源（MP3 解码输出，这里按立体声 44.1k 交底）转到耳机协商参数 */
         set_asrc_dest(0, ci.sample_rate, 2, ch);
+
+        /* ★ 声道数可能随本曲的 codec 协商结果变化，按新声道数补一次增益 */
+        alc_apply_gain(s_vol);
 
         /* encoder：耳机协商的 codec（SBC） */
         esp_audio_enc_config_t enc_cfg = {

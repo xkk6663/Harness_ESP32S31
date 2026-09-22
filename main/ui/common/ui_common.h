@@ -32,6 +32,29 @@ lv_obj_t *ui_common_setting_row(lv_obj_t *parent, const char *icon,
 /* Create a centered placeholder info card (used by not-yet-built pages). */
 lv_obj_t *ui_common_placeholder(lv_obj_t *parent, const char *text);
 
+/* Create a vertical list container.
+ * ★ 替代已弃用的 lv_list_create()：lv_list 本质就是 flex-column 的 lv_obj。 */
+lv_obj_t *ui_common_list(lv_obj_t *parent);
+
+/* Append a full-width "symbol + text" row button to a list created by
+ * ui_common_list(). Returns the button (attach LV_EVENT_CLICKED to it).
+ * ★ 替代已弃用的 lv_list_add_button()，逐行复刻其官方实现。 */
+lv_obj_t *ui_common_list_add_button(lv_obj_t *list, const void *symbol,
+                                    const char *text);
+
+/* ---- 统一视觉语言：卡片与按钮（对齐 tab_call.c 的既有风格）---- */
+
+/* A raised card surface: COL_CARD background + hairline border + radius. */
+lv_obj_t *ui_common_card(lv_obj_t *parent, int w, int h, int radius);
+
+/* Filled cyan pill button for the PRIMARY action (text is set as its label). */
+lv_obj_t *ui_common_accent_button(lv_obj_t *parent, int w, int h,
+                                  const char *text);
+
+/* Outlined cyan pill button for SECONDARY actions / mode toggles. */
+lv_obj_t *ui_common_ghost_button(lv_obj_t *parent, int w, int h,
+                                 const char *text);
+
 #ifdef __cplusplus
 }
 #endif
