@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lvgl.h"
 #include "bsp/esp-bsp.h"
 
 #include "ui/ui_manager/page_manager.h"
@@ -27,6 +30,8 @@
 #include "middleware/network/net_time_service.h"
 #include "middleware/bluetooth/bt_audio_service.h"
 #include "middleware/bluetooth/bt_push_service.h"
+#include "middleware/bluetooth/bt_sink_service.h"
+#include "ui/common/ui_binfont.h"
 
 static const char *TAG = "main";
 
@@ -114,6 +119,17 @@ static void on_wifi_evt(wifi_evt_t evt, const char *info)
     }
 }
 
+/* §28.31 临时诊断：taskLVGL 栈水位。回调在 taskLVGL 上下文执行，NULL = 当前任务。
+ * ★ 本移植（riscv，portmacro.h:95）StackType_t = uint8_t —— 水位返回值就是**字节数**，
+ *   实测日志 "9128 words (9128 bytes)" 两数相等即证。 */
+static void stack_hwm_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    UBaseType_t words = uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "[stack-hwm] taskLVGL high-water = %u words (%u bytes)",
+             (unsigned)words, (unsigned)words * (unsigned)sizeof(StackType_t));
+}
+
 void app_main(void)
 {
     BOOT_DIAG("app_main enter");
@@ -128,16 +144,54 @@ void app_main(void)
     /* ★ 时序纪律：所有"大块 + 只分一次 + 活到关机"的缓冲，必须在
        bsp_display_start() 之前拿完。此时内部 RAM 最空、PSRAM 也还没被切碎。
        漏一个就会像 F28/F30 那样：晚分配吃掉内部 RAM，后续开蓝牙直接 assert。
-       ---- 本段按此顺序：BT controller → GMF pool → JPEG 帧缓冲 ---- */
+       ---- 本段按此顺序：BT controller → GMF pool(Source/Sink 各一套) → JPEG 帧缓冲 ---- */
     bt_audio_service_controller_init();
     BOOT_DIAG("after bt ctrl init");
     bt_push_service_early_init();
     BOOT_DIAG("after bt_push early init");
+    /* ★ Sink 接收管线（io_bt→aud_dec→aud_asrc→io_codec_dev）+ 封面解码任务，
+       与 Source 一样走"方案 B 延迟常驻"：在这里建好，之后只 run/stop 不重建。
+       失败只打日志（蓝牙非必需功能），不影响开机。 */
+    bt_sink_service_early_init();
+    BOOT_DIAG("after bt_sink early init");
     fs_service_init();          /* JPEG 输出缓冲 1.10MB（800*480*3，LV_DEPTH=24），显式 PSRAM（F30） */
     BOOT_DIAG("after fs_service_init");
 
-    bsp_display_start();
+    /* ★ §28.31：taskLVGL 任务栈 7168 → 16384。
+     * 两次 "Stack protection fault"（进 SINK / back to Main 整页重绘瞬间）都发生在
+     * taskLVGL 上下文。panic dump 里的 Stack bounds/SP 永远是 ISR 栈区间+栈顶
+     * （portasm.S:669/:699-709 进中断就重写），判不出真凶 —— 上次按"中断栈溢出"
+     * 把 ISR_STACKSIZE 提到 4096 无效即是佐证。守卫是同步触发的，被打断的当前任务
+     * （taskLVGL）就是肇事者：esp_lvgl_port 默认 task_stack=7168（内部 RAM），
+     * 整页构建 + bin 字体动态字形加载 + 歌词/EQ 动画的调用链把它压穿了。
+     * bsp_display_start() 内部就是组装下面这份默认 cfg（见 bsp_display.c:274-291），
+     * 这里照抄后只覆盖 task_stack，其余行为不变。 */
+    bsp_display_cfg_t dsp_cfg = {
+        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+        .lvgl_port_cfg.task_stack = 16384,      /* 默认 7168，整页重绘深度不够 */
+        .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
+#if CONFIG_BSP_LCD_DRAW_BUF_DOUBLE
+        .double_buffer = 1,
+#else
+        .double_buffer = 0,
+#endif
+        .flags = {
+            .buff_dma = true,
+            .buff_spiram = false,
+            .sw_rotate = false,
+        }
+    };
+    bsp_display_start_with_config(&dsp_cfg);
     BOOT_DIAG("after bsp_display_start");
+
+    /* ---- §28.31 临时诊断：taskLVGL 栈水位（配合 16384 验证用）----
+     * 定时器回调跑在 taskLVGL 上下文，uxTaskGetStackHighWaterMark(NULL) 即 taskLVGL
+     * 自己的水位，单位是 StackType_t 字数。判读：16384 下若重绘高峰后仍剩 ≥5KB，
+     * 实锤"7168 不够"结案；若仍贴 0，说明另有深调用，继续查。
+     * 定位完成后整段（回调 + 创建）可删。 */
+    bsp_display_lock(0);
+    lv_timer_create(stack_hwm_timer_cb, 5000, NULL);
+    bsp_display_unlock();
     //bsp_display_brightness_set(50);
     audio_service_init();
     BOOT_DIAG("after audio_service_init");
@@ -174,6 +228,17 @@ void app_main(void)
     page_splash_set_enter_cb(on_splash_enter);
     PageManager_Load(&Page_Splash);     /* stack root */
     BOOT_DIAG("after PageManager_Load(splash)");
+
+    /* ★ 全 CJK bin 字体：LittleFS 读取 → PSRAM → LVGL 运行时字体。
+       放这里的三个理由：
+         1) 必须在 lv_init() 之后（bsp_display_start 内部做了），否则 lv_fs/lv_malloc 不可用；
+         2) 放 splash 之后 —— 本函数同步阻塞秒级（读 1.8MB + 解析 2 万字表），
+            此时 splash 已经上屏，用户看到的是启动画面而不是黑屏；
+         3) SINK 页要显示对端推来的曲名，字符集不可预测，没有它中文会变方块。
+       主页显式在"上滑"时才构建（on_splash_enter），所以正常情况下字体已就绪；
+       万一用户上滑得极快，tab_btsink 会先用内置字体、字体就绪后自动补套。 */
+    ui_binfont_init();
+    BOOT_DIAG("after ui_binfont_init");
 
     ESP_LOGI(TAG, "boot done, waiting swipe up");
 }

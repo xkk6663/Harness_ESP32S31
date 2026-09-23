@@ -19,6 +19,8 @@ idf_component_register(SRCS
     # ---- middleware / bluetooth：经典蓝牙链路 ----
     "middleware/bluetooth/bt_audio_service.c"
     "middleware/bluetooth/bt_push_service.c"
+    # bt_sink_service = A2DP Sink 接收（bt2codec 管线 + 元数据/封面）
+    "middleware/bluetooth/bt_sink_service.c"
     "middleware/bluetooth/link_manager.c"
 
     # ---- middleware / network：WiFi 与网络服务 ----
@@ -39,6 +41,8 @@ idf_component_register(SRCS
 
     # ---- ui / common：公共部件与主题 ----
     "ui/common/ui_common.c"
+    # ui_binfont = LittleFS/PSRAM 二进制字体加载（btsink 中文预渲染字体）
+    "ui/common/ui_binfont.c"
 
     # ---- ui / pages：全屏页面 ----
     "ui/pages/page_main.c"
@@ -55,6 +59,8 @@ idf_component_register(SRCS
     "ui/tabs/tab_sys_entry.c"
     # tab_audio = 原 tab_music + tab_btpush 合并（本地播放 / 蓝牙推流共用一页）
     "ui/tabs/tab_audio.c"
+    # tab_btsink = A2DP Sink 接收页（封面 + 元数据 + AVRCP 控制）
+    "ui/tabs/tab_btsink.c"
     "ui/tabs/tab_video.c"
 
     # ---- ui / overlays：浮层（壁纸 / 粒子） ----

@@ -22,6 +22,7 @@
 #include "ui/tabs/tab_record.h"
 #include "ui/tabs/tab_sys_entry.h"
 #include "ui/tabs/tab_audio.h"
+#include "ui/tabs/tab_btsink.h"
 #include "ui/tabs/tab_video.h"
 #include "ui/overlays/overlay_wallpaper.h"
 #include "page_wav_player.h"
@@ -37,6 +38,12 @@ static lv_group_t *s_group_sys;
 static void tab_changed_event(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        /* ★★ 不变量（勿改）：切 tab **绝不触碰蓝牙**。
+         * A2DP 角色切换必须重建整个 host、必然断开当前连接，所以它只能是
+         * Bluetooth 子页面里"用户明确按按钮"的结果（见
+         * bt_audio_service_switch_role 的调用契约）。
+         * SINK 页只按当前角色**动态显示/隐藏**内容，切走/切来都不影响蓝牙。
+         * 这里只做编码器输入设备的分组切换。 */
         page_main_refresh_group();
     }
 }
@@ -77,6 +84,10 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     /* ★ 2026-09-22：原 MUSIC 与 BTPUSH 两页合并为 AUDIO，
        播放出口由页内模式按钮切换（本地扬声器 / 蓝牙推流）。 */
     lv_obj_t *tab_aud  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_LIST"  AUDIO");
+    /* ★ btsink：显示名按用户确认用 "SINK"。
+       本页只在 A2DP 角色 = SINK 时展示内容；角色由 SYS > Bluetooth 页内按钮切换，
+       切 tab 不会、也不能改角色（见 tab_changed_event 的不变量注释）。 */
+    lv_obj_t *tab_snk  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_BLUETOOTH"  SINK");
     lv_obj_t *tab_vid  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_VIDEO"  VIDEO");
     lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
 
@@ -110,6 +121,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     tab_call_build(tab_call, s_group_call);
     tab_record_build(tab_rec, s_group_rec);
     tab_audio_build(tab_aud, NULL);
+    tab_btsink_build(tab_snk, NULL);
     tab_video_build(tab_vid, NULL);
     tab_sys_entry_build(tab_sys, s_group_sys);
 
@@ -130,6 +142,7 @@ static void main_destroy(lv_obj_t *page)
     tab_call_destroy();
     tab_record_destroy();
     tab_audio_destroy();
+    tab_btsink_destroy();
     tab_video_destroy();
     tab_sys_entry_destroy();
     overlay_wallpaper_deinit();

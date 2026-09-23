@@ -32,6 +32,7 @@ static lv_obj_t *s_bt_sw;
 static lv_obj_t *s_role_btn;
 static lv_obj_t *s_role_lab;
 static lv_obj_t *s_scan_btn;
+static lv_obj_t *s_scan_lab;
 static lv_obj_t *s_dev_list;
 static lv_timer_t *s_poll_timer;
 
@@ -149,9 +150,31 @@ static void bt_sw_cb(lv_event_t *e)
 static void role_btn_cb(lv_event_t *e)
 {
     (void)e;
-    bt_role_t cur = bt_audio_service_get_role();
-    bt_audio_service_set_role(cur == BT_ROLE_SOURCE ? BT_ROLE_SINK : BT_ROLE_SOURCE);
+    bt_role_t cur  = bt_audio_service_get_role();
+    bt_role_t next = (cur == BT_ROLE_SOURCE) ? BT_ROLE_SINK : BT_ROLE_SOURCE;
+
+    /* ★ 角色切换要重建 host（A2DP 全局单例，只能推倒重建），**必然会断开当前连接**。
+       先把预期写进状态栏，避免用户把"掉线"当成故障。 */
+    snprintf(s_state_txt, sizeof(s_state_txt), "Switching to %s (link will drop)...",
+             next == BT_ROLE_SINK ? "Sink" : "Source");
     s_state_changed = true;
+
+    /* ★★ 这里是本工程**唯一**合法调用 switch_role 的地方：
+       它是"蓝牙子页面里的按钮"，用户主动按的；tab 切换永远不会走到这里。 */
+    esp_err_t ret = bt_audio_service_switch_role(next);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "switch_role failed: %s", esp_err_to_name(ret));
+        snprintf(s_state_txt, sizeof(s_state_txt),
+                 ret == ESP_ERR_NO_MEM ? "Not enough RAM - role unchanged"
+                                       : "Role switch failed");
+        s_state_changed = true;
+        return;
+    }
+    if (!bt_audio_service_is_on()) {
+        snprintf(s_state_txt, sizeof(s_state_txt), "Role: %s (BT off)",
+                 next == BT_ROLE_SINK ? "Sink" : "Source");
+        s_state_changed = true;
+    }
 }
 
 static void scan_btn_cb(lv_event_t *e)
@@ -173,11 +196,12 @@ static void poll_cb(lv_timer_t *t)
         lv_obj_add_event_cb(s_bt_sw, bt_sw_cb, LV_EVENT_VALUE_CHANGED, NULL);
     }
 
-    /* 控件可见性：关蓝牙时只留开关 */
+    /* 控件可见性：关蓝牙时只留开关；Sink 模式不需要"扫别人"，隐藏搜索与设备列表 */
+    bool sink = (bt_audio_service_get_role() == BT_ROLE_SINK);
     if (on) {
         lv_obj_set_hidden(s_role_btn, false);
-        lv_obj_set_hidden(s_scan_btn, false);
-        lv_obj_set_hidden(s_dev_list, false);
+        lv_obj_set_hidden(s_scan_btn, sink);
+        lv_obj_set_hidden(s_dev_list, sink);
     } else {
         lv_obj_set_hidden(s_role_btn, true);
         lv_obj_set_hidden(s_scan_btn, true);
@@ -249,10 +273,10 @@ static lv_obj_t *bt_create(lv_obj_t *parent)
     lv_obj_set_size(s_scan_btn, BSP_LCD_H_RES - 80, 44);
     lv_obj_set_style_bg_color(s_scan_btn, COL_CYAN, 0);
     lv_obj_set_style_radius(s_scan_btn, 10, 0);
-    lv_obj_t *sl = lv_label_create(s_scan_btn);
-    lv_label_set_text_static(sl, LV_SYMBOL_BLUETOOTH"  SEARCH DEVICE");
-    lv_obj_set_style_text_color(sl, COL_DARK, 0);
-    lv_obj_center(sl);
+    s_scan_lab = lv_label_create(s_scan_btn);
+    lv_label_set_text_static(s_scan_lab, LV_SYMBOL_BLUETOOTH"  SEARCH DEVICE");
+    lv_obj_set_style_text_color(s_scan_lab, COL_DARK, 0);
+    lv_obj_center(s_scan_lab);
     lv_obj_add_event_cb(s_scan_btn, scan_btn_cb, LV_EVENT_CLICKED, NULL);
 
     /* 设备列表 */
@@ -279,7 +303,8 @@ static void bt_destroy(lv_obj_t *page)
         s_poll_timer = NULL;
     }
     lv_obj_del(page);
-    s_state_label = s_bt_sw = s_role_btn = s_role_lab = s_scan_btn = s_dev_list = NULL;
+    s_state_label = s_bt_sw = s_role_btn = s_role_lab = NULL;
+    s_scan_btn = s_scan_lab = s_dev_list = NULL;
     s_dev_cnt = 0;
 }
 

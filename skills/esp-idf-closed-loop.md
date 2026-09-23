@@ -6,6 +6,9 @@
 >
 > 本 Skill 记录"改代码 → 编译 → 烧录 → 抓日志 → 看 panic → 修 → 再来"的终端闭环操作，
 > 不依赖 VS Code / ESP-IDF 插件，纯 PowerShell + Python。
+>
+> ★ 2026-09-22 订正：分区布局（5MB/5MB/5.875MB@0xA20000）与 `write-flash` 的
+> **参数顺序（地址在前）**。旧版写的 3MB/9.87MB/0x620000 及倒序写法均已失效。
 
 ---
 
@@ -89,13 +92,15 @@ idf.py build
   `-D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_s31_korvo_1`；
 - 增量编译只改几个 .c 时不带该参数即可；
 - 成功标志：`Project build complete` + `display_audio_photo.bin binary size 0x...`；
-- OTA app 槽 3MB，当前 bin ≈ 0x18a360（~1.63MB），槽内剩余约 49%。
+- OTA app 槽 **5MB**（`ota_0@0x20000` / `ota_1@0x520000`），当前 bin ≈ 0x18a360（~1.63MB），槽内余量充足。
 
 ---
 
 ## 3. 烧录（分场景，避免每次都写 10MB）
 
-> 当前分区：`ota_0/ota_1 各 3MB` + `storage littlefs 9.87MB(@0x620000)`。
+> 当前分区（`partitions.csv`）：`ota_0@0x20000` / `ota_1@0x520000` **各 5MB** +
+> `storage littlefs @0xA20000 大小 0x5E0000`（**5.875MB**）。
+> ⚠ 历史文档里的 `0x620000` / `9.87MB` / `3MB` 都是**旧的**，已失效。
 > 已去掉 `FLASH_IN_PROJECT`，默认 **不再重烧 storage 素材镜像**，板子上已有素材/录音保留。
 > 原则：**只写这次真正变了的那一块**，其余不动。
 
@@ -104,9 +109,9 @@ idf.py build
 | 这次改了什么 | 用哪条命令 | 烧写内容 | 耗时 |
 |---|---|---|---|
 | 只改了 `main/` 业务代码（最常见） | `idf.py -p COM9 app-flash` | 仅 ota_0 app | **~2–5 秒** |
-| 改了 `sdkconfig` / bootloader / 分区表 | `idf.py -p COM9 flash` | bootloader+partition+otadata+app（~2MB） | ~10–20 秒 |
-| 改了 `littlefs_content/` 里的素材（壁纸/wav） | 先 `flash` 再单独烧 storage | 上述 + storage.bin@0x620000（10.35MB） | ~11 分钟 |
-| 新板子 / 整片擦除后首次烧录 | 全套：`flash` + 烧 storage | 全部 | ~11 分钟 |
+| 改了 `sdkconfig` / bootloader / 分区表 | `idf.py -p COM9 flash` | bootloader+partition+odadata+app（~2MB） | ~10–20 秒 |
+| 改了 `littlefs_content/` 里的素材（壁纸/wav/字体 bin） | 先 `flash` 再单独烧 storage | 上述 + storage.bin@**0xA20000**（6,160,384 B） | 数分钟 |
+| 新板子 / 整片擦除后首次烧录 | 全套：`flash` + 烧 storage | 全部 | 数分钟 |
 | 阶段六 OTA 升级 | 不烧录，走 wifi TCP 写 ota_1 | — | — |
 
 > 日常开发 99% 用第一条 `app-flash`。不要无脑 `flash` 更不要每次都写 storage。
@@ -120,10 +125,23 @@ idf.py build
 cd build
 & "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" -m esptool `
   --chip esp32s31 -p COM9 -b 460800 --before default-reset --after hard-reset `
-  write-flash 0x620000 storage.bin
+  write-flash 0xA20000 storage.bin
 ```
 
-要点：idf终端输入idf.py -p COM9 -b 921600 app-flash
+> ★★ **参数顺序铁律：`write-flash <地址> <文件>`，地址在前、文件在后。**
+> esptool 用法是 `write-flash [OPTIONS] <address> <filename>...`。倒过来写会报：
+> ```
+> Invalid value for '<address> <filename>...': Address "build/storage.bin" must be a number.
+> ```
+> （2026-09-22 实际踩到。这个报错是参数顺序问题，**不是**路径或文件问题。）
+> 校验地址对不对：`build/storage.bin` 大小应**正好** 6,160,384 B = `0x5E0000`，
+> 6,160,384 + 0xA20000 = 16,777,216 = 0x1000000（16MB flash 末尾）。
+
+提速（6MB 素材写起来慢，可提到 921600）：
+```powershell
+idf.py -p COM9 -b 921600 app-flash
+```
+
 ### 3.3 注意事项
 - 不要在这条命令后直接跟 `monitor`（见第 4 节）；
 - 成功标志：`Hash of data verified` + `Hard resetting via RTS pin...`，烧完板子自动复位；
@@ -218,7 +236,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". 'C:\Espressif\tool
 
 - ES8389 MCLK=GPIO42 未连 → BSP 已配 `use_mclk=false`，TDM 帧格式；
 - 推荐 16kHz / 16bit / mono，20ms 一帧 = 640B；
-- 分区表（OTA 最终布局，无 factory）：nvs 24K / phy 4K / otadata 8K / **ota_0 3MB@0x20000 / ota_1 3MB@0x320000** / **storage littlefs 9.87MB@0x620000**；
+- 分区表（OTA 最终布局，无 factory）：nvs 24K / phy 4K / otadata 8K / **ota_0 5MB@0x20000 / ota_1 5MB@0x520000** / **storage littlefs 5.875MB(0x5E0000)@0xA20000**（= 16MB flash 末尾）；
+- **烧 storage 的命令是 `write-flash <地址> <文件>`（地址在前）**，例如
+  `write-flash 0xA20000 storage.bin`。倒序会报 `Address "..." must be a number.`（详见 3.2）；
 - 文件系统：LittleFS（挂载点 `/littlefs`），素材目录 `littlefs_content/`；已去 `FLASH_IN_PROJECT`，日常不重烧 storage（见第 3 节）；
 - **音频素材规范（重要）**：播放/录音通路固定 **16kHz / 16bit / mono**。新增 WAV 素材必须满足：
   1. 采样率 16000、单声道、16bit（44.1k/立体声在本板会失真）；

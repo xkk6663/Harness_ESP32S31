@@ -16,6 +16,20 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_FREERTOS_HZ=1000
+## ★ 中断栈（ISR stack）1536 → 4096（2026-09-22 修 `Stack protection fault`）
+##   症状：连上蓝牙后切到 SINK 页，taskLVGL 触发 HW 栈保护 panic：
+##     Detected in task "taskLVGL" / MEPC → _interrupt_handler(vectors.S)
+##     Stack bounds: 0x2f02a100 - 0x2f02a700   ← 差 0x600 = 1536
+##   判据：portasm.S:698-713 在**每次进中断时**把 HW 栈守卫的窗口设成
+##     (xIsrStackBottom, xIsrStackTop)，而 riscv/portmacro.h:95 `portSTACK_TYPE = uint8_t`
+##     ⇒ xIsrStack 的字节数 == CONFIG_FREERTOS_ISR_STACKSIZE。0x600 == 1536 == 本项，
+##     即溢出的是**中断栈**，不是任何任务栈（任务栈不会正好 1536）。
+##   机制：avoid_tearing + DIRECT 模式每帧 = 1 次 vsync ISR + 480/HEIGHT 次 bounce ISR；
+##     SINK 页改版后 EQ 动画让它持续 ~30fps 重绘，display ISR 与刚连上蓝牙的
+##     HCI/AVDTP ISR 在同一核上**嵌套**，每层压 ~140B，1536B 被打穿。
+##   代价：每核各一份 ⇒ 2×(4096-1536) = +5KB 内部 RAM（bounce 省下的 31.25KB 足够覆盖）。
+##   IDF 该项默认就是 1536（Kconfig range 1536~32768），本项目此前用的是默认最小值。
+CONFIG_FREERTOS_ISR_STACKSIZE=4096
 CONFIG_BSP_LCD_RGB_BUFFER_NUMS=2
 CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_MODE=y
 ## ★ C 类降配（13_内存管理规范 §9.6）：HEIGHT 20→10，bounce 64000B→32000B，省 31.25 KB 内部 DMA。
@@ -29,6 +43,13 @@ CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 ## LVGL9 ##
 CONFIG_LV_CONF_SKIP=y
 CONFIG_LV_BUILD_EXAMPLES=n
+
+## ★ 2026-09-22：LVGL 的 LV_FONT_MONTSERRAT_* 在 Kconfig 里**没有** default y，
+##   只能在 menuconfig 里手工勾。此前 CONFIG_LV_FONT_MONTSERRAT_28 只存在于生成的
+##   `sdkconfig` 里、defaults 里没有 ⇒ 一旦删 sdkconfig 重新 configure 就会掉成 n，
+##   `lv_font_montserrat_28` 变成未定义符号，链接期才炸。
+##   SINK 页的圆形上一首/播放/下一首图标（LV_SYMBOL_*）用 28px，所以必须钉住。
+CONFIG_LV_FONT_MONTSERRAT_28=y
 
 #CLIB default
 CONFIG_LV_USE_CLIB_MALLOC=y
@@ -50,6 +71,13 @@ CONFIG_LV_USE_PERF_MONITOR=y
 CONFIG_LV_USE_FLOAT=y
 CONFIG_LV_USE_GESTURE_RECOGNITION=y
 
+## ★ btsink（A2DP Sink）Phase 5：中文 bin 字体从 PSRAM 加载 ##
+## `lv_binfont_create_from_buffer()` 依赖 memfs（LV_USE_FS_MEMFS），
+## 它把内存里的字体文件当"伪文件"喂给 lv_fs，**不是** FS_POSIX。
+## LETTER=65（'A'）为 memfs 盘符，其余 FS 驱动均为 0，不冲突。
+CONFIG_LV_USE_FS_MEMFS=y
+CONFIG_LV_FS_MEMFS_LETTER=65
+
 ## PPA (Pixel Processing Accelerator) on ESP32-S31 ##
 ## 注：LVGL 9.5 内置 lv_draw_ppa 仅支持 ESP32-P4（依赖 CONFIG_CACHE_L2_CACHE_LINE_SIZE，S31 无此 Kconfig）
 ## 待 LVGL 后续版本适配 S31 后再开启。当前先留空，软件渲染。
@@ -67,6 +95,10 @@ CONFIG_BTDM_CTRL_BR_EDR_MAX_SYNC_CONN=1
 CONFIG_BT_A2DP_ENABLE=y
 CONFIG_BT_A2DP_USE_EXTERNAL_CODEC=y
 CONFIG_BT_AVRCP_ENABLED=y
+## Cover Art（AVRCP 1.6 BIP/OBEX 封面传输）：缺失会导致 clean build 后封面永远收不到。
+## 注意：本项**只**让控制端具备发起/接收能力；对端（手机播放器）必须在 SDP 里声明
+## TG_COVER_ART，本端才会去连 BIP 通道，否则日志里不会出现 cover art 相关行。
+CONFIG_BT_AVRCP_CT_COVER_ART_ENABLED=y
 # CONFIG_BT_HFP_ENABLE is not set
 # CONFIG_BT_BLE_ENABLED is not set
 # CONFIG_BT_NIMBLE_ENABLED is not set

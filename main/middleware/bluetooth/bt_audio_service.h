@@ -83,9 +83,30 @@ void bt_audio_service_controller_init(void);
 esp_err_t bt_audio_service_set_power(bool on);
 bool bt_audio_service_is_on(void);
 
-/** 设置当前角色（仅影响扫描/连接用哪个 role bitmask；两角色在 init 时都已注册） */
+/** 仅"记录"角色（不重建 host）。真正切换请用 bt_audio_service_switch_role()。
+ *  未开蓝牙时改这里是有意义的：下次 set_power(true) 就按新角色起。 */
 void bt_audio_service_set_role(bt_role_t role);
 bt_role_t bt_audio_service_get_role(void);
+
+/**
+ * @brief ★ 真正切换 A2DP 角色（Source / Sink）——会**重建整个 host**。
+ *
+ * ★★ 调用契约（重要）：
+ *   唯一合法调用点是 **Bluetooth 子页面（page_bluetooth.c）的角色按钮**。
+ *   **不得**在任何 tab 切换回调里调用 —— 本函数会断开当前蓝牙连接
+ *   （A2DP 是全局单例，角色位在 init 时一次性传入，只能推倒重建），
+ *   必须是用户"明确按按钮"的动作，而不是划 tab 的副作用。
+ *
+ *   实现：调 set_power(false) → 改角色 → set_power(true)。
+ *   未开蓝牙时只记录角色并返回 ESP_OK。
+ *
+ * @param role BT_ROLE_SOURCE 或 BT_ROLE_SINK
+ * @return ESP_OK 成功；
+ *         ESP_ERR_INVALID_ARG 角色非法；
+ *         ESP_ERR_NO_MEM 重建时内部 RAM 不足（**已自动回滚回原角色**，蓝牙仍可用）；
+ *         其它为 esp_bt_audio_init() 的错误码。
+ */
+esp_err_t bt_audio_service_switch_role(bt_role_t role);
 
 /** Source：开始/停止扫描；点击列表项后 connect */
 esp_err_t bt_audio_service_start_discovery(void);

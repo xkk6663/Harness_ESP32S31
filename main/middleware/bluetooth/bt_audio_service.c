@@ -35,6 +35,7 @@
 #include "esp_bt_audio_vol.h"
 
 #include "bt_push_service.h"
+#include "bt_sink_service.h"   /* ★ A2DP Sink 接收：bt2codec 管线 + 元数据/封面 */
 
 #include "middleware/system/button_service.h"
 #include "middleware/audio/session_manager.h"
@@ -91,6 +92,19 @@ static volatile bool s_connected = false;
 #define BT_HOST_MIN_LARGEST_BLOCK     (24 * 1024)
 
 /* ---------------------------------------------------------------------------
+ * 对外广播的蓝牙设备名（手机/电脑搜索时看到的名字）
+ * ---------------------------------------------------------------------------
+ * ★ 2026-09-22 起改为**固定名**，不再拼 MAC 后缀。
+ *   原实现是 "Korvo_%02X%02X"(mac[4], mac[5])，目的是让多块板子能区分开；
+ *   现按需求改为固定 "Korvo_kk"。
+ *   ⚠ 若以后同时用多块板子联调，固定名会导致列表里出现多个同名设备、
+ *     无法分辨是哪一块 —— 那时把这里改回带 MAC 后缀即可（见下方注释里的原式）。
+ *
+ * 长度上限 ESP_BT_AUDIO_HOST_MAX_DEV_NAME_LEN = 32，改名注意别超。
+ */
+#define BT_DEV_NAME                   "Korvo_kk"
+
+/* ---------------------------------------------------------------------------
  * 推流数字音量（★ 2026-09-22 起，AVRCP 音量整条链路已移除）
  * ---------------------------------------------------------------------------
  * 为什么放弃 AVRCP：
@@ -113,10 +127,29 @@ static volatile bool s_connected = false;
  *   （扬声器播放 / 开机提示音的正确出口）。
  * ------------------------------------------------------------------------- */
 
-/* 当前阶段只做 Source（推送 SD 音乐到耳机）；Sink 模式后续再开。
-   同时注册 SRC+SNK 会导致 esp_a2d_sink_init 返回 INVALID_STATE（profile 状态机冲突）。 */
+/* ★ 2026-09-22 起：角色位按 s_role 动态返回（此前写死 Source，导致角色按钮形同虚设）。
+ *
+ * 为什么不能"同时注册 SRC+SNK"（源码级依据，见
+ * docs/项目规划/btsink蓝牙接收移植方案.md §3.1）：
+ *   - A2DP 是**全局单例**：esp_a2d_sink_init() 与 esp_a2d_source_init()
+ *     共用同一个 g_a2dp_on_init，且 btc_av.c 只用 if/else if 起一个 AV 状态机
+ *     → 同一时刻只能是 SRC 或 SNK，同时注册会返回 ESP_ERR_INVALID_STATE。
+ *   - 角色位在 esp_bt_audio_init(&cfg) 里**一次性传入**，init 之后改不了。
+ *     所以切换角色只能"整个 host 推倒重建"：
+ *         set_power(false) → 改 s_role → set_power(true)
+ *     这正是 bt_audio_service_switch_role() 做的事，且**只能由页内按钮触发**。
+ *   - AVRCP 的 CT/TG 是各自独立注册的，可与任一 A2DP 角色共存。
+ *
+ * Sink 下同时开 CT + TG（参考仓库用 SNK|CT|TG）：
+ *   手机既能把本机当"被控播放器"（TG 收命令），本机也能主动发播放控制（CT）。
+ */
 static uint32_t classic_roles(void)
 {
+    if (s_role == BT_ROLE_SINK) {
+        return ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SNK |
+               ESP_BT_AUDIO_CLASSIC_ROLE_AVRC_CT |
+               ESP_BT_AUDIO_CLASSIC_ROLE_AVRC_TG;
+    }
     return ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC |
            ESP_BT_AUDIO_CLASSIC_ROLE_AVRC_CT;
 }
@@ -167,18 +200,28 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
     }
     case ESP_BT_AUDIO_EVENT_STREAM_STATE_CHG: {
         esp_bt_audio_event_stream_st_t *st = (esp_bt_audio_event_stream_st_t *)event_data;
-        ESP_LOGI(TAG, "stream %p state=%d", st->stream_handle, st->state);
 
-        /* 转发给推流服务：带 stream_handle + 完整四态语义
-           （ALLOCATED / STARTED / STOPPED / RELEASED），由它驱动 local2bt pipeline */
-        bt_push_service_on_stream_state(st->stream_handle, st->state);
+        /* ★ 2026-09-22：必须按**流方向**分流，不能一律喂给 Source 的推流服务。
+           Sink 模式下 bt_push_service 会去 set_in_uri / 起 local2bt 管线，
+           方向完全反了（本该 io_bt→解码→codec）。 */
+        esp_bt_audio_stream_dir_t dir = ESP_BT_AUDIO_STREAM_DIR_UNKNOWN;
+        esp_bt_audio_stream_get_dir(st->stream_handle, &dir);
+        ESP_LOGI(TAG, "stream %p state=%d dir=%d", st->stream_handle, st->state, dir);
 
-        /* ★ 推流开始时把当前档位同步成数字增益：用户在未推流期间调音量
-           走的是本地 codec 路径（见 bt_audio_service_set_volume），
-           ALC 元素里存的可能是旧档位，这里补一次。 */
-        if (st->state == ESP_BT_AUDIO_STREAM_STATE_ALLOCATED ||
-            st->state == ESP_BT_AUDIO_STREAM_STATE_STARTED) {
-            bt_push_service_set_volume(button_service_get_volume());
+        if (dir == ESP_BT_AUDIO_STREAM_DIR_SINK) {
+            /* 手机/电脑推音频过来 → bt2codec 接收管线（io_bt→aud_dec→aud_asrc→io_codec_dev） */
+            bt_sink_service_on_stream_state(st->stream_handle, st->state);
+        } else {
+            /* 本机推 SD 音乐到耳机 → local2bt 管线（io_file→…→io_bt） */
+            bt_push_service_on_stream_state(st->stream_handle, st->state);
+
+            /* ★ 推流开始时把当前档位同步成数字增益：用户在未推流期间调音量
+               走的是本地 codec 路径（见 bt_audio_service_set_volume），
+               ALC 元素里存的可能是旧档位，这里补一次。 */
+            if (st->state == ESP_BT_AUDIO_STREAM_STATE_ALLOCATED ||
+                st->state == ESP_BT_AUDIO_STREAM_STATE_STARTED) {
+                bt_push_service_set_volume(button_service_get_volume());
+            }
         }
 
         /* UI 层仍按原 BOOL 语义收（page_bluetooth 不用改）：
@@ -193,6 +236,22 @@ static void on_bt_audio_event(esp_bt_audio_event_t event, void *event_data, void
         esp_bt_audio_event_media_ctrl_t *m = (esp_bt_audio_event_media_ctrl_t *)event_data;
         ESP_LOGI(TAG, "media ctrl cmd=%d", m->cmd);
         if (s_evt_cb) s_evt_cb(BT_EVT_MEDIA_CMD, &m->cmd, s_evt_ctx);
+        break;
+    }
+    /* ★ 2026-09-22 新增（btsink）：播放状态 + 元数据，全部丢给 Sink 服务。
+     * 事件跑在 BT 线程，Sink 服务内部只缓存/投队列，**绝不碰 LVGL**。 */
+    case ESP_BT_AUDIO_EVENT_PLAYBACK_STATUS_CHG: {
+        esp_bt_audio_event_playback_st_t *ps = (esp_bt_audio_event_playback_st_t *)event_data;
+        ESP_LOGI(TAG, "playback status evt=0x%02x param=%u",
+                 (unsigned)ps->event, (unsigned)ps->evt_param.play_status);
+        bt_sink_service_on_playback_status(ps);
+        break;
+    }
+    case ESP_BT_AUDIO_EVENT_PLAYBACK_METADATA: {
+        esp_bt_audio_event_playback_metadata_t *md = (esp_bt_audio_event_playback_metadata_t *)event_data;
+        ESP_LOGI(TAG, "playback metadata type=0x%02x len=%u",
+                 (unsigned)md->type, (unsigned)md->length);
+        bt_sink_service_on_metadata(md);
         break;
     }
     case ESP_BT_AUDIO_EVENT_VOL_ABSOLUTE: {
@@ -309,10 +368,12 @@ esp_err_t bt_audio_service_set_power(bool on)
         }
         /* Bluedroid host 配置：Just Works（IO_CAP_NONE），无需耳机端确认 */
         esp_bt_audio_host_bluedroid_cfg_t host_cfg = ESP_BT_AUDIO_HOST_BLUEDROID_CFG_DEFAULT();
-        snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "Korvo_%02X%02X", 0, 0);
-        uint8_t mac[6] = {0};
-        esp_read_mac(mac, ESP_MAC_BT);
-        snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "Korvo_%02X%02X", mac[4], mac[5]);
+        /* 固定设备名（见文件上方 BT_DEV_NAME 的说明）。
+           原式为按 BT MAC 后两字节生成，便于多板区分：
+             uint8_t mac[6] = {0};
+             esp_read_mac(mac, ESP_MAC_BT);
+             snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "Korvo_%02X%02X", mac[4], mac[5]); */
+        snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "%s", BT_DEV_NAME);
         host_cfg.iocap = ESP_BT_IO_CAP_NONE;
 
         esp_bt_audio_config_t cfg = {0};
@@ -333,6 +394,14 @@ esp_err_t bt_audio_service_set_power(bool on)
         s_on = true;
         ESP_LOGI(TAG, "ON, device name=%s, role=%s", host_cfg.dev_name,
                  s_role == BT_ROLE_SOURCE ? "SOURCE" : "SINK");
+
+        /* ★ Sink 模式必须"可被发现 + 可被连接"，手机才搜得到本机并主动连上。
+           Source 模式反过来：由本机去扫别人，不需要对外可见，保持默认不可见更省电。 */
+        if (s_role == BT_ROLE_SINK) {
+            esp_err_t sr = esp_bt_audio_classic_set_scan_mode(true, true);
+            ESP_LOGI(TAG, "sink scan mode (connectable+discoverable) ret=%s", esp_err_to_name(sr));
+        }
+
         if (s_evt_cb) s_evt_cb(BT_EVT_ON, NULL, s_evt_ctx);
     } else {
         esp_bt_audio_deinit();
@@ -345,13 +414,69 @@ esp_err_t bt_audio_service_set_power(bool on)
 
 bool bt_audio_service_is_on(void) { return s_on; }
 
+/* ★ 仅"记录"角色，不重建 host —— 真正的角色切换请用 bt_audio_service_switch_role()。
+   保留本函数是因为 classic_roles() 在 init 时会读它，且它可安全地在"蓝牙未开"时使用
+   （例如开机时预设下次要以哪个角色起来）。 */
 void bt_audio_service_set_role(bt_role_t role)
 {
     s_role = role;
-    ESP_LOGI(TAG, "role -> %s", role == BT_ROLE_SOURCE ? "SOURCE" : "SINK");
+    ESP_LOGI(TAG, "role recorded -> %s (host NOT rebuilt; call switch_role to apply)",
+             role == BT_ROLE_SOURCE ? "SOURCE" : "SINK");
 }
 
 bt_role_t bt_audio_service_get_role(void) { return s_role; }
+
+/* ★ 2026-09-22 新增：真正切换 A2DP 角色（重建 host）。
+ *
+ * ★★ 调用契约（重要，勿改）：
+ *   本文件的**唯一合法调用点**是 Bluetooth 子页面（page_bluetooth.c）的角色按钮。
+ *   **绝对不要**在 tab 切换（page_main.c 的 tab_changed_event）里调用 ——
+ *   角色切换必然断开当前蓝牙连接（A2DP 全局单例，只能重建 host），
+ *   必须是用户"明确按按钮"的结果，而不是划 tab 的副作用。
+ *
+ * 实现：set_power(false) → 改 s_role → set_power(true)
+ *   - 未开蓝牙时只记录角色，返回 ESP_OK（下次开就按新角色起）；
+ *   - set_power(true) 内部有内部 RAM 体检闸门，不足会返回 ESP_ERR_NO_MEM。
+ *     ★ 此时必须回滚角色并把蓝牙拉回可用状态，否则用户会得到"两边都用不了"。
+ */
+esp_err_t bt_audio_service_switch_role(bt_role_t role)
+{
+    if (role != BT_ROLE_SINK && role != BT_ROLE_SOURCE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_role == role) {
+        ESP_LOGI(TAG, "switch_role: already %s, no-op",
+                 role == BT_ROLE_SINK ? "SINK" : "SOURCE");
+        return ESP_OK;
+    }
+
+    bt_role_t prev = s_role;
+    bool was_on = s_on;
+    ESP_LOGI(TAG, "switch_role %s -> %s (host rebuild, was_on=%d)",
+             prev == BT_ROLE_SOURCE ? "SOURCE" : "SINK",
+             role == BT_ROLE_SINK ? "SINK" : "SOURCE", (int)was_on);
+
+    if (was_on) {
+        bt_audio_service_set_power(false);   /* deinit host：连接会断，这是必然代价 */
+    }
+    s_role = role;
+
+    if (!was_on) {
+        return ESP_OK;   /* 没开就不需要重建，角色已记下 */
+    }
+
+    esp_err_t ret = bt_audio_service_set_power(true);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "switch_role: re-init failed (%s) -> rollback to %s",
+                 esp_err_to_name(ret), prev == BT_ROLE_SOURCE ? "SOURCE" : "SINK");
+        s_role = prev;
+        esp_err_t rb = bt_audio_service_set_power(true);
+        ESP_LOGE(TAG, "switch_role: rollback re-init ret=%s", esp_err_to_name(rb));
+        return ret;
+    }
+    ESP_LOGI(TAG, "switch_role done: now %s", role == BT_ROLE_SINK ? "SINK" : "SOURCE");
+    return ESP_OK;
+}
 
 esp_err_t bt_audio_service_start_discovery(void)
 {
@@ -370,10 +495,13 @@ esp_err_t bt_audio_service_stop_discovery(void)
 esp_err_t bt_audio_service_connect(const uint8_t *addr)
 {
     if (!s_on || !addr) return ESP_ERR_INVALID_STATE;
-    /* connect 的 role 参数要传单个 profile（A2DP_SRC=0x1），不是 bitmask */
-    ESP_LOGI(TAG, "connect role=SRC addr=%02x:%02x:%02x:%02x:%02x:%02x",
+    /* connect 的 role 参数要传单个 profile（SRC=0x1 / SNK=0x2），不是 bitmask */
+    uint32_t role = (s_role == BT_ROLE_SINK) ? ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SNK
+                                             : ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC;
+    ESP_LOGI(TAG, "connect role=%s addr=%02x:%02x:%02x:%02x:%02x:%02x",
+             s_role == BT_ROLE_SINK ? "SNK" : "SRC",
              addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-    esp_err_t ret = esp_bt_audio_classic_connect(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC, (uint8_t *)addr);
+    esp_err_t ret = esp_bt_audio_classic_connect(role, (uint8_t *)addr);
     ESP_LOGI(TAG, "classic_connect ret=%s", esp_err_to_name(ret));
     return ret;
 }
@@ -381,9 +509,12 @@ esp_err_t bt_audio_service_connect(const uint8_t *addr)
 esp_err_t bt_audio_service_disconnect(void)
 {
     if (!s_on) return ESP_ERR_INVALID_STATE;
-    /* 断开用最近连接地址：这里由组件内部维护，传 NULL 由组件处理；
-       经典蓝牙一次只连一台，直接调 media_stop + disconnect 当前 role。 */
-    esp_bt_audio_media_stop(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC);
+    /* 经典蓝牙一次只连一台。★ 按当前角色决定收尾动作：
+       - Source：先停 A2DP 流（media_stop 只支持 SRC），再断开；
+       - Sink：流由对端发起，本机不调 media_stop（会返回 INVALID_STATE）。 */
+    if (s_role == BT_ROLE_SOURCE) {
+        esp_bt_audio_media_stop(ESP_BT_AUDIO_CLASSIC_ROLE_A2DP_SRC);
+    }
     return ESP_OK;
 }
 

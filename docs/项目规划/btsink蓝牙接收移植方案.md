@@ -5,6 +5,23 @@
 > 目标项目：`C:\Users\xiao1\Desktop\esp32\display_audio_photo`
 > 撰写日期：2026-09-22
 
+> ## ⚠ 2026-09-22 落地现状（读本文前请先看这段）
+>
+> 本文是**当初的设计稿**，其中**「专辑封面（JPEG）」这条需求已作废**。
+> 实测与外部调研（见 `改动记录.md` §28.28）确认：安卓侧的 AVRCP Cover Art
+> 默认关闭（默认 AVRCP 1.5 + OEM overlay 常为 false + App 未必交图），
+> 对端从不推送 ⇒ 设备端收不到任何图。
+>
+> 因此随后在 `§28.29` 里：
+> - **服务侧封面链路整条删除**（省 ≈337KB PSRAM + 一个解码任务 + 一个队列）；
+> - **UI 侧改为**：曲名/歌手居中 + **三行歌词窗口（逐句上滑、渐入渐出）** + 圆形控制键 + 均衡器条；
+> - 歌词来自对端把**歌词行覆盖写进 AVRCP TITLE(0x01)**，由
+>   `bt_sink_service` 的 `burst_resolve()` 把「真曲名」和「歌词行」拆开
+>   （新接口 `bt_sink_service_get_lyric()`）。
+>
+> 所以：**下面凡是提到"封面/COVER_ART/cover 解码任务"的段落都只作历史参考**，
+> 不要再照它实现。当前真实状态以 `改动记录.md` §28.27 ~ §28.29 为准。
+
 ---
 
 ## 0. 一句话目标
@@ -448,18 +465,24 @@ POST_COVER(data,size)
 用 LVGL 官方 `lv_font_conv`（Node 工具）：
 
 ```bash
-# 方案 B（推荐）：GB2312 常用字，bpp=1
-npx lv_font_conv \
-  --font NotoSansSC-Regular.otf \
-  --range 0x20-0x7E,0x3000-0x303F,0x4E00-0x9FFF \
-  --size 28 --bpp 1 --no-compress \
-  --format bin \
-  -o littlefs_content/fonts/font_cn_28.bin
+# ★ 2026-09-21 订正：本节的旧命令是错的/过时的，已按实际产出字库反推订正。
+#   旧版漏了 0xFF00-0xFFEF，更要命的是还漏了日文假名 0x3040-0x30FF，
+#   导致日文标题（如 夜の不幸 / パミレド）整段显示为乱码。详见 改动记录.md §28.27。
+node <repo>/.tmp-fontgen/node_modules/lv_font_conv/lv_font_conv.js \
+  --size 28 --bpp 1 --no-compress --no-kerning --format bin \
+  --font <LVGL>/scripts/generators/built_in_font/SourceHanSansSC-Normal.otf \
+  -r 0x20-0x7E,0x3000-0x30FF,0x4E00-0x9FFF,0xFF00-0xFFEF \
+  -o littlefs_content/fonts/lv_font_cjk_28.bin
 ```
 
 > ⚠ `--format bin` 才会输出二进制；`--format lvgl` 输出的是 C 数组（参考仓库用的就是它）。
-> 若要 GB2312 子集，把 `--range 0x4E00-0x9FFF` 换成 `--symbols <GB2312 字符文件>`，
-> 或直接用 `lv_font_conv --lcd` 等参数微调。
+> ⚠ `--no-kerning` **不要省**：若不关 kerning，只要所选码位里存在字距对，
+> 就会多出 `kern` 表并把 `advance_width_format` 由 0 变 1、
+> `advance_width_bits` 由 6 变 10，走上一条本工程未验证的加载分支。
+> ⚠ 源字体用**含假名**的思源黑体 / Noto Sans SC；`NotoSansSC-Regular` 亦可，
+> 三者的 `typo_asc/typo_desc/underline` 一致，可互换。
+> 若要 GB2312 子集，把 `-r 0x4E00-0x9FFF` 换成 `--symbols <GB2312 字符文件>`，
+> 但**务必保留假名段**否则日文曲目会乱码。
 
 **体积实测依据**（来自对参考仓库字体的逐字节统计）：
 
@@ -472,15 +495,21 @@ npx lv_font_conv \
 
 #### 5.3 放进 LittleFS
 
-1. 把 `font_cn_28.bin` 放进 `littlefs_content/fonts/`。
+1. 把 `lv_font_cjk_28.bin` 放进 `littlefs_content/fonts/`。
 2. 重新生成镜像并**单独烧录**（注意：本项目 `littlefs_create_partition_image` **不带** `FLASH_IN_PROJECT`）：
    ```bash
-   idf.py build                                  # 生成 build/storage.bin
-   esptool --chip esp32s31 -p <COM> write-flash build/storage.bin 0xA20000
+   idf.py build                                            # 生成 build/storage.bin
+   esptool --chip esp32s31 -p COM9 write-flash 0xA20000 build/storage.bin
    ```
-   > ⚠ **重要更正**：`CMakeLists.txt` 第 17 行注释写的烧录偏移 `0x620000` **已过时**。
-   > 当前 `partitions.csv` 里 `storage` 的实际偏移是 **`0xA20000`**（`ota_1` 结束处）。
-   > 建议本轮顺手订正该注释，避免真烧错地址。
+   > ⚠⚠ **参数顺序：地址在前、文件在后**。esptool 的用法是
+   > `write-flash [OPTIONS] <address> <filename>...`。写成
+   > `write-flash build/storage.bin 0xA20000` 会报
+   > `Address "build/storage.bin" must be a number.`（2026-09-22 实际踩到）
+   >
+   > ⚠ **重要更正**：`CMakeLists.txt` 旧注释里的烧录偏移 `0x620000` **已过时**。
+   > 当前 `partitions.csv` 里 `storage` 的实际偏移是 **`0xA20000`**（`ota_1` 结束处），
+   > 大小 `0x5E0000` = 6,160,384 B。该注释与本节均已于 2026-09-22 订正。
+   > 烧前务必核对 `partitions.csv`；烧错地址会覆盖 `ota_0`。
 3. **⚠ 风险**：`fs_service_mount()` 设了 `format_if_mount_failed = true`。
    一旦挂载失败会**格式化整个 littlefs**，字体（和其他素材）全部丢失。
    字体上线后建议改为 `false`，或至少把字体纳入"可重新烧录"的认知。
@@ -502,10 +531,18 @@ void ui_binfont_free(lv_font_t *font);
 
 实现要点：
 - 用 `lv_binfont_create_ex(&dsc)` 并置 `dynamic_glyph_load = true`（省 RAM）。
-- 若选方案 §3.3-B（整体入内存），改用 `lv_binfont_create_from_buffer()`，
-  缓冲用 `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`。
+- ⚠⚠ **2026-09-21 重要更正**：**不要**用 `lv_binfont_create_from_buffer()`。
+  它只是 `lv_binfont_create_ex()` 的语法糖，但会把 `dsc` **零初始化**，
+  于是 `dynamic_glyph_load` 落到默认的 `false`，`load_glyph()` 会
+  `lv_malloc()` 出一整块 **glyf 展开尺寸**（本字体 ≈1.71MB）的位图缓存。
+  必须走 `lv_binfont_create_ex{ .buffer, .buffer_size, .dynamic_glyph_load = true }`。
+  > "文件副本是否常驻"（A 轴）与"字形位图是否全展开"（B 轴）是**两件独立的事**，
+  > 旧文把它们混为一谈了。
 - **失败兜底**：加载失败时回退到现有的 `lv_font_cn_20/30/45`（C 数组，不删），
   保证 UI 不缺字、不崩。
+- ⚠ 开 `dynamic_glyph_load = true` 后，LVGL 会**长期持有**那个 memfs 文件句柄，
+  每次渲染按 `loca` 偏移现读字形 ⇒ **源缓冲必须常驻到字体销毁为止**，
+  不能 `create` 完就 free（悬空指针 → HardFault）。
 
 ---
 

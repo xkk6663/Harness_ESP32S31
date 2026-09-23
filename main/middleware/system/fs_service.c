@@ -25,7 +25,16 @@ esp_err_t fs_service_mount(void)
     esp_vfs_littlefs_conf_t conf = {
         .base_path = FS_MNT_PATH,
         .partition_label = "storage",
-        .format_if_mount_failed = true,
+        /* ★ 2026-09-22 由 true 改为 false（btsink Phase 5）。
+         * 原因：storage 分区现在装着**不可从 app 复原**的素材 ——
+         * 全 CJK bin 字体（~1.78MB，littlefs_content/fonts/）以及壁纸/提示音。
+         * 一旦某个偶发的挂载失败（例如上次断电留下的半写状态）触发了
+         * "自动格式化"，这些素材会被**静默抹掉**：字体没了只是中文变方块，
+         * 但用户很难定位原因，而且必须重烧 storage.bin 才能恢复。
+         * 宁可不挂载（上层降级：无壁纸、中文回退内置字体），也不要自动清空。
+         * 若确实需要重新初始化分区，手动擦除该分区后由首次挂载格式化，
+         * 或执行 esptool write-flash build/storage.bin 0xA20000。 */
+        .format_if_mount_failed = false,
         .read_only = false,
         .dont_mount = false,
     };
