@@ -51,6 +51,11 @@ CONFIG_LV_BUILD_EXAMPLES=n
 ##   SINK 页的圆形上一首/播放/下一首图标（LV_SYMBOL_*）用 28px，所以必须钉住。
 CONFIG_LV_FONT_MONTSERRAT_28=y
 
+## ★ 2026-09-24：PC 副屏改版把三个媒体键从 48px 挪到**右手侧竖排 80px**，
+##   图标相应放大到 40px（80px 圆键 + 28px 图标太小）。同样必须在 defaults 里钉住，
+##   否则删掉 sdkconfig 重配就掉成 n ⇒ lv_font_montserrat_40 未定义，链接期才炸。
+CONFIG_LV_FONT_MONTSERRAT_40=y
+
 #CLIB default
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_SPRINTF=y

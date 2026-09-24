@@ -56,7 +56,6 @@ static void control_task(void *arg);
 static void tx_task(void *arg);
 static void rx_task(void *arg);
 static void notify_evt(voice_evt_t evt);
-static bool seq_before(uint16_t a, uint16_t b);
 static void ensure_audio_start(void);
 static void maybe_audio_stop(void);
 
@@ -248,13 +247,39 @@ static void rx_task(void *arg)
                     hdr->version != FRAME_VERSION || hdr->type != 0 || hdr->len != AUDIO_FRAME_BYTES) {
                     ++bad;
                 } else {
-                    if (!have_expected) { expected = hdr->seq; have_expected = true; }
-                    else if ((int16_t)(hdr->seq - expected) < -0x4000) {
-                        /* PC restarted seq: re-sync */
+                    int16_t diff = (int16_t)(hdr->seq - expected);
+                    if (!have_expected) {
+                        expected = hdr->seq;
+                        have_expected = true;
+                        frame_slot_t *slot = &slots[hdr->seq % REORDER_SLOTS];
+                        slot->used = true; slot->seq = hdr->seq;
+                        memcpy(slot->pcm, packet + FRAME_HEADER_BYTES, AUDIO_FRAME_BYTES);
+                        ++received;
+                    } else if (diff == -1) {
+                        ++bad;               /* 单帧迟到/重复：丢弃即可，随流自愈 */
+                    } else if (diff < -1) {
+                        /* ★ §28.42：设备 expected 超前 PC 生产 ≥2 帧 —— PC 是时钟
+                         * 主（上位机 20ms 定步被 OS 调度拖慢是常态），不回跳则
+                         * 后续所有包都判旧序号 → 永久静音（实测 bad 批量飙升后
+                         * rx 归零）。直接回跳跟随 PC 的真实位置；顺带覆盖 PC
+                         * seq 重启/回绕的大后退（旧代码只在 -0x4000 才重同步，
+                         * 要漂移 327s 才救回来）。 */
                         expected = hdr->seq;
                         memset(slots, 0, sizeof(slots));
-                    } else if (seq_before(hdr->seq, expected)) { ++bad; }
-                    else {
+                        frame_slot_t *slot = &slots[hdr->seq % REORDER_SLOTS];
+                        slot->used = true; slot->seq = hdr->seq;
+                        memcpy(slot->pcm, packet + FRAME_HEADER_BYTES, AUDIO_FRAME_BYTES);
+                        ++received;
+                    } else if (diff >= REORDER_SLOTS / 2) {
+                        /* 前向大跳（会话起步丢了一段）：与其按 60ms/帧爬坑、
+                         * 让 32 槽被后续包反复冲掉（reorder 飙升），直接跳到最新 */
+                        expected = hdr->seq;
+                        memset(slots, 0, sizeof(slots));
+                        frame_slot_t *slot = &slots[hdr->seq % REORDER_SLOTS];
+                        slot->used = true; slot->seq = hdr->seq;
+                        memcpy(slot->pcm, packet + FRAME_HEADER_BYTES, AUDIO_FRAME_BYTES);
+                        ++received;
+                    } else {
                         frame_slot_t *slot = &slots[hdr->seq % REORDER_SLOTS];
                         if (slot->used && slot->seq != hdr->seq) { ++reordered; }
                         slot->used = true; slot->seq = hdr->seq;
@@ -291,9 +316,4 @@ static void rx_task(void *arg)
     }
     s_rx_task = NULL;
     vTaskDelete(NULL);
-}
-
-static bool seq_before(uint16_t a, uint16_t b)
-{
-    return (int16_t)(a - b) < 0;
 }

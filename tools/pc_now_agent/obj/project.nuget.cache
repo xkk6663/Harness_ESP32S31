@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "AkPC+cj772E=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\pc_now_agent.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\xiao1\\.nuget\\packages\\microsoft.win32.systemevents\\8.0.0\\microsoft.win32.systemevents.8.0.0.nupkg.sha512",
+    "C:\\Users\\xiao1\\.nuget\\packages\\system.drawing.common\\8.0.8\\system.drawing.common.8.0.8.nupkg.sha512",
+    "C:\\Users\\xiao1\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.56\\microsoft.windows.sdk.net.ref.10.0.19041.56.nupkg.sha512"
+  ],
+  "logs": []
+}

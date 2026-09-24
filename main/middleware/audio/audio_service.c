@@ -25,6 +25,7 @@
 #include "bsp/esp-bsp.h"
 #include "audio_service.h"
 #include "3rd/ringbuf/ringbuf.h"
+#include "middleware/bluetooth/bt_sink_service.h"   /* audio_yield（16k 会话仲裁，§28.44） */
 
 static const char *TAG = "AUDIO_SVC";
 
@@ -131,6 +132,46 @@ void audio_service_set_evt_cb(audio_evt_cb_t cb)
     audio_evt_cb_fn = cb;
 }
 
+/* ------------------------------------------------------------------ */
+/* ★ F42：共享 I2S data 接口的 enable 位强制复位                        */
+/* ------------------------------------------------------------------ */
+
+/* 背景（2026-09-24 实机日志）：BT_SINK 让位成功后，16k 会话的 set_fmt 仍然报
+ *     E I2S_IF: Current mode record   conflict 16000 with peer mode 44100
+ *     E I2S_IF: Current mode playback conflict 16000 with peer mode 44100
+ * ⇒ I2S 停在 44.1k，16k 的 PCM 灌进 44.1k 管道 ⇒ 通话下行（扬声器）听不到。
+ *
+ * 根因不止在 BT：BSP 的 bsp_audio_codec_speaker_init() / microphone_init()
+ * **每调用一次就新建一个** esp_codec_dev 对象，而本工程有 5 个这样的对象
+ * （audio_service 的 spk/mic、bt_sink_service、tab_audio、tab_video）**共用 BSP 里
+ * 同一个 static i2s_data_if**。于是：
+ *     in_enable / out_enable / fs   →  共享（在 i2s_data_t 里）
+ *     input_opened / output_opened  →  每个 esp_codec_dev 对象私有
+ * 只要出现一次非对称的 open/close（A 对象 open 了 44.1k，B 对象关闭时因自己
+ * output_opened==false 被 esp_codec_dev_close() 提前返回、没走到 data_if->enable(false)），
+ * 共享的 enable 位就会与对象状态**永久脱节**。
+ * 而 check_fs_compatible() 的"快速分支"（audio_codec_data_i2s.c:433）要求
+ * **对端通道 enable==false** 才把新 fs 直接写进去；脱节的 enable 位会让它走冲突分支
+ * 返回 NOT_SUPPORT，且 esp_codec_dev_open() **不检查 set_fmt 的返回值**
+ * （esp_codec_dev.c:178）⇒ 冲突被完全静默，open 照样打印 "Open codec device OK"。
+ *
+ * 解法：跨采样率会话开始前，不依赖任何 esp_codec_dev 对象的状态，直接对共享 data_if
+ * 把两路都 disable（幂等），让接下来的 open 必定走快速分支。
+ * ⚠ 结构性隐患仍在（5 个对象共享一份 enable 状态）：后续应统一为单一 codec 实例
+ *   （codec_bus 单例）。详见 docs/工程规范/11_遇到的问题.md F42。 */
+static void force_reset_shared_i2s(void)
+{
+    const audio_codec_data_if_t *itf = bsp_audio_get_codec_itf();
+    if (itf == NULL || itf->enable == NULL) {
+        return;
+    }
+    /* 顺序要紧：先 OUT 再 IN。S3 系列 I2S 在"RX 仍开着"时 disable TX 会被挂成
+       out_disable_pending（audio_codec_data_i2s.c:565+），先关 OUT 可避开这条分支。 */
+    int r_out = itf->enable(itf, ESP_CODEC_DEV_TYPE_OUT, false);
+    int r_in = itf->enable(itf, ESP_CODEC_DEV_TYPE_IN, false);
+    ESP_LOGI(TAG, "shared I2S force-released (out=%d in=%d)", r_out, r_in);
+}
+
 esp_err_t audio_stream_start(void)
 {
 #if !BSP_CAPS_AUDIO_MIC
@@ -147,6 +188,24 @@ esp_err_t audio_stream_start(void)
         .bits_per_sample = 16,
         .mclk_multiple = I2S_MCLK_MULTIPLE_384,
     };
+    /* ★ 会话仲裁（§28.44）：BT SINK 以 44.1k 打开 codec 且"只开一次"不关，
+     *   本函数的 16k open 会走 check_fs_compatible 冲突分支、且 esp_codec_dev
+     *   静默忽略 set_fmt 失败（open 仍返 OK）→ I2S 停在 44.1k → 16k 单声道
+     *   数据灌进 44.1k 立体声管道 → 扬声器无声/变调。先让 BT 交出 codec。 */
+    bt_sink_service_audio_yield();
+
+    /* ★ F42：BT 交还 codec 只保证它自己那条路。共享 I2S 的 enable 位仍可能被别的
+       OUT 对象（audio_service.spk / tab_audio / tab_video）留成 true。这里做两步归位：
+       ① close 本会话要用的两个句柄 —— esp_codec_dev_open() 在
+          (input_opened||output_opened) 时会**提前返回**：既不 set_fmt 也不 enable；
+          若上次的关闭被 esp_codec_dev_close() 的提前返回吃掉，句柄就会带着
+          opened=true 进来，导致本次 16k 配置根本不生效。先 close（幂等，无害）保证
+          下面两个 open 一定走完整路径。
+       ② 强制复位共享 I2S 两路的 enable 位，让 check_fs_compatible 快分支必定命中。 */
+    esp_codec_dev_close(mic_codec_dev);
+    esp_codec_dev_close(spk_codec_dev);
+    force_reset_shared_i2s();
+
     esp_err_t err = esp_codec_dev_open(mic_codec_dev, &fs);
     if (err == ESP_OK) {
         err = esp_codec_dev_open(spk_codec_dev, &fs);
@@ -175,7 +234,7 @@ esp_err_t audio_stream_start(void)
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreGive(audio_mux);
-    ESP_LOGI(TAG, "stream started, 16k/mono/20ms core=1");
+    ESP_LOGI(TAG, "stream started, 16k/mono/20ms core=1 (rev F42: shared I2S reset)");
     return ESP_OK;
 #endif
 }

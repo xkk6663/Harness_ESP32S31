@@ -1,8 +1,21 @@
-"""PySide6 desktop shell: TX=dev mic->PC, RX=PC wav->dev speaker."""
+"""Korvo 统一上位机（pc_host v2）：通话对讲 + 录音库 + 音乐副屏 + 系统，PySide6 单应用。
+
+用法：
+  python -m pc_host.main                 # 广播自动发现设备（推荐）
+  python -m pc_host.main --device 192.168.4.1
+  python -m pc_host.main --no-pcnow      # 不启动音乐副屏（不占 50004/50005）
+
+v0.2（2026-09-23）：UI 重构为侧边栏多页框架（ui/），合并副屏功能（pcnow/），
+link 支持广播发现；对讲/录音链路代码不变。
+"""
 from __future__ import annotations
+
 import argparse
+import collections
 import queue
+import sys
 from pathlib import Path
+
 from .net.link import NetLink
 from .net.voice_udp import UdpVoice
 from .record.server import RecordingServer
@@ -10,103 +23,189 @@ from .audio.player import Player
 from .audio.wav_player import WavPlayer
 from .asr.backend import AsrBackend
 
-def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--device", required=True); parser.add_argument("--recordings", default="recordings"); args = parser.parse_args()
+
+class Ctx:
+    """服务容器：页面只读轮询，不做跨线程 Qt 信号。"""
+
+    def __init__(self) -> None:
+        self.link: NetLink | None = None
+        self.voice: UdpVoice | None = None
+        self.record_server: RecordingServer | None = None
+        self.player: Player | None = None
+        self.asr: AsrBackend | None = None
+        self.wav: WavPlayer | None = None
+        self.smtc = None
+        self.pusher = None
+        self.store = None
+        self.cdp = None
+        self.httpd = None
+        self.rec_dir = Path("recordings")
+        self.rx_level = {"rms": 0, "count": 0}
+        self.pcnow_log_lines: collections.deque = collections.deque(maxlen=200)
+        # ★ F44 —— 闪退根因：pcnow_log 会被 **SMTC 线程 / pusher 线程 / CDP 线程 /
+        #   网易云解析线程** 同时调用。旧实现把它直接接到页面的
+        #   QPlainTextEdit.appendPlainText 上 —— 从非 Qt 线程碰 widget 是未定义行为，
+        #   典型触发点就是"设备端按下一首"：一次换曲炸出 5~6 条日志（NOW_CMD / SMTC ->
+        #   next / track: / 解析: / lyrics: / 进度走 CDP 真值），来自 3 个不同线程，
+        #   于是随机闪退。
+        #   改为只投队列，页面在 Qt 线程的定时器里排空 —— 与 call_page 的 _asr_q
+        #   完全同一套写法（那里本来就是对的）。
+        self.pcnow_q: queue.Queue = queue.Queue(maxsize=4000)
+
+    def pcnow_log(self, s: str) -> None:
+        line = f"[{__import__('time').strftime('%H:%M:%S')}] {s}"
+        print(line, flush=True)
+        self.pcnow_log_lines.append(line)
+        try:
+            self.pcnow_q.put_nowait(line)
+        except queue.Full:
+            pass                     # 页面未在排空（窗口已关）时丢弃，绝不阻塞工作线程
+
+
+def build_services(args) -> Ctx:
+    ctx = Ctx()
+    ctx.rec_dir = Path(args.recordings)
+    ctx.rec_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 链路 ----
+    ctx.link = NetLink(args.device)
+    ctx.link.start()
+
+    # ---- 对讲 / 录音 ----
+    ctx.record_server = RecordingServer(ctx.rec_dir)
+    ctx.record_server.start()
+    ctx.voice = UdpVoice(args.device or "", on_pcm=None)  # device_ip 由 link 学到后更新
+    ctx.player = Player()
     try:
-        from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import (QApplication, QLabel, QPushButton, QPlainTextEdit,
-            QVBoxLayout, QWidget, QListWidget, QHBoxLayout)
-    except ImportError as exc:
-        raise SystemExit("Install desktop extras: pip install -e .[desktop]") from exc
-    pcm_q: queue.Queue[bytes] = queue.Queue(maxsize=12)
-    server = RecordingServer(Path(args.recordings)); server.start()
-    link = NetLink(args.device); link.start()
-    player = Player()
-    asr = AsrBackend(lambda text: None)
-    rx_level = {"rms": 0, "count": 0}
-    import time as _t; _dbg = {"last": 0.0}
+        ctx.player.start()
+    except Exception as e:
+        print(f"[audio] speaker unavailable: {e}", flush=True)
+    ctx.asr = AsrBackend(lambda text: None)
+    ctx.asr.start()
+
     def on_pcm(pcm: bytes) -> None:
-        player.push(pcm); asr.push(pcm)
-        rx_level["count"] += 1
+        assert ctx.player is not None and ctx.asr is not None
+        ctx.player.push(pcm)
+        ctx.asr.push(pcm)
         import array
         samples = array.array("h", pcm)
         n = len(samples)
-        s = sum(x*x for x in samples)/n if n else 0
-        rx_level["rms"] = min(100, int((s**0.5)/32768.0*1500))
-        now = _t.monotonic()
-        if now - _dbg["last"] > 2:
-            print(f"[on_pcm] len={len(pcm)} rms={int(s**0.5)} count={rx_level['count']}", flush=True)
-            _dbg["last"] = now
-        if not pcm_q.full(): pcm_q.put_nowait(pcm)
-    voice = UdpVoice(args.device, on_pcm); voice.start()
-    wav = WavPlayer(voice.send_ptt)
-    player.start(); asr.start()
+        s = (sum(x * x for x in samples) / n) if n else 0
+        ctx.rx_level["rms"] = min(100, int((s ** 0.5) / 32768.0 * 1500))
+        ctx.rx_level["count"] += 1
 
-    app = QApplication([]); window = QWidget(); layout = QVBoxLayout(window)
-    state = QLabel("Connecting...")
-    tx_meter = QProgressBar() if False else None
-    from PySide6.QtWidgets import QProgressBar
-    tx_meter = QProgressBar(); tx_meter.setRange(0, 100)
-    rx_meter = QProgressBar(); rx_meter.setRange(0, 100)
-    transcript = QPlainTextEdit(); transcript.setReadOnly(True)
+    ctx.voice.on_pcm = on_pcm
 
-    # wav file list
-    wav_label = QLabel("WAV files (select one for RX playback):")
-    wav_list = QListWidget(); wav_list.setMaximumHeight(120)
-    rec_dir = Path(args.recordings)
-    for w in sorted(rec_dir.glob("*.wav")):
-        wav_list.addItem(w.name)
-    play_btn = QPushButton("Play selected wav to device (RX)")
-    stop_btn = QPushButton("Stop playback")
-    del_btn = QPushButton("Delete selected")
+    def send_ptt(pcm: bytes) -> None:
+        # 广播发现模式下设备 IP 由 link 学到 —— 每次发送前同步
+        assert ctx.voice is not None
+        ip = ctx.link.device_ip if ctx.link else None
+        if ip and ctx.voice.device_ip != ip:
+            ctx.voice.device_ip = ip
+        ctx.voice.send_ptt(pcm)
 
-    layout.addWidget(state)
-    layout.addWidget(QLabel("UP (dev mic):"))
-    layout.addWidget(tx_meter)
-    layout.addWidget(QLabel("DOWN (wav->dev spk):"))
-    layout.addWidget(rx_meter)
-    layout.addWidget(wav_label); layout.addWidget(wav_list)
-    row = QHBoxLayout(); row.addWidget(play_btn); row.addWidget(stop_btn); row.addWidget(del_btn)
-    layout.addLayout(row)
-    layout.addWidget(transcript)
+    ctx.voice.start()
+    ctx.wav = WavPlayer(send_ptt)
 
-    def refresh_list():
-        wav_list.clear()
-        for w in sorted(rec_dir.glob("*.wav")):
-            wav_list.addItem(w.name)
-    def do_play():
-        item = wav_list.currentItem()
-        if not item: return
-        wav.stop()
-        voice.reset_seq()
-        if wav.load(rec_dir / item.text()):
-            wav.start()
-    def do_stop():
-        wav.stop()
-    def do_del():
-        item = wav_list.currentItem()
-        if not item: return
-        wav.stop()
+    # ---- 音乐副屏（可选） ----
+    if not args.no_pcnow:
+        from .pcnow.http_server import NowHttpServer
+        from .pcnow.netease_cdp import NeteaseCdp
+        from .pcnow.pusher import NowPusher, TrackStore
+        from .pcnow.smtc import SmtcWatcher
+
+        ctx.store = TrackStore()
+        ctx.pusher = NowPusher(device_ip_provider=lambda: ctx.link.device_ip,
+                               store=ctx.store, on_log=ctx.pcnow_log)
+        ctx.pusher.start()
+
+        # ★ P1（§28.51）：网易云 PC 的 SMTC 时间轴是零值死轴、<audio>.currentTime 恒 0，
+        #   位置真值只在它的进度 DOM 文本里（实测 "00:06 / 04:02" → 5s 后 "00:11 / 04:02"）。
+        #   前提：网易云带 --remote-debugging-port=9222 启动
+        #   （双击 pc_host/restart_cloudmusic_debug.bat）。探测失败时自动降级为
+        #   本地内插，不影响任何既有功能。
+        ctx.cdp = NeteaseCdp(on_log=ctx.pcnow_log)
+        ctx.pusher.attach_cdp(ctx.cdp)
         try:
-            (rec_dir / item.text()).unlink()
-            print(f"[del] {item.text()}", flush=True)
-        except Exception as e:
-            print(f"[del] error: {e}", flush=True)
-        refresh_list()
-    play_btn.clicked.connect(do_play)
-    stop_btn.clicked.connect(do_stop)
-    del_btn.clicked.connect(do_del)
+            ctx.cdp.probe()
+        except Exception as e:  # noqa: BLE001
+            ctx.pcnow_log(f"CDP 探测异常（忽略）: {type(e).__name__}: {e}")
 
-    def poll():
-        state.setText("Connected" if link.online else "No device heartbeat")
-        tx_meter.setValue(rx_level["rms"])
-        tx_meter.setFormat(f"UP (dev mic): {rx_level['rms']}%  frames={rx_level['count']}")
-        rx_meter.setValue(wav._rms)
-        rx_meter.setFormat(f"DOWN (wav): {wav._rms}%")
-        rx_level["rms"] = 0
-    timer = QTimer(); timer.timeout.connect(poll); timer.start(100)
-    window.setWindowTitle("ESP32 Voice Host"); window.resize(620, 480); window.show()
+        ctx.httpd = NowHttpServer(ctx.store, on_log=ctx.pcnow_log)
+        ctx.httpd.start()
+        ctx.smtc = SmtcWatcher(on_track=ctx.pusher.update_track,
+                               on_position=ctx.pusher.update_position,
+                               on_log=ctx.pcnow_log)
+        ctx.smtc.start()
+
+        # 设备端媒体控制回程：link bind :50003 收到 NOW_CMD → SMTC 会话控制
+        def on_link_json(msg: dict) -> None:
+            if msg.get("type") != "NOW_CMD" or ctx.smtc is None:
+                return
+            cmd = str(msg.get("cmd", ""))
+            pos_ms = msg.get("pos_ms")
+            has_pos = isinstance(pos_ms, (int, float))
+            ctx.pcnow_log(f"NOW_CMD <- {cmd}"
+                          + (f" {pos_ms}ms" if has_pos else ""))
+
+            # ★ P0-1：seek 先分清"这个播放器到底有没有时间轴"，再决定要不要真发 SMTC。
+            if cmd == "seek" and has_pos:
+                target = max(0.0, float(pos_ms) / 1000.0)
+                before = ctx.pusher.anchor(target, source="manual")
+                dev = target - before
+                if ctx.pusher.has_timeline:
+                    ctx.pcnow_log(
+                        f"校准(seek): 内插 {before:.1f}s → 目标 {target:.1f}s"
+                        f"（偏差 {dev:+.1f}s）｜该播放器有真时间轴，"
+                        f"SMTC seek 随后生效并再次校准")
+                else:
+                    ctx.pcnow_log(
+                        f"校准(锚点): 内插 {before:.1f}s → 实际 {target:.1f}s"
+                        f"（偏差 {dev:+.1f}s）｜该播放器无 SMTC 时间轴，"
+                        f"**跳过** seek（网易云曲内跳转本就无解），仅重锚内插时钟")
+                    return          # 不把注定失败的 seek 丢给 SMTC
+            ctx.smtc.send_command(cmd,
+                                  int(pos_ms) if has_pos else None)
+
+        ctx.link.on_json = on_link_json
+    return ctx
+
+
+def teardown(ctx: Ctx) -> None:
+    for closer in ("smtc", "httpd", "pusher", "wav", "asr", "player", "voice", "record_server", "link"):
+        obj = getattr(ctx, closer, None)
+        if obj is not None and hasattr(obj, "close"):
+            try:
+                obj.close()
+            except Exception as e:
+                print(f"[teardown] {closer}: {e}", flush=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="pc_host")
+    parser.add_argument("--device", default=None, help="设备 IP；缺省=UDP 50003 广播自动发现")
+    parser.add_argument("--recordings", default="recordings")
+    parser.add_argument("--no-pcnow", action="store_true", help="不启动音乐副屏模块")
+    args = parser.parse_args()
+
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        raise SystemExit("缺少 PySide6：pip install -e .[desktop]") from exc
+
+    from .ui.main_window import MainWindow
+    from .ui.theme import QSS
+
+    ctx = build_services(args)
+
+    app = QApplication(sys.argv)
+    app.setStyleSheet(QSS)
+    window = MainWindow(ctx)
+    window.show()
     result = app.exec()
-    wav.close(); player.close(); asr.close(); voice.close(); link.close(); server.close(); return result
+    teardown(ctx)
+    return result
 
-if __name__ == "__main__": raise SystemExit(main())
+
+if __name__ == "__main__":
+    raise SystemExit(main())

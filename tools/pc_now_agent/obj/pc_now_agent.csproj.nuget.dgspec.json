@@ -1,0 +1,81 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\pc_now_agent.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\pc_now_agent.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\pc_now_agent.csproj",
+        "projectName": "pc_now_agent",
+        "projectPath": "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\pc_now_agent.csproj",
+        "packagesPath": "C:\\Users\\xiao1\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\xiao1\\Desktop\\esp32\\display_audio_photo\\tools\\pc_now_agent\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\xiao1\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows10.0.19041.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows10.0.19041": {
+            "targetAlias": "net8.0-windows10.0.19041.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows10.0.19041": {
+          "targetAlias": "net8.0-windows10.0.19041.0",
+          "dependencies": {
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.8, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.Windows.SDK.NET.Ref",
+              "version": "[10.0.19041.56, 10.0.19041.56]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.Windows.SDK.NET.Ref": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\xiao1\\.workbuddy\\binaries\\dotnet\\sdk\\8.0.425/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

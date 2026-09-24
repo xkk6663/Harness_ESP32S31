@@ -289,7 +289,7 @@ static void clock_widget_create(lv_obj_t *parent)
     /* middle-right: wind */
     lv_obj_t *wind_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 250, 188, 90);
     mk_icon(wind_card, &image_wind, ICON_SCALE_SMALL,
-            LV_ALIGN_CENTER, -30, 0);
+            LV_ALIGN_CENTER, -50, 0);
     s_wind_label = mk_label(wind_card, COL_TEXT, &lv_font_cn_20,
                             LV_ALIGN_RIGHT_MID, 0, 0);
 
@@ -304,7 +304,7 @@ static void clock_widget_create(lv_obj_t *parent)
     /* bottom-right 2: sunrise/sunset */
     lv_obj_t *sun_card = card_create(frame, LV_ALIGN_TOP_LEFT, 580, 350, 188, 90);
     mk_icon(sun_card, &image_sunrise, ICON_SCALE_SMALL,
-            LV_ALIGN_CENTER, -30, 0);
+            LV_ALIGN_CENTER, -50, 0);
     s_sun_label = mk_label(sun_card, COL_TEXT, &lv_font_cn_20,
                            LV_ALIGN_RIGHT_MID, 0, 0);
 

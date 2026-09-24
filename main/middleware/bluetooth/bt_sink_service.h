@@ -96,6 +96,14 @@ void bt_sink_service_on_metadata(const void *evt);
 /** 蓝牙关闭 / 角色切换时调用：停止并复位接收管线（不销毁，遵循"建一次不毁"） */
 void bt_sink_service_request_stop(void);
 
+/**
+ * @brief 让出 codec 给 16k 会话（UDP 通话/录音），同步等待完成（≤1s）。
+ *        16k 会话启动前必须调用，否则 44.1k 持锁导致 esp_codec_dev 采样率
+ *        冲突被静默忽略 → I2S 停在 44.1k → 通话无声（§28.44）。
+ * @note  BT 服务未就绪时立即返回；BT 下次播放时 PREPARE 会重开 codec。
+ */
+void bt_sink_service_audio_yield(void);
+
 /* ---- 以下为 UI 轮询接口（LVGL 线程调用，全部非阻塞、加锁保护）---- */
 
 /** 取元数据快照；返回 false 表示当前无元数据。

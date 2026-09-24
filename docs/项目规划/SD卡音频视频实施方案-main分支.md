@@ -1,5 +1,11 @@
 # SD 卡 + ESP-GMF 音频 + MJPEG 视频 实施方案（基于 main 分支源码）
 
+> ⚠ **状态（2026-09-24 补注）：本方案已实施**，但**文件名已变更** —— 文中所有
+> `ui/tab_music.c/h` 现为 **`ui/tabs/tab_audio.c/h`**（§28.23 把音乐页与蓝牙推流页
+> 合并为 AUDIO 页；`tab_btpush.c/h` 已删除）；视频侧落在 `ui/tabs/tab_video.c`。
+> ⚠ 本文所述"音频链路全做在 UI 层"的分层问题**仍未修**，见 `12_音频链路架构.md` §4 / §5.5。
+> 当前真实状态以代码 + `改动记录.md` 为准，本文保留为当时的实施方案记录。
+
 > 2026-09-20 | 基于 main 分支 ca85592
 > 工程根：`C:\Users\xiao1\Desktop\esp32\display_audio_photo`
 

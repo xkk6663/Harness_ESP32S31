@@ -492,6 +492,14 @@ void wifi_manager_init(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    /* ★ §28.41：关掉 STA 调制解调器省电（默认 WIFI_PS_MIN_MODEM）。
+     * 省电模式下设备在 DTIM 间休眠，AP 只能攒包再发：PC 按 20ms 一帧发来的
+     * 语音/WAV UDP 流到达设备时被攒成大突发（实测 STAT rx=0 平期 + 偶发
+     * rx=349），AP 缓冲溢出导致大量丢包 + 乱序（reorder/bad 飙升），推流断续。
+     * 不对称性的由来：设备 TX 发包即刻唤醒射频不受影响，故"听得到设备、
+     * 设备放不出 PC 的声音"。该设置存于 WiFi 驱动，stop/start/角色切换后
+     * 仍生效，init 后设一次即可。 */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     WIFI_DIAG("after esp_wifi_init");
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,

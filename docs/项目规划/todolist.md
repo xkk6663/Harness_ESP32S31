@@ -1,10 +1,29 @@
 # 传声机工程 TodoList
 
-> 最后更新：2026-09-15（对齐需求文档 V3.3、ICD V1.1）
+> 最后更新：2026-09-24（副屏推流实机验收后回填；基线：需求文档 V3.3、ICD V1.3）
 > 工程：ESP32-S31-Korvo-1 V1.1，ESP-IDF v6.1.0，IDF_TARGET=esp32s31，LCD 800×480，Flash 16MB / PSRAM 16MB。
 > 闭环 SOP：每个子任务完成 → `idf.py build` → `idf.py -p COM9 flash`（板子自动复位）→ `docs/_serial_capture.py` 抓日志验证 → 打勾。
 > 分层红线：APP(app/) / 中间层(middleware/) / UI(ui/)；中间层**禁止 include lvgl.h**；新源文件注册 `main/CMakeLists.txt`。
 > 完成标准：不看代码也能按本条执行；每阶段末尾有"验收"清单，全绿才算过。
+
+### 阶段状态总表（2026-09-24 核对，以代码为准）
+
+| 阶段 | 状态 | 依据 / 剩余 |
+|---|---|---|
+| 0 裁剪 + UI 骨架 | ✅ 完成 | — |
+| 1 Wi-Fi 基础 | ✅ 完成 | — |
+| 1.5 分区表 + LittleFS | ✅ 完成（2026-09-15） | — |
+| **2 UDP 通话 + PC 上位机** | ✅ **主体完成**（2026-09-23，§28.37） | 剩余见下方 **2.5 / 2.6** |
+| **3 录音记录 + PC 同步** | ✅ **已落地**（`record_service` 双模 + `pc_host/record` TCP 50002） | ⚠ 离线时长受 storage 余量限制，见 §3.0 注；量化验收（30min 无增长 / ≤100ms）未做 |
+| **3.5 文件管理（HTTP + 文件浏览器 + 壁纸热更新）** | ❌ **未开工** | `main/` 内无 `fs_http_service`；方案见《需求文档》§5.6 |
+| 附加：下拉壁纸天气时钟 | ✅ 完成（2026-09-17） | — |
+| **4 设备发现 + 完整信令 + 模式切换** | ⚠ **大部分已落地** | 广播发现（`pc_host`）+ 心跳/peer 已通（§28.39）；`session_manager` 单槽互斥与 `REC_*` 三段式信令已实现；逐条核对以本节复选框为准 |
+| 5 稳定与优化 | ⚠ 长期进行中 | F26~F47 已做多轮内存/栈/ISR 治理；剩余见 `13/14_内存*.md` 的"未执行"清单 |
+| **6 OTA 远程升级** | ❌ **未开工** | `main/` 内无 `esp_ota` 调用；方案见 `WiFi局域网OTA升级实施方案.md`（仅方案） |
+| 附：蓝牙本地推流 B2 | ✅ 已落地并实测通过 | §28.20（三修）；`tab_btpush.c` 已并入 `tab_audio.c` |
+
+> **读法**：本表是**结论**；下方各节的复选框是**当时规划措辞**，未勾≠未做、已勾≠已验证，
+> 以本表 + 代码 + `改动记录.md` 为准。
 
 ---
 
@@ -50,7 +69,9 @@
 
 ## 阶段 2：UDP 低延迟通话 + PC 主机软件
 
-> 端口：50000 设备→PC 音频；50001 PC→设备音频；50003 信令/心跳；50002/50004 阶段三/六用。
+> 端口：50000 设备→PC 音频；50001 PC→设备音频；50002 TCP 录音（**已实现**）；50003 信令/心跳；
+> **50004 PC 副屏 NOW_\*（已实现）；50005 PC 副屏 HTTP 拉取（已实现）**；50006+ 留白。
+> 实际端口表以 `通信接口规范_ICD.md` §2/§7.1 为准。
 > 音频契约：16kHz/16bit/mono/小端，20ms=640B 净荷；12B 帧头（magic A5 5A|ver|type|seq|ts_ms|len）。
 > 分层：网络任务只跟 audio_service ringbuf 打交道，不直接碰 codec、不 include lvgl。
 
@@ -88,19 +109,21 @@
   2. 单生产者单消费者；跨核共享处加临界区（第三方库非线程安全）；
   3. "丢最旧"统一用 `ringbuffer_put_force`，不要自己绕指针；"还有多少空间"用 `ringbuffer_space_len(rb)`；
   4. **FreeRTOS 队列（xQueue）只传命令/事件/指针，不传整段 PCM**（音频数据一律走 ringbuf）；
-  5. UDP 16 帧乱序重排窗口是**按 seq 的帧槽**，不是字节 ringbuf，用独立 `frame_slot[16]` 数组，不要塞进 ringbuf。
+  5. UDP 乱序重排窗口是**按 seq 的帧槽**，不是字节 ringbuf，用独立 `frame_slot[N]` 数组，不要塞进 ringbuf。
+     ★ **实际槽数 = 32**（本文原写 16，已按代码/ICD V1.2 更正；见 `udp_voice.c`）。
 
 ### 2.1 link_manager 信令与连接状态（新增中间层）
 - [x] `link_manager_init()`：UDP 50003 socket + 常驻任务（按工程规范使用 8192B 栈），接收 HEARTBEAT/回 ACK；
 - [ ] 收 PC HEARTBEAT：`recvfrom` 学习 PC IP、刷新心跳时间，回调 ONLINE，回 HEARTBEAT_ACK（fw/proto/sample_rate）；
-- [ ] 500ms 巡检，2s 无心跳 → OFFLINE；预留 SESSION_START/STOP/PTT/MODE/REC_* 分支；
+- [ ] 周期巡检，**5s** 无心跳 → OFFLINE（本文原写"2s"，已按代码/ICD V1.2 更正）；预留 SESSION_START/STOP/PTT/MODE/REC_* 分支；
 - [ ] `link_manager_is_online()` / `get_peer(addr*)` 供 udp_voice 取上行目标；
 - [ ] 事件回调 tab_sys：连接点 ONLINE 绿/OFFLINE 红 + PC IP；断线自动通知 udp_voice STOP。
 
 ### 2.2 udp_voice 音频收发（新增中间层）
 - [x] `udp_voice_init()`：50000/50001 socket + tx/rx 常驻任务（栈 8192，Core0）；
 - [ ] tx：从 mic ringbuf 取 640B → 打 12B 帧头 → 发 peer:50000；
-- [ ] rx：收 50001 → 校验 magic/ver，16 帧环形重排窗口乱序重排；超时 40ms 填静音 → 写 spk ringbuf；
+- [ ] rx：收 50001 → 校验 magic/ver，**32** 槽环形重排窗口乱序重排；超过 **60ms** 未补齐则填静音 → 写 spk ringbuf；
+      （★ 本文原写"16 帧 / 40ms"，已按代码 + ICD V1.2 更正；丢最旧/丢自愈规则见 `udp_voice.c` 的 seq 分派）
 - [ ] 命令队列 VOICE_CMD_START/STOP/SET_PTT；START 前要求 link ONLINE；
 - [ ] 丢包/乱序/延迟统计，每 2s 一条日志（高频收发路径不打日志）。
 
@@ -110,11 +133,17 @@
 - [ ] 物理按键映射（VOL-/VOL+ 已通；可选 BOOT 短按=通话开关）。
 
 ### 2.4 PC 主机软件（新建 pc_host/，Python，按需求 7.4 目录 + 7.5 解耦）
-- [ ] 骨架 + PySide6 主窗口（Call/Record/OTA/Wallpaper/System 多 Tab）+ EventBus + 各业务独立 QThread；
-- [ ] `net/link.py`：1s 心跳 + 收 ACK，维护在线状态；
-- [ ] `net/voice_udp.py`：收 50000、去帧头、jitter 重排，同一帧 PCM 广播 play_q + asr_q；
-- [ ] `audio/player.py`：sounddevice 播放 play_q（低延迟，满丢旧帧）；`audio/capture.py`：PTT 按住采集组帧发 50001；
-- [ ] `asr/backend.py`：AsrBackend 抽象 + sherpa-onnx 离线流式，asr_q 喂 PCM 出文本经信号槽刷新；
+> ✅ **主体已完成（2026-09-23，v2，§28.37）**：`net/`（心跳+广播发现/voice_udp）、
+> `audio/`、`asr/`、`record/`、PySide6 多页 UI（通话对讲/录音库/音乐副屏/系统）
+> 均已上线；音乐副屏从 C# agent 融合进 `pc_host/pcnow/`。✅ **音乐副屏（NOW_*）已实机
+> 验收通过（2026-09-24，F44~F47，ICD §7）**。下述细项为当时规划措辞，
+> 实际实现以 `pc_host/README.md` 与代码为准（EventBus 改为轮询式 Ctx、Tab 名以
+> 实际页面为准、PTT 采集为 pyaudiowpatch 回环方案）。
+- [x] 骨架 + PySide6 主窗口（Call/Record/OTA/Wallpaper/System 多 Tab）+ EventBus + 各业务独立 QThread；
+- [x] `net/link.py`：**200ms** 心跳（本文原写 1s，已按代码/ICD V1.2 更正）+ 收 ACK，维护在线状态；
+- [x] `net/voice_udp.py`：收 50000、去帧头、jitter 重排，同一帧 PCM 广播 play_q + asr_q；
+- [x] `audio/player.py`：sounddevice 播放 play_q（低延迟，满丢旧帧）；`audio/capture.py`：PTT 按住采集组帧发 50001；
+- [x] `asr/backend.py`：AsrBackend 抽象 + sherpa-onnx 离线流式，asr_q 喂 PCM 出文本经信号槽刷新；
 - [ ] Call Tab：PTT 键、实时转写文本（清空/复制/导出 txt）、电平、丢包/延迟统计。
 
 ### 2.5 阶段二工程质量（源码走查硬约束，随做随验）
@@ -128,7 +157,7 @@
 - [ ] 运行时统计（丢包率/jitter/水位/栈水位/CPU）输出 SYS 页或日志。
 
 ### 2.6 阶段 2 验收
-- [ ] PC 启动后 SYS tab 红→绿，关软件 2s 回红；
+- [ ] PC 启动后 SYS tab 红→绿，关软件 **5s** 回红（原写 2s，已按代码/ICD V1.2 更正）；
 - [ ] 按传音按钮，PC 实时听到声音且 ASR 逐句出字（≤1s）；PC 按住 PTT 设备实时播放，松开停，不中断设备上行；
 - [ ] 端到端 ≤100ms，丢包补偿听感连续；本地回环 ≤8ms；连续通话 30min 无宕机/内存增长；
 - [ ] 打勾 + `改动记录.md` 追加 + 代码文件索引补 link_manager/udp_voice/pc_host。
@@ -141,7 +170,12 @@
 > 详见需求 V3.2 第 5 章、ICD 第 5/5.7 章。
 
 ### 3.0 存储与文件系统（前置，FS 阶段 1.5 已迁 LittleFS）
-- [ ] 确认分区：单 `storage` littlefs（9.87MB），出厂素材与后续录音/壁纸同盘；离线 PCM 硬顶 300s（9.16MB），到点/空间不足自动停；
+- [ ] 确认分区：单 `storage` littlefs（**实际 5.875MB @0xA20000**，本文原写 9.87MB 为旧规划）；出厂素材与后续录音/壁纸同盘；离线 PCM 硬顶 300s，到点/空间不足自动停；
+- ⚠ **已知缺口（2026-09-24 核实，未修）**：`record_service.c` 的
+  `RECORD_MAX_PCM_BYTES = 300s × 16000 × 2 = 9,600,000 B`，**但 storage 只有 6,160,384 B**，
+  且已放 bin 字体 2,744,120 B + 壁纸 32,157 B + 开机音 98,868 B ⇒ **实际可用仅 ≈3.13MB
+  ≈ 102 秒 16k mono PCM**。⇒ 所谓"300s 硬顶"在实机上**永远到不了**，会先撞 ENOSPC。
+  待办：把上限改为**按剩余空间动态计算**（或直接降到 ~90s）并让 REC UI 的"剩余可录时长"读同一来源。
 - [ ] storage 内分目录：`/recordings/`（录音）与 `/wallpapers/`（壁纸）隔离；清录音只删 `/recordings/`。
 
 ### 3.1 设备端 record_service（中间层，双模状态机）
@@ -319,13 +353,18 @@
 
 ---
 
-## 附：蓝牙本地推流（A2DP Source）—— 方案 B2 实现中（2026-09-21）
+## 附：蓝牙本地推流（A2DP Source）—— 方案 B2 ✅（已落地并实测通过，2026-09-24 状态更正）
 
 > 目标：SD 卡 MP3 → 蓝牙耳机/音箱（A2DP Source）。
 > 方案文档：`docs/项目规划/蓝牙本地推流方案B-延迟常驻.md`。
-> 决策：**B2**（`early_init` 建 pool+pipeline+task，全程复用不销毁）；推流纳入 `SESSION_BT_PUSH` 互斥；UI 复用 `tab_btpush.c/h`，挂为第 6 个主 tab；首次验证用 SD 卡 MP3。
+> 决策：**B2**（`early_init` 建 pool+pipeline+task，全程复用不销毁）；推流纳入 `SESSION_BT_PUSH` 互斥；首次验证用 SD 卡 MP3。
+>
+> ⚠ **本节下方文字是 2026-09-21 当时的记录**：其中"挂为**第 6 个**主 tab / `tab_btpush.c`"
+> **已作废** —— §28.23 把 MUSIC 与 BTPUSH 合并为 **AUDIO 页**（`tab_audio.c/h`，LOCAL ⇄ BT PUSH
+> 出口切换），`tab_btpush.c/h` **已删除**；主 tabview 现为 **7 个**（CALL/REC/AUDIO/SINK/VIDEO/PC/SYS）。
+> 标题里的"实现中"与下节"待编译验证"**均已收敛**（§28.20 三修后实机跑通）。
 
-### 代码改动（已完成，待编译验证）
+### 代码改动（已完成并实测通过 —— 标题原写"待编译验证"，2026-09-24 更正）
 - [x] `middleware/bt_push_service.c/h`：重写为方案 B2。pool+`io_file`/`aud_dec`/`aud_asrc`/`aud_enc`/`io_bt` + pipeline + GMF task 全在 `bt_push_service_early_init()` 建好；uri/weight 放 PSRAM；所有阻塞操作（set_in_uri/loading_jobs/run/stop/reset/pause/resume）走命令队列由 `bt_push_proc` 串行执行，BT 事件线程只做登记+reconfig（P1~P4）；
 - [x] `middleware/bt_audio_service.c`：`STREAM_STATE_CHG` 转发 `stream_handle`+完整四态给 push 服务（原先把四态压成 bool，丢了 handle）；`play_source` 接 `bt_push_service_set_uri()`；新增 `resume_source`；play/stop 门控 `SESSION_BT_PUSH`；
 - [x] `middleware/session_manager.h`：新增 `SESSION_BT_PUSH` 枚举；
@@ -366,12 +405,25 @@ BT_PUSH: pipeline run
 
 ## 当前下一步
 
-**先做阶段 2。** 阶段 1.5（分区表 + LittleFS）已于 2026-09-15 完成并回归通过。
-开工前：
-1. 重读 `skills/esp-idf-closed-loop.md` SOP；遵守 `docs/工程规范/`（中间层常驻任务+命令队列、不 include lvgl）；
-2. 阶段 2：2.0 audio_service 流式改造（本地回环 ≤8ms）→ 2.0.1 软件抽象 → 2.1 link 心跳（SYS 绿/红）→ 2.2 udp_voice → 2.3 UI → 2.4 PC；
-3. 新源文件注册 `main/CMakeLists.txt` SRCS/REQUIRES；每个单元 build→flash(COM9)→抓日志闭环；
-4. PC 端 `pc_host/` 独立工程，按需求 7.4 目录、7.5 EventBus 解耦、7.3 sherpa-onnx；
-5. 完成后打勾 + `改动记录.md` 追加 + 代码文件索引更新。
+> **状态快照（2026-09-24）**：阶段 2 **主体已落地** —— `link_manager` 心跳、`udp_voice`
+> 通话、`pc_host/`（PySide6 v2 多页上位机）均已上线（§28.37）；**PC 音乐副屏（NOW_*）已
+> 实机验收通过**（F44/F45/F46/F47，§28.53~§28.56，ICD §7）。
+> **逐阶段结论见文档开头的「阶段状态总表」**；下方复选框为当时规划措辞。
 
-> 默认选型（需求已定，可改）：ASR=sherpa-onnx 离线流式；GUI=PySide6；设备传音=toggle；PC 回讲=按住 PTT；FS=LittleFS；OTA 双槽各 3MB、storage littlefs 9.87MB（阶段 1.5 已落地）。
+**存量待办**（按需推进）：
+
+1. **2.5 工程质量逐项复核** —— 实时缓冲/任务绑核/栈高水位留 30%。这项与 F35/F38/F40 三处
+   栈违例**强相关**，是当前最值得清的存量债（`audio_task`、`local2bt_task`/`bt2codec_task`）；
+2. **2.6 验收清单** —— 端到端 ≤100ms、丢包补偿听感连续、连续通话 30min 无宕机/内存增长；
+3. **副屏剩余挂账**（用户尚未拍板）：网易云无时间轴时设备端提示"该播放器不支持跳转"；
+   5 个 `esp_codec_dev` 句柄收敛为 `codec_bus` 单例（F42 的结构隐患）；
+4. **录音离线时长与 storage 余量不符**（本轮新发现，见 §3.0 注）：代码上限 300s ≈ 9.6MB，
+   而 storage 可用仅 ≈3.13MB（≈102s）⇒ 300s 永远到不了，会先 ENOSPC。需改为按剩余空间动态计算。
+
+> 开工纪律不变：重读 `skills/esp-idf-closed-loop.md` SOP；遵守 `docs/工程规范/`
+> （中间层常驻任务 + 命令队列、**不 include lvgl**）；新源文件注册 `main/CMakeLists.txt`
+> SRCS/REQUIRES；每个单元 build → flash(COM9) → 抓日志闭环；
+> 完成后打勾 + `改动记录.md` 追加 + 代码文件索引更新。
+
+> 默认选型（需求已定，可改）：ASR=sherpa-onnx 离线流式；GUI=PySide6；设备传音=toggle；PC 回讲=按住 PTT；FS=LittleFS。
+> 分区实际值以 `partitions.csv` 为准：nvs 24K / ota_0 5M / ota_1 5M / storage(littlefs) **5.875M @0xA20000**（阶段 1.5 已落地；此处曾写"双槽各 3MB、9.87MB"，为当时规划的旧数）。

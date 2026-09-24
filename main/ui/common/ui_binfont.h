@@ -51,12 +51,40 @@ extern "C" {
 #endif
 
 /**
- * @brief 加载 CJK bin 字体（幂等；失败只打日志，不 abort）。
+ * @brief 阶段 1／2：把 bin 文件从 LittleFS 读进 PSRAM（**不碰 LVGL**）。
  *
- * @note 必须在 `bsp_display_start()`（内部会 `lv_init()`）之后调用。
- *       本函数是**同步阻塞**的：LittleFS 读 ~1.8MB + 解析 2 万字形，
- *       耗时量级在秒级。调用点应选在用户不会感到卡顿的时刻
- *       （app_main 里 splash 已上屏之后）。
+ * ★★ 调用位置有硬约束：必须在**任何 PSRAM 栈任务创建之前**（F40）。
+ *   本函数做一次 ~2.7MB 的 LittleFS 读；`esp_flash_read()` 会按 16KB 分块
+ *   （`MAX_READ_CHUNK`），每块一对 `spiflash_start_read/end`
+ *   ＝ 关一次全局 cache。而 IDF 的
+ *   `spi_flash_disable_interrupts_caches_and_other_cpu()`（cache_utils.c）
+ *   **只关 cache、并不停住另一核**，所以这些窗口内任何核上的任何 PSRAM
+ *   访问（包括别人任务栈的压栈/弹栈）都会直接 Cache error（F38 家族）。
+ *   ⇒ 放在 bt_push/bt_sink early_init（它们会创建 PSRAM 栈任务）之前，
+ *     此刻系统里只有内部栈任务，天然零风险。
+ *
+ * @note 与 `ui_binfont_attach()` 的分工：本函数只做 POSIX
+ *       stat/malloc/open/read，**不依赖 lv_init()**，因此可以提前调用；
+ *       `lv_binfont_create_ex()` 那段（需要 LVGL）留给 attach。
+ *       幂等：重复调用只跑一次。
+ */
+void ui_binfont_load(void);
+
+/**
+ * @brief 阶段 2／2：把已读入的缓冲解析成 LVGL 运行时字体（纯 RAM，无 flash IO）。
+ *
+ * @note 必须在 `bsp_display_start()`（内部 `lv_init()`）之后调用。
+ *       幂等；若阶段 1 未成功（或文件缺失）则什么都不做，
+ *       `ui_binfont_get()` 保持返回 NULL，调用方照常回退内置字体。
+ */
+void ui_binfont_attach(void);
+
+/**
+ * @brief 便捷包装：等价于 `ui_binfont_load()` + `ui_binfont_attach()`。
+ *
+ * @note 因为 attach 需要 lv_init()，本包装只能在 `bsp_display_start()` 之后调用
+ *       ⇒ 它**无法**满足 F40 的"读必须早于 PSRAM 栈任务"约束。
+ *       新代码请显式分别调用两个阶段（见 main.c app_main 的 F40 注释）。
  */
 void ui_binfont_init(void);
 

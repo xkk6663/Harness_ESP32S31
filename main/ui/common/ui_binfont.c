@@ -6,10 +6,20 @@
  * @file ui_binfont.c
  * @brief 全 CJK bin 字体加载实现（LittleFS → PSRAM → lv_binfont_create_ex 懒加载字形）。
  *
- * 加载链路：
- *   /littlefs/fonts/lv_font_cjk_28.bin
- *     --(stat + read, 显式 PSRAM)-->  s_file_buf (~1.9MB)
+ * 加载链路（★ 故意的两段式，见 F40）：
+ *   阶段 1  ui_binfont_load()   ← 不碰 LVGL，必须早于所有 PSRAM 栈任务
+ *     /littlefs/fonts/lv_font_cjk_28.bin
+ *       --(stat + read, 显式 PSRAM)-->  s_file_buf (~2.7MB)
+ *   阶段 2  ui_binfont_attach() ← 需 lv_init()，纯 RAM 无 flash IO
  *     --(lv_binfont_create_ex{ .buffer, .dynamic_glyph_load = true })-->  s_font
+ *
+ * ★ 为什么必须拆成两段（F40，2026-09-24 上电必崩的修复）：
+ *   阶段 1 那次 read 会把 2.7MB 按 16KB 分块读，每块关一次全局 cache；
+ *   而 IDF 的 spi_flash_disable_interrupts_caches_and_other_cpu()
+ *   （cache_utils.c）**只关 cache、不停另一核** —— 窗口内任何核上的
+ *   任何 PSRAM 访问（含他人任务栈的压/弹栈）都会 Cache error。
+ *   所以"读"必须发生在 bt_push/bt_sink early_init（PSRAM 栈任务）之前；
+ *   而"解析"必须在 lv_init() 之后。两者时机不同，故必须拆分。
  *
  * ★ 为什么必须开 dynamic_glyph_load（字面省 ~1.62MB RAM）：
  *   lv_binfont 的字形其实是"双轴"加载，两件事互不相干：
@@ -65,21 +75,26 @@ static const char *TAG = "UI_BINFONT";
 /** bin 字体路径（随 storage 分区镜像一起烧录，见 littlefs_content/fonts/） */
 #define BINFONT_PATH   FS_MNT_PATH "/fonts/lv_font_cjk_28.bin"
 
-static lv_font_t *s_font     = NULL;   /* 加载好的 LVGL 字体 */
-static uint8_t   *s_file_buf = NULL;   /* bin 文件副本，常驻 PSRAM */
-static bool       s_tried    = false;  /* 只尝试一次：失败不再重试刷日志 */
+static lv_font_t *s_font      = NULL;  /* 加载好的 LVGL 字体 */
+static uint8_t   *s_file_buf  = NULL;  /* bin 文件副本，常驻 PSRAM（见文件头） */
+static size_t     s_file_len  = 0;     /* 已读入的字节数 */
+static bool       s_load_tried = false;  /* 阶段 1（读文件）只尝试一次 */
+static bool       s_attach_tried = false;/* 阶段 2（解析成字体）只尝试一次 */
 
 lv_font_t *ui_binfont_get(void)
 {
     return s_font;
 }
 
-void ui_binfont_init(void)
+/* ------------------------------------------------------------------ *
+ * 阶段 1／2：LittleFS → PSRAM（**不碰 LVGL**，必须在 PSRAM 栈任务之前）
+ * ------------------------------------------------------------------ */
+void ui_binfont_load(void)
 {
-    if (s_tried) {
+    if (s_load_tried) {
         return;
     }
-    s_tried = true;
+    s_load_tried = true;
 
     struct stat st;
     if (stat(BINFONT_PATH, &st) != 0 || st.st_size <= 0) {
@@ -87,7 +102,7 @@ void ui_binfont_init(void)
         return;
     }
 
-    /* ★ 显式 PSRAM：本字体 ~1.9MB，而此刻内部 RAM 只剩几十 KB
+    /* ★ 显式 PSRAM：本字体 ~2.7MB，而此刻内部 RAM 只剩几十 KB
        （见 docs/工程规范/13_内存管理规范）。绝不能落内部。 */
     s_file_buf = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_file_buf) {
@@ -103,12 +118,35 @@ void ui_binfont_init(void)
         s_file_buf = NULL;
         return;
     }
+    /* ★★ F40 现场：这一句就是上电崩溃的爆点。
+       esp_flash_read() 对 PSRAM 目标走 16KB 分块 + 每块关/开全局 cache
+       （esp_flash_api.c:929 的 read_chunk_size 与 cache_utils.c 的 disable/enable），
+       2.7MB ⇒ ~168 个"cache 已关"的窗口。窗口内若有任何 PSRAM 访问即 Cache error。
+       所以本函数必须早于所有 PSRAM 栈任务（调用方 main.c 保证）。 */
     ssize_t got = read(fd, s_file_buf, (size_t)st.st_size);
     close(fd);
     if (got != (ssize_t)st.st_size) {
         ESP_LOGE(TAG, "short read: %d/%d", (int)got, (int)st.st_size);
         heap_caps_free(s_file_buf);
         s_file_buf = NULL;
+        return;
+    }
+    s_file_len = (size_t)st.st_size;
+    ESP_LOGI(TAG, "bin loaded: %d bytes -> PSRAM (phase 1/2, LVGL untouched)", (int)s_file_len);
+}
+
+/* ------------------------------------------------------------------ *
+ * 阶段 2／2：buffer → LVGL 字体（纯 RAM 解析，必须在 lv_init() 之后）
+ * ------------------------------------------------------------------ */
+void ui_binfont_attach(void)
+{
+    if (s_attach_tried) {
+        return;
+    }
+    s_attach_tried = true;
+
+    if (!s_file_buf || s_file_len == 0) {
+        ESP_LOGW(TAG, "attach skipped: bin not loaded (phase 1 failed)");
         return;
     }
 
@@ -118,7 +156,7 @@ void ui_binfont_init(void)
     const lv_binfont_dsc_t dsc = {
         .path               = NULL,      /* 用 buffer 源，需 LV_USE_FS_MEMFS */
         .buffer             = s_file_buf,
-        .buffer_size        = (uint32_t)st.st_size,
+        .buffer_size        = (uint32_t)s_file_len,
         .dynamic_glyph_load = true,
     };
     s_font = lv_binfont_create_ex(&dsc);
@@ -127,13 +165,20 @@ void ui_binfont_init(void)
         ESP_LOGE(TAG, "lv_binfont_create_ex failed (bad bin or version mismatch)");
         heap_caps_free(s_file_buf);
         s_file_buf = NULL;
+        s_file_len = 0;
         return;
     }
 
     ESP_LOGI(TAG, "CJK font ready: %d bytes in PSRAM, dynamic_glyph_load=ON, "
                   "line_h=%d base_line=%d | PSRAM free=%u",
-             (int)st.st_size, s_font->line_height, s_font->base_line,
+             (int)s_file_len, s_font->line_height, s_font->base_line,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+void ui_binfont_init(void)
+{
+    ui_binfont_load();
+    ui_binfont_attach();
 }
 
 void ui_binfont_deinit(void)
@@ -146,5 +191,7 @@ void ui_binfont_deinit(void)
         heap_caps_free(s_file_buf);
         s_file_buf = NULL;
     }
-    s_tried = false;
+    s_file_len = 0;
+    s_load_tried = false;
+    s_attach_tried = false;
 }

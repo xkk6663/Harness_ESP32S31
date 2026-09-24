@@ -140,19 +140,15 @@ static lv_obj_t *transparent_box(lv_obj_t *parent, int w, int h)
     lv_obj_set_style_border_width(o, 0, 0);
     lv_obj_set_style_pad_all(o, 0, 0);
     lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(o, false);
     return o;
 }
 
 static void set_hidden(lv_obj_t *o, bool hidden)
 {
-    if (!o) {
-        return;
-    }
-    if (hidden) {
-        lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    /* lv_obj_set_hidden(bool) 是 LVGL9 推荐写法；add/remove_flag 已弃用 */
+    if (o) {
+        lv_obj_set_hidden(o, hidden);
     }
 }
 
@@ -683,7 +679,7 @@ void tab_btsink_build(lv_obj_t *parent, lv_group_t *g)
 
     /* --- 顶栏：左「状态灯 + 状态文本」/ 右「均衡器条」 --- */
     lv_obj_t *header = ui_common_card(s_media, CARD_W, HEADER_H, 12);
-    lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(header, false);
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
@@ -701,7 +697,7 @@ void tab_btsink_build(lv_obj_t *parent, lv_group_t *g)
     lv_obj_set_style_border_width(s_dot, 0, 0);
     lv_obj_set_style_bg_color(s_dot, COL_SUBTEXT, 0);
     lv_obj_set_style_pad_all(s_dot, 0, 0);
-    lv_obj_remove_flag(s_dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(s_dot, false);
     lv_obj_set_scrollbar_mode(s_dot, LV_SCROLLBAR_MODE_OFF);
 
     s_state = lv_label_create(hleft);
@@ -719,7 +715,7 @@ void tab_btsink_build(lv_obj_t *parent, lv_group_t *g)
         lv_obj_set_style_border_width(s_eq_bar[i], 0, 0);
         lv_obj_set_style_bg_color(s_eq_bar[i], COL_CYAN, 0);
         lv_obj_set_style_pad_all(s_eq_bar[i], 0, 0);
-        lv_obj_remove_flag(s_eq_bar[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(s_eq_bar[i], false);
         lv_obj_set_scrollbar_mode(s_eq_bar[i], LV_SCROLLBAR_MODE_OFF);
     }
     set_hidden(s_eq_box, true);
@@ -730,7 +726,7 @@ void tab_btsink_build(lv_obj_t *parent, lv_group_t *g)
     /* --- 正在播放卡：曲名 / 歌手居中，下面挂歌词窗口 --- */
     lv_obj_t *now = ui_common_card(s_media, CARD_W, LV_SIZE_CONTENT, 16);
     lv_obj_set_flex_grow(now, 1);
-    lv_obj_remove_flag(now, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(now, false);
     lv_obj_set_flex_flow(now, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(now, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);

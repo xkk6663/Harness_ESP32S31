@@ -5,10 +5,10 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-desktop = ["PySide6>=6.6", "sounddevice>=0.4", "numpy>=1.24", "sherpa-onnx>=1.10"]
+desktop = ["PySide6>=6.6", "sounddevice>=0.4", "numpy>=1.24", "sherpa-onnx>=1.10", "winsdk>=1.0.0b10", "requests>=2.28"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["pc_host", "pc_host.asr", "pc_host.net", "pc_host.audio", "pc_host.record", "pc_host.tests"]
+packages = ["pc_host", "pc_host.asr", "pc_host.net", "pc_host.audio", "pc_host.pcnow", "pc_host.record", "pc_host.ui", "pc_host.ui.pages", "pc_host.tests"]

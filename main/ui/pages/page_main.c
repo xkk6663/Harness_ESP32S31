@@ -23,6 +23,7 @@
 #include "ui/tabs/tab_sys_entry.h"
 #include "ui/tabs/tab_audio.h"
 #include "ui/tabs/tab_btsink.h"
+#include "ui/tabs/tab_pcnow.h"
 #include "ui/tabs/tab_video.h"
 #include "ui/overlays/overlay_wallpaper.h"
 #include "page_wav_player.h"
@@ -89,6 +90,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
        切 tab 不会、也不能改角色（见 tab_changed_event 的不变量注释）。 */
     lv_obj_t *tab_snk  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_BLUETOOTH"  SINK");
     lv_obj_t *tab_vid  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_VIDEO"  VIDEO");
+    lv_obj_t *tab_pc   = lv_tabview_add_tab(s_tabview, LV_SYMBOL_WIFI"  PC");
     lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
 
     /* Tab bar styling */
@@ -123,6 +125,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     tab_audio_build(tab_aud, NULL);
     tab_btsink_build(tab_snk, NULL);
     tab_video_build(tab_vid, NULL);
+    tab_pcnow_build(tab_pc, NULL);
     tab_sys_entry_build(tab_sys, s_group_sys);
 
     /* Pull-down wallpaper overlay on lv_layer_top. */
@@ -144,6 +147,7 @@ static void main_destroy(lv_obj_t *page)
     tab_audio_destroy();
     tab_btsink_destroy();
     tab_video_destroy();
+    tab_pcnow_destroy();
     tab_sys_entry_destroy();
     overlay_wallpaper_deinit();
 

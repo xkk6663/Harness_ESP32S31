@@ -28,6 +28,7 @@
 #include "middleware/audio/udp_voice.h"
 #include "middleware/audio/record_service.h"
 #include "middleware/network/net_time_service.h"
+#include "middleware/network/pcnow_service.h"
 #include "middleware/bluetooth/bt_audio_service.h"
 #include "middleware/bluetooth/bt_push_service.h"
 #include "middleware/bluetooth/bt_sink_service.h"
@@ -141,6 +142,24 @@ void app_main(void)
     bsp_i2c_init();
     BOOT_DIAG("after bsp_i2c_init");
 
+    /* ★★ F40（2026-09-24，修"上电必崩"）：字库的**读**必须排在这里 ——
+       所有 PSRAM 栈任务的"上游"。
+       原因：读 2.7MB 字库 = esp_flash_read() 按 16KB 分块（MAX_READ_CHUNK）
+       ≈168 次，每块一对 spiflash_start_read/end ＝ 关一次全局 cache；
+       而 IDF 的 spi_flash_disable_interrupts_caches_and_other_cpu()
+       （cache_utils.c:283）**只关 cache，并不停住另一核** ——
+       这些窗口内任何核上的任何 PSRAM 访问（含别的任务压/弹栈）都直接
+       Cache error（实机 MEPC 落在 spi_flash_hal_read 的收尾弹栈 lw ra,44(sp)）。
+       此刻系统里只有内部栈任务（IDLE/esp_timer/ipc/sdmmc），taskLVGL 也还没建，
+       读到 PSRAM 的全程没有任何 PSRAM 访问者 ⇒ 天然零风险。
+       ⚠ 绝不能再挪回 PageManager_Load(splash) 之后 —— 那时 bt_push(local2bt_task)、
+       bt_sink(bt2codec_task)、audio_task、led_task、link_manager、udp_voice×3、
+       pcnow_rx 的 PSRAM 栈任务已全部在跑，必崩。
+       代价：黑屏时间多出字库读取的约 2 秒（远优于上电必崩）。
+       解析仍须在 lv_init() 之后 → 见下面的 ui_binfont_attach()。 */
+    ui_binfont_load();
+    BOOT_DIAG("after ui_binfont_load");
+
     /* ★ 时序纪律：所有"大块 + 只分一次 + 活到关机"的缓冲，必须在
        bsp_display_start() 之前拿完。此时内部 RAM 最空、PSRAM 也还没被切碎。
        漏一个就会像 F28/F30 那样：晚分配吃掉内部 RAM，后续开蓝牙直接 assert。
@@ -168,7 +187,6 @@ void app_main(void)
      * 这里照抄后只覆盖 task_stack，其余行为不变。 */
     bsp_display_cfg_t dsp_cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .lvgl_port_cfg.task_stack = 16384,      /* 默认 7168，整页重绘深度不够 */
         .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
 #if CONFIG_BSP_LCD_DRAW_BUF_DOUBLE
         .double_buffer = 1,
@@ -181,8 +199,18 @@ void app_main(void)
             .sw_rotate = false,
         }
     };
+    /* §28.31：默认 7168，整页重绘深度不够。不能写进上面的指定初始化器 ——
+     * 整体初始化 .lvgl_port_cfg 后再覆盖子成员会触发 -Woverride-init。 */
+    dsp_cfg.lvgl_port_cfg.task_stack = 16384;
     bsp_display_start_with_config(&dsp_cfg);
     BOOT_DIAG("after bsp_display_start");
+
+    /* ★ F40：字库阶段 2 —— 把已读进 PSRAM 的 bin 解析成 LVGL 字体。
+       纯 RAM 操作（lv_binfont_create_ex 展开 glyph 描述符 + loca），
+       没有任何 flash 读 ⇒ 不会产生 cache 关窗，放这里安全；
+       唯一约束是必须在 lv_init()（bsp_display_start 内部）之后。 */
+    ui_binfont_attach();
+    BOOT_DIAG("after ui_binfont_attach");
 
     /* ---- §28.31 临时诊断：taskLVGL 栈水位（配合 16384 验证用）----
      * 定时器回调跑在 taskLVGL 上下文，uxTaskGetStackHighWaterMark(NULL) 即 taskLVGL
@@ -190,12 +218,12 @@ void app_main(void)
      * 实锤"7168 不够"结案；若仍贴 0，说明另有深调用，继续查。
      * 定位完成后整段（回调 + 创建）可删。 */
     bsp_display_lock(0);
-    lv_timer_create(stack_hwm_timer_cb, 5000, NULL);
+    //lv_timer_create(stack_hwm_timer_cb, 5000, NULL);
     bsp_display_unlock();
     //bsp_display_brightness_set(50);
     audio_service_init();
     BOOT_DIAG("after audio_service_init");
-
+    
     led_service_init();
     BOOT_DIAG("after led_service_init");
     button_service_init();
@@ -220,6 +248,10 @@ void app_main(void)
     BOOT_DIAG("after udp_voice_init");
     record_service_init();
     BOOT_DIAG("after record_service_init");
+    /* PC 音乐副屏数据服务：挂 link_manager 第 4 槽位 + 绑 UDP 50004。
+       必须在 link_manager_init() 之后（observer 槽位/对端学习依赖它）。 */
+    pcnow_service_init();
+    BOOT_DIAG("after pcnow_service_init");
     /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
 
     /* UI framework */
@@ -229,16 +261,12 @@ void app_main(void)
     PageManager_Load(&Page_Splash);     /* stack root */
     BOOT_DIAG("after PageManager_Load(splash)");
 
-    /* ★ 全 CJK bin 字体：LittleFS 读取 → PSRAM → LVGL 运行时字体。
-       放这里的三个理由：
-         1) 必须在 lv_init() 之后（bsp_display_start 内部做了），否则 lv_fs/lv_malloc 不可用；
-         2) 放 splash 之后 —— 本函数同步阻塞秒级（读 1.8MB + 解析 2 万字表），
-            此时 splash 已经上屏，用户看到的是启动画面而不是黑屏；
-         3) SINK 页要显示对端推来的曲名，字符集不可预测，没有它中文会变方块。
-       主页显式在"上滑"时才构建（on_splash_enter），所以正常情况下字体已就绪；
-       万一用户上滑得极快，tab_btsink 会先用内置字体、字体就绪后自动补套。 */
-    ui_binfont_init();
-    BOOT_DIAG("after ui_binfont_init");
+    /* ★ 全 CJK bin 字体（LittleFS → PSRAM → LVGL 运行时字体）已在前面两处完成：
+         · 读取  → ui_binfont_load()   （紧跟 bsp_i2c_init，F40：早于所有 PSRAM 栈任务）
+         · 解析  → ui_binfont_attach() （紧跟 bsp_display_start，需要 lv_init）
+       这里不再调用 —— 旧代码把整段放在此处，正是"上电必崩"的根因（见 F40）。
+       SINK / PC 页要显示外部推来的曲名，字符集不可预测，没有它中文会变方块；
+       主页在上滑（on_splash_enter）时才构建，此时字体早已就绪。 */
 
     ESP_LOGI(TAG, "boot done, waiting swipe up");
 }

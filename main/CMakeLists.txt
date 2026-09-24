@@ -26,6 +26,8 @@ idf_component_register(SRCS
     # ---- middleware / network：WiFi 与网络服务 ----
     "middleware/network/wifi_manager.c"
     "middleware/network/net_time_service.c"
+    # pcnow_service = PC 音乐副屏数据服务（UDP 50004 + HTTP 拉封面/歌词）
+    "middleware/network/pcnow_service.c"
 
     # ---- middleware / system：板级外设与存储 ----
     "middleware/system/button_service.c"
@@ -61,6 +63,8 @@ idf_component_register(SRCS
     "ui/tabs/tab_audio.c"
     # tab_btsink = A2DP Sink 接收页（封面 + 元数据 + AVRCP 控制）
     "ui/tabs/tab_btsink.c"
+    # tab_pcnow = PC 音乐副屏页（圆形封面旋转 + 进度 + v1.1 歌词三行窗）
+    "ui/tabs/tab_pcnow.c"
     "ui/tabs/tab_video.c"
 
     # ---- ui / overlays：浮层（壁纸 / 粒子） ----

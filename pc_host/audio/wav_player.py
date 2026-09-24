@@ -91,5 +91,8 @@ class WavPlayer:
             dt = next_tick - time.monotonic()
             if dt > 0:
                 time.sleep(dt)
-            else:
+            elif next_tick - time.monotonic() < -1.0:
+                # §28.42：迟到时不重置时间线（旧写法 next_tick=now 会让平均速率
+                # 严格低于 50 帧/s，设备端 expected 超前 → 所有包判旧 → 静音）。
+                # 立即补发追赶，平均速率精确 50/s；仅落后超过 1s 才放弃追赶。
                 next_tick = time.monotonic()

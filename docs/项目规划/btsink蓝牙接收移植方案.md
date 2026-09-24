@@ -1,6 +1,6 @@
 # btsink 蓝牙接收（A2DP Sink）移植可执行方案
 
-> 状态：**待审阅**（本文只做方案，未改动任何代码）
+> 状态：**✅ 已落地并实机使用**（本文是当初的设计稿；实现见 `改动记录.md` §28.24~§28.29，当前真实状态以代码为准）
 > 参考仓库：https://github.com/han0519/esp32-xiaofeng
 > 目标项目：`C:\Users\xiao1\Desktop\esp32\display_audio_photo`
 > 撰写日期：2026-09-22
@@ -20,7 +20,9 @@
 >   （新接口 `bt_sink_service_get_lyric()`）。
 >
 > 所以：**下面凡是提到"封面/COVER_ART/cover 解码任务"的段落都只作历史参考**，
-> 不要再照它实现。当前真实状态以 `改动记录.md` §28.27 ~ §28.29 为准。
+> 不要再照它实现。当前真实状态以 `改动记录.md` §28.24 ~ §28.29 为准；
+> 另有一处**已知违例**未清：Sink 的 `local2bt_task` / `bt2codec_task` 仍是 `stack_in_ext = true`
+> （PSRAM 栈，见 `11_遇到的问题.md` F35 与 `todolist.md` 收尾项）。
 
 ---
 

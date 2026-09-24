@@ -61,9 +61,19 @@ void record_service_init(void)
     s_cmd_q = xQueueCreate(8, sizeof(record_cmd_id_t));
     assert(s_cmd_q);
     link_manager_add_evt_cb(link_cb);
-    /* ★ 栈外置 PSRAM（F35）：理由同 udp_voice —— 仅在 CPU 上压栈，无需内部 RAM */
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(record_task, "record_service", 8192, NULL, 5, NULL, 0,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* ★ §28.40：本任务栈必须留在内部 RAM，不能像 F35 其他任务那样外置 PSRAM！
+     * record_task 会做 littlefs 文件操作（RETRY→upload_pending 的 fopen /
+     * LOCAL 落盘 fwrite / unlink），flash 操作期间 SPI 缓存被关、PSRAM 不可
+     * 访问；IDF v6.1 在 spi_flash_disable_interrupts_caches_and_other_cpu() 里
+     * assert(esp_task_stack_is_sane_cache_disabled())（esp_memory_utils.c：
+     * 仅检查"当前 SP 不在 PSRAM"，无自动栈切换）——栈在 PSRAM 的任务发起
+     * flash 操作直接 panic。实测：LINK ONLINE → link_cb 投 RETRY →
+     * fopen 待传录音 → assert（cache_utils.c:114）。
+     * F35 的"栈外置"只适用于纯 CPU/网络/GPIO 任务（全项目已排查，
+     * link/udp_voice/pcnow_rx/net_time/led/bt_*_proc 均不碰 flash，唯此违例）。
+     * 代价：+8KB 内部 RAM（F35 共外置 ~60KB，F37 LVGL 已 +9KB 验证过余量；
+     * 若蓝牙开机再现 F35 症状，再考虑"内部栈文件工作线程"方案 B）。 */
+    BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 8192, NULL, 5, NULL, 0);
     assert(ok == pdPASS);
     ESP_LOGI(TAG, "init done, local cap=%u bytes", (unsigned)RECORD_MAX_PCM_BYTES);
 }
@@ -189,7 +199,9 @@ static void run_recording(void)
             }
         }
         uint32_t total = s_mode == RECORD_MODE_STREAM ? sent_bytes + chunk_used : base_offset + local_bytes;
-        if (esp_timer_get_time() - last_report > 1000000) {
+        if (esp_timer_get_time() - last_report > 200000) {
+            /* §28.41：进度上报 1s → 200ms。1s 粒度时设备 UI 的读数最多滞后
+               1s，用户停下后与 PC 端 wav 时长差"一点点"，被当成对不上。 */
             notify(RECORD_EVT_PROGRESS, s_mode, total);
             last_report = esp_timer_get_time();
         }
@@ -213,6 +225,9 @@ static void run_recording(void)
         }
     }
     uint32_t total = s_mode == RECORD_MODE_STREAM ? sent_bytes : base_offset + local_bytes;
+    /* §28.41：尾部块结算后补报一次最终进度 —— 保证设备 UI 最后读到的秒数
+       与 PC 收到的 wav 时长（total/32000）严格一致，消除"录制时长对不上"。 */
+    notify(RECORD_EVT_PROGRESS, s_mode, total);
     audio_stream_stop();
     session_manager_end(SESSION_TCP_RECORD);
     s_active = false;

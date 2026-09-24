@@ -61,6 +61,7 @@
 #include "esp_gmf_io_codec_dev.h"
 #include "esp_gmf_err.h"
 #include "esp_codec_dev.h"      /* esp_codec_dev_open/set_out_vol（io_codec_dev 不会自己开 codec） */
+#include "middleware/audio/audio_service.h"   /* audio_stream_is_active（会话仲裁，§28.44） */
 
 #include "esp_bt_audio_defs.h"
 #include "esp_bt_audio_stream.h"
@@ -94,6 +95,7 @@ typedef enum {
     SINK_CMD_PREPARE = 0,   /* 开 codec + loading_jobs */
     SINK_CMD_RUN,
     SINK_CMD_STOP_RESET,
+    SINK_CMD_YIELD_CODEC,   /* ★ 让出 codec 给 16k 会话（UDP 通话/录音），见 audio_yield */
 } sink_cmd_t;
 
 typedef struct {
@@ -113,6 +115,7 @@ static QueueHandle_t               s_cmd_queue = NULL;
 static float                      *s_asrc_weight = NULL;
 static bool                        s_media_registered = false;
 static bool                        s_codec_opened = false;
+static SemaphoreHandle_t           s_yield_done = NULL;   /* YIELD 完成应答（二值） */
 
 static volatile bool s_pipe_ready = false;
 static volatile bool s_streaming  = false;
@@ -371,7 +374,14 @@ static void proc_task(void *arg)
 
         switch (cmd.action) {
         case SINK_CMD_PREPARE:
-            /* codec 只开一次：反复 open/close 会有功放开关的爆音 */
+            /* ★ 会话仲裁：16k 会话（UDP 通话/录音）独占 codec 时不得抢回。
+               否则 44.1k 的 open 撞上 16k 对端 —— 与 UDP 侧同款静默冲突。 */
+            if (audio_stream_is_active()) {
+                ESP_LOGW(TAG, "16k session active, skip BT prepare");
+                break;
+            }
+            /* codec 只开一次：反复 open/close 会有功放开关的爆音
+               （BT 让位给 16k 会话后重开会有一次轻微爆音，模式切换可接受） */
             if (s_codec && !s_codec_opened) {
                 esp_codec_dev_sample_info_t fs = {
                     .sample_rate = SINK_DAC_RATE,
@@ -402,10 +412,44 @@ static void proc_task(void *arg)
             esp_gmf_pipeline_reset(s_pipe);
             break;
 
+        case SINK_CMD_YIELD_CODEC:
+            /* ★ 16k 会话（UDP 通话/录音）需要独占 codec：停管线 + 关掉 44.1k 的
+               codec，否则 16k 的 open 走 check_fs_compatible 冲突分支且被
+               esp_codec_dev 静默忽略（§28.44：I2S 停在 44.1k → 通话无声）。
+               下次 BT 再播放时 PREPARE 会重开（一次轻微爆音，模式切换可接受）。 */
+            ESP_LOGI(TAG, "yield codec to 16k session");
+            if (s_pipe) {
+                esp_gmf_pipeline_stop(s_pipe);
+                esp_gmf_pipeline_reset(s_pipe);
+            }
+            if (s_codec && s_codec_opened) {
+                esp_codec_dev_close(s_codec);
+                s_codec_opened = false;
+            }
+            xSemaphoreGive(s_yield_done);
+            break;
+
         default:
             break;
         }
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* 对外：让出 codec（16k 会话启动前调用，同步等待 proc_task 完成）       */
+/* ------------------------------------------------------------------ */
+
+void bt_sink_service_audio_yield(void)
+{
+    if (!s_pipe_ready || !s_yield_done) {
+        return;                              /* BT 服务未就绪：无 codec 可让 */
+    }
+    xSemaphoreTake(s_yield_done, 0);         /* 清残留计数 */
+    if (xQueueSend(s_cmd_queue, &(sink_cmd_pkt_t){.action = SINK_CMD_YIELD_CODEC}, 0) != pdTRUE) {
+        return;
+    }
+    /* proc_task 串行消费，最多等 1s（正在写 GMF 管线时可能略久，可接受） */
+    xSemaphoreTake(s_yield_done, pdMS_TO_TICKS(1000));
 }
 
 /* ------------------------------------------------------------------ */
@@ -428,6 +472,12 @@ void bt_sink_service_early_init(void)
     s_meta_lock = xSemaphoreCreateMutex();
     if (!s_meta_lock) {
         ESP_LOGE(TAG, "meta mutex create failed");
+        goto fail;
+    }
+
+    s_yield_done = xSemaphoreCreateBinary();
+    if (!s_yield_done) {
+        ESP_LOGE(TAG, "yield semaphore create failed");
         goto fail;
     }
 

@@ -3,11 +3,15 @@
 > 适用工程：`display_audio_photo/`（ESP32-S31-Korvo-1 V1.1，ESP-IDF v6.1.0，`IDF_TARGET=esp32s31`）
 > 参考实现：官方例程 `managed_components/espressif__esp_bt_audio/examples/bt_audio/main/stream_proc.c`
 > 上游仓库：`espressif/esp-gmf` @ `7d1dce0`，路径 `packages/esp_bt_audio/examples/bt_audio`
-> 文档状态：**已落地（选型 B2）**，代码完成待实测
-> 编写日期：2026-09-21 ｜ 更新：2026-09-21（更正 §3.3 元素链勘误，补 F22 体积坑）
+> 文档状态：**✅ 已落地并实测通过（选型 B2）** —— 首版落盘后经 `改动记录.md` §28.20 三修
+> （播完自动收尾 / 音量改数字增益 / L2CAP 拥塞定性），BT_PUSH 链路已实机跑通
+> （日志可见 `BT_PUSH: pipeline run` → `stream STARTED`）。
+> 编写日期：2026-09-21 ｜ 更新：2026-09-21（更正 §3.3 元素链勘误，补 F22 体积坑）；
+> 2026-09-24：状态行由"代码完成待实测"更正为"已实测通过"，UI 出口说明同步 §28.23。
 >
 > **决策记录**：B2（`early_init` 建 pool+pipeline+task，全程复用）；推流纳入 `SESSION_BT_PUSH` 互斥；
-> UI 复用 `tab_btpush.c/h` 并挂为第 6 个主 tab；首次验证用 SD 卡 MP3。
+> ★ UI 出口**已并入 `tab_audio.c/h`**（AUDIO 页顶部 LOCAL ⇄ BT PUSH 切换，§28.23；
+> 原 `tab_btpush.c/h` **已删除**，本文下方凡是提到该文件的段落均为历史参考）；首次验证用 SD 卡 MP3。
 > 实现与验证清单见 `todolist.md` 附录「蓝牙本地推流」；体积坑见 `docs/工程规范/11_遇到的问题.md` F22。
 
 ---
