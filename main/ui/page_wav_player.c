@@ -176,7 +176,7 @@ static lv_obj_t *wav_player_create(lv_obj_t *parent)
     lv_obj_set_style_bg_color(repeat_btn, COL_CARD, 0);
     lv_obj_set_style_border_color(repeat_btn, COL_BORDER, 0);
     lv_obj_set_style_border_width(repeat_btn, 1, 0);
-    lv_obj_add_flag(repeat_btn, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_set_checkable(repeat_btn, true);
     label = lv_label_create(repeat_btn);
     lv_label_set_text_static(label, LV_SYMBOL_LOOP);
     lv_obj_center(label);

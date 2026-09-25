@@ -16,6 +16,7 @@
 #include "lwip/sockets.h"
 #include "link_manager.h"
 #include "udp_voice.h"
+#include "middleware/mem_diag.h"
 
 static const char *TAG = "LINK";
 static int s_sock = -1;
@@ -31,9 +32,9 @@ static void notify_observers(link_evt_t evt, const char *ip);
 void link_manager_init(void)
 {
     s_mux = xSemaphoreCreateMutex();
-    assert(s_mux);
+    MEM_FAIL_FAST(s_mux, TAG, "xSemaphoreCreateMutex(link s_mux)", 0);
     BaseType_t ok = xTaskCreatePinnedToCore(link_task, "link_manager", 8192, NULL, 4, NULL, 0);
-    assert(ok == pdPASS);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(link_manager, 8192)", 8192);
     ESP_LOGI(TAG, "init done, UDP %d", LINK_SIGNAL_PORT);
 }
 

@@ -1,8 +1,15 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # Note: if you change the phy_init or app partition offset, make sure to change the offset in Kconfig.projbuild
+# ★★ 2026-09-25 §28：app bin 涨到 0x507ad0，超出 0x500000 的 OTA 槽 0x7ad0（31 KB）
+#    ⇒ 两个 OTA 槽各扩到 0x600000（6 MB），storage 后移。16 MB flash 仍被精确占满：
+#      storage 结束 = 0xC20000 + 0x3E0000 = 0x1000000 ✓
+#    ★ 改分区表后必须 `idf.py flash`（全量，含 ota_data_initial.bin 复位 otadata）
+#      + `idf.py storage-flash` 重烧素材镜像（storage 偏移变了，旧数据无人读）。
+#      nvs(0x9000) 不动 ⇒ WiFi 配置保留。
+#    ★ ota_1 现在的偏移 0x620000 恰好是**改造前** storage 的旧偏移 —— 别被旧笔记带偏。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 otadata,  data, ota,     0x11000,  0x2000,
-ota_0,    app,  ota_0,   0x20000,  0x500000,
-ota_1,    app,  ota_1,   0x520000, 0x500000,
-storage,  data, littlefs, 0xA20000, 0x5E0000,
+ota_0,    app,  ota_0,   0x20000,  0x600000,
+ota_1,    app,  ota_1,   0x620000, 0x600000,
+storage,  data, littlefs, 0xC20000, 0x3E0000,

@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <inttypes.h>
 #include <math.h>
@@ -19,6 +20,7 @@
 #include "esp_timer.h"
 #include "bsp/esp-bsp.h"
 #include "audio_service.h"
+#include "middleware/mem_diag.h"
 #include "3rd/ringbuf/ringbuf.h"
 
 static const char *TAG = "AUDIO_SVC";
@@ -52,6 +54,15 @@ static SemaphoreHandle_t spk_rb_mux;
 static TaskHandle_t stream_task_handle;
 static volatile bool stream_active;
 
+/* ★ P2-3：播放 / 录音两条"落盘 I/O"路径的 1 KB 暂存块合并成一块（原来 io_tmp 与
+ *   rec_tmp 各占 BUFFER_SIZE，共 2,048 B 内部 .bss）。
+ *   为什么可以共用：handle_play_file() 与 handle_record() **只**由 audio_task 串行调用
+ *   （见 audio_task 的 switch，一次只处理一条命令、同步返回），二者天然互斥，
+ *   不会同时在用同一块。⇒ 省 1,024 B，且不引入任何并发风险。
+ *   ★ 注意：语音流路径（audio_stream_task / audio_stream_write_spk）**不属于**这个
+ *     前提，它跑在别的任务上，所以它的 mic_frame/spk_frame/discard 不能并进来。 */
+static uint8_t audio_task_io[BUFFER_SIZE];
+
 /* 简易 WAV 头 */
 typedef struct __attribute__((packed))
 {
@@ -79,22 +90,25 @@ void audio_service_init(void)
 {
     /* Speaker */
     spk_codec_dev = bsp_audio_codec_speaker_init();
-    assert(spk_codec_dev);
+    /* ★ P0-4：初始化期 fail-fast 保留（规范 A1 允许），但先落一条带三元组的日志再 abort。
+     * 裸 assert 有两个问题：NDEBUG 下被编译掉（失败变**静默**）、现场没有任何内存证据。 */
+    MEM_FAIL_FAST(spk_codec_dev, TAG, "bsp_audio_codec_speaker_init()", 0);
     esp_codec_dev_set_out_vol(spk_codec_dev, DEFAULT_VOLUME);
 
 #if BSP_CAPS_AUDIO_MIC
     mic_codec_dev = bsp_audio_codec_microphone_init();
-    assert(mic_codec_dev);
+    MEM_FAIL_FAST(mic_codec_dev, TAG, "bsp_audio_codec_microphone_init()", 0);
     esp_codec_dev_set_in_gain(mic_codec_dev, 50.0);
 #endif
 
     /* 互斥锁：保护 codec 的并发访问（播放写数据 / UI 调音量） */
     audio_mux = xSemaphoreCreateMutex();
-    assert(audio_mux);
+    MEM_FAIL_FAST(audio_mux, TAG, "xSemaphoreCreateMutex(audio_mux)", 0);
 
     /* 命令队列 */
     audio_cmd_queue = xQueueCreate(4, sizeof(audio_cmd_t));
-    assert(audio_cmd_queue);
+    MEM_FAIL_FAST(audio_cmd_queue, TAG, "xQueueCreate(4, audio_cmd_t)",
+                  4 * sizeof(audio_cmd_t));
 
     /* 初始化第三方 ringbuf（pool 为静态数组，无需动态分配） */
     ringbuffer_init(&play_rb, play_rb_pool, BUFFER_SIZE);
@@ -103,10 +117,11 @@ void audio_service_init(void)
     ringbuffer_init(&spk_rx_rb, spk_rx_rb_pool, sizeof(spk_rx_rb_pool));
     mic_rb_mux = xSemaphoreCreateMutex();
     spk_rb_mux = xSemaphoreCreateMutex();
-    assert(mic_rb_mux && spk_rb_mux);
+    MEM_FAIL_FAST(mic_rb_mux && spk_rb_mux, TAG, "xSemaphoreCreateMutex(mic_rb/spk_rb)", 0);
 
     /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里） */
-    xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
+    BaseType_t ok = xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreate(audio_task, 8192)", 8192);
     ESP_LOGI(TAG, "audio_service ready");
 }
 
@@ -253,7 +268,7 @@ static void handle_play_file(const char *path)
     esp_codec_dev_open(spk_codec_dev, &fs);
 
     bool stopped = false;
-    static uint8_t io_tmp[BUFFER_SIZE];
+    uint8_t *io_tmp = audio_task_io;   /* ★ P2-3：与 handle_record 共用（同一任务、互斥） */
     do {
         fseek(file, sizeof(hdr), SEEK_SET);
         uint32_t sent = 0;
@@ -327,13 +342,32 @@ static void handle_record(const char *path)
 
     size_t written = 0;
     bool stopped = false;
-    static uint8_t rec_tmp[BUFFER_SIZE];
+    uint8_t *rec_tmp = audio_task_io;   /* ★ P2-3：与 handle_play_file 共用（同一任务、互斥） */
     while (written < RECORDING_LENGTH * BUFFER_SIZE && !stopped) {
-        ESP_ERROR_CHECK(esp_codec_dev_read(mic_codec_dev, rec_tmp, BUFFER_SIZE));
+        /* ★ 原来是 ESP_ERROR_CHECK(esp_codec_dev_read(...))：麦克风读失败在**运行期**
+         *   直接 abort（整机重启、录音文件半截）。改成"报错 + 正常收口"——
+         *   运行期资源类失败不该把设备带走，但必须说话（规范 A2/A3/A4）。 */
+        esp_err_t rd = esp_codec_dev_read(mic_codec_dev, rec_tmp, BUFFER_SIZE);
+        if (rd != ESP_OK) {
+            ESP_LOGE(TAG, "mic read failed: %s -> stop recording early, %u B written",
+                     esp_err_to_name(rd), (unsigned)written);
+            stopped = true;
+            continue;
+        }
         /* codec 读进 ringbuf，再读出落盘 */
         ringbuffer_put(&rec_rb, rec_tmp, BUFFER_SIZE);
         uint16_t got = ringbuffer_get(&rec_rb, rec_tmp, BUFFER_SIZE);
-        written += fwrite(rec_tmp, 1, got, f);
+        /* ★ 同 record_service.c 的 F-1：fwrite 短写（磁盘满）必须被发现，
+         *   否则 written 冻结 ⇒ 停止条件永远不成立 ⇒ 静默数据丢失。 */
+        size_t wrote = fwrite(rec_tmp, 1, got, f);
+        if (wrote != got) {
+            ESP_LOGE(TAG, "fwrite short: want=%u wrote=%u (disk full?) -> stop recording, %u B written",
+                     (unsigned)got, (unsigned)wrote, (unsigned)written);
+            if (ferror(f)) clearerr(f);
+            stopped = true;
+            continue;
+        }
+        written += wrote;
 
         /* 录音态也允许响应 STOP_RECORD / SET_VOLUME */
         static audio_cmd_t cmd;
@@ -343,6 +377,19 @@ static void handle_record(const char *path)
             } else if (cmd.id == AUDIO_CMD_SET_VOLUME) {
                 /* 录音态不调 speaker 音量，忽略 */
             }
+        }
+    }
+    /* ★ 早停（STOP_RECORD / 读失败 / 磁盘满）时把头里的 data_size 改回真实长度：
+     *   头是按 RECORDING_LENGTH 预写的"满长度"，不改的话播放器会试图读到文件尾之后。 */
+    if (written != (size_t)hdr.data_size) {
+        uint32_t real = (uint32_t)written;
+        if (fseek(f, (long)offsetof(dumb_wav_header_t, data_size), SEEK_SET) == 0 &&
+            fwrite(&real, 1, sizeof(real), f) == sizeof(real)) {
+            ESP_LOGW(TAG, "recording truncated: header data_size %u -> %u",
+                     (unsigned)hdr.data_size, (unsigned)real);
+        } else {
+            ESP_LOGE(TAG, "wav header fixup FAILED, file claims %u B but has %u B",
+                     (unsigned)hdr.data_size, (unsigned)real);
         }
     }
     ESP_LOGI(TAG, "recording stop, %u bytes", (unsigned)written);

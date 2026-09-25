@@ -8,14 +8,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "session_manager.h"
+#include "middleware/mem_diag.h"
 
 static SemaphoreHandle_t s_mux;
 static session_mode_t s_mode = SESSION_IDLE;
 
+static const char *TAG = "SESSION";
+
 void session_manager_init(void)
 {
     s_mux = xSemaphoreCreateMutex();
-    assert(s_mux);
+    MEM_FAIL_FAST(s_mux, TAG, "xSemaphoreCreateMutex(session s_mux)", 0);
 }
 
 esp_err_t session_manager_begin(session_mode_t mode)

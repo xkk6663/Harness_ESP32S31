@@ -27,7 +27,7 @@ lv_obj_t *ui_common_page_root(lv_obj_t *parent)
 {
     lv_obj_t *page = lv_obj_create(parent);
     lv_obj_set_size(page, BSP_LCD_H_RES, BSP_LCD_V_RES);
-    lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(page, false);
     lv_obj_set_style_bg_color(page, COL_BG, 0);
     lv_obj_set_style_border_width(page, 0, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
@@ -84,7 +84,7 @@ lv_obj_t *ui_common_setting_row(lv_obj_t *parent, const char *icon,
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(row, true);
     if (click_cb) {
         lv_obj_add_event_cb(row, click_cb, LV_EVENT_CLICKED, user_data);
     }

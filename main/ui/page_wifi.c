@@ -127,7 +127,7 @@ static void ap_click_cb(lv_event_t *e)
     lv_textarea_set_text(s_pwd_ta, "");
     snprintf(s_state_txt, sizeof(s_state_txt), "Selected: %s", ssid);
     s_state_changed = true;
-    lv_obj_remove_flag(s_pwd_row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_pwd_row, false);
     lv_keyboard_set_textarea(s_kb, s_pwd_ta);
 }
 
@@ -161,7 +161,7 @@ static void connect_btn_cb(lv_event_t *e)
     const char *pass = lv_textarea_get_text(s_pwd_ta);
     wifi_manager_connect(s_cur_ssid, pass);
     /* hide keyboard after connect */
-    lv_obj_add_flag(s_pwd_row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_pwd_row, true);
     lv_keyboard_set_textarea(s_kb, NULL);
 }
 
@@ -182,11 +182,11 @@ static void poll_cb(lv_timer_t *t)
         lv_label_set_text(s_mode_lab, is_ap ? LV_SYMBOL_WIFI"  Mode: AP (tap->STA)"
                                             : LV_SYMBOL_WIFI"  Mode: STA (tap->AP)");
         if (is_ap) {
-            lv_obj_add_flag(s_start_btn, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_ap_list, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_pwd_row, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ap_info_label, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_clients_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_start_btn, true);
+            lv_obj_set_hidden(s_ap_list, true);
+            lv_obj_set_hidden(s_pwd_row, true);
+            lv_obj_set_hidden(s_ap_info_label, false);
+            lv_obj_set_hidden(s_clients_label, false);
             char ip[16];
             wifi_manager_get_ip(ip, sizeof(ip));
             lv_label_set_text_fmt(s_ap_info_label,
@@ -195,10 +195,10 @@ static void poll_cb(lv_timer_t *t)
                                   ip[0] ? ip : "starting...");
             s_last_client_count = -1;   /* 触发刷新一次 */
         } else {
-            lv_obj_clear_flag(s_start_btn, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_ap_list, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_ap_info_label, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_clients_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_start_btn, false);
+            lv_obj_set_hidden(s_ap_list, false);
+            lv_obj_set_hidden(s_ap_info_label, true);
+            lv_obj_set_hidden(s_clients_label, true);
         }
     }
 
@@ -274,13 +274,13 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     s_ap_info_label = lv_label_create(page);
     lv_label_set_text_static(s_ap_info_label, "");
     lv_obj_set_style_text_color(s_ap_info_label, COL_TEXT, 0);
-    lv_obj_add_flag(s_ap_info_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_ap_info_label, true);
 
     /* AP 客户端列表（仅 AP 模式可见） */
     s_clients_label = lv_label_create(page);
     lv_label_set_text_static(s_clients_label, "");
     lv_obj_set_style_text_color(s_clients_label, COL_TEXT, 0);
-    lv_obj_add_flag(s_clients_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_clients_label, true);
 
     /* start / scan button */
     s_start_btn = lv_button_create(page);
@@ -312,7 +312,7 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     lv_obj_set_style_radius(s_pwd_row, 10, 0);
     lv_obj_set_flex_flow(s_pwd_row, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_pwd_row, 4, 0);
-    lv_obj_add_flag(s_pwd_row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_pwd_row, true);
 
     s_pwd_ta = lv_textarea_create(s_pwd_row);
     lv_obj_set_size(s_pwd_ta, BSP_LCD_H_RES - 110, 36);

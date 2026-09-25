@@ -8,11 +8,17 @@ idf_component_register(SRCS
                         "middleware/net/link_manager.c"
                         "middleware/net/net_time_service.c"
                         "middleware/periph/fs_service.c"
+                        "middleware/periph/sdcard_service.c"
                         "middleware/periph/led_service.c"
                         "middleware/periph/button_service.c"
                         "middleware/camera/camera_service.c"
+                        "middleware/camera/ov3660_fmt.c"
+                        "middleware/camera/capture_service.c"
+                        "middleware/camera/viewfinder.c"
                         "middleware/camera/color_hsv.c"
                         "middleware/camera/face_service.cpp"
+                        "middleware/media/avi_mjpeg_muxer.c"
+                        "middleware/media/record_video_service.c"
                         "3rd/ringbuf/ringbuf.c"
                         "ui/ui_manager/page_manager.c"
                         "ui/overlay_manager.c"
@@ -22,6 +28,7 @@ idf_component_register(SRCS
                         "ui/tab_call.c"
                         "ui/tab_record.c"
                         "ui/tab_camera.c"
+                        "ui/tab_video.c"
                         "ui/tab_sys_entry.c"
                         "ui/overlay_wallpaper.c"
                         "ui/page_wav_player.c"
@@ -42,7 +49,33 @@ idf_component_register(SRCS
                                     "middleware/periph"
                                     "middleware/camera"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
-                                    esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1)
+                                    esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1
+                                    esp_driver_jpeg
+                                    fatfs sdmmc)
+
+# =============================================================================
+#  ★★ OV3660 **私有**寄存器表（2026-09-25，S2-0 运行时切格式用）
+#
+#  为什么需要：运行时切传感器格式只能走 esp_video 的私有 ioctl VIDIOC_S_SENSOR_FMT，
+#  而它要求一份**带 regs 指针**的完整 `esp_cam_sensor_format_t` ——
+#  因为 `ov3660_set_format()` 会把 format->regs 强转成 `ov3660_reginfo_t *` 去写寄存器。
+#  那份寄存器表在 esp_cam_sensor 的 `sensors/ov3660/private_include/` 里，**不对外导出**；
+#  BSP（bsp_camera.c 只导出 bsp_camera_start）与 esp_video 也都不暴露 sensor 句柄，
+#  userspace 无法用 esp_cam_sensor_query_format() 枚举拿到它。
+#  ⇒ 只能把该目录**加进本组件的私有 include 路径**，由 middleware/camera/ov3660_fmt.c 引用。
+#
+#  ★ 设计选择：**引用**（而不是复制 10.5 KB 寄存器值）。
+#    复制会**静默过期**（供应商改时序我们不知道，画面悄悄变差）；
+#    引用则在供应商改动时**编译期大声报错**，逼我们同步。详见 ov3660_fmt.h 文件头。
+#
+#  ★ 为什么用 target_include_directories 而不是 PRIV_INCLUDE_DIRS：
+#    后者会触发 IDF 的 component_validation 警告
+#    （"Private include directory ... belongs to component esp_cam_sensor"）。
+#    那个警告在这里是**预期中的**：我们正是要引用它的私有表。
+# =============================================================================
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../managed_components/espressif__esp_cam_sensor/sensors/ov3660/private_include")
+
 
 # =============================================================================
 #  本地密钥注入（编译期宏）—— 和风天气 API Key / API Host

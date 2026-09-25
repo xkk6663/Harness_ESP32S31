@@ -12,17 +12,66 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
-CONFIG_SPIRAM_SPEED_80M=y
+## ★ 必须写 200M。历史上这里误写 80M，而 sdkconfig 的生效值是 CONFIG_SPIRAM_SPEED=200；
+##   一旦清库重建（删掉 sdkconfig 只留 defaults）PSRAM 会静默掉到 80MHz ——
+##   而 LVGL 画布（RGB framebuffer）、摄像头帧、esp-dl 张量全在 PSRAM ⇒
+##   整机性能腰斩且没有任何日志提示。
+CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+## 原有一行 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y 已删除：那是 **ESP32-S3 的符号**。
+## 本 target 是 esp32s31（RISC-V），该符号在 S31 的 Kconfig 里不存在，写了只会被
+## 静默忽略，徒增"以为配了"的错觉。
 CONFIG_FREERTOS_HZ=1000
 CONFIG_BSP_LCD_RGB_BUFFER_NUMS=2
-CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_MODE=y
-CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_HEIGHT=20
+## ★★ 2026-09-25 花屏**根因**修复（F48）：从 bounce buffer 模式切到 auto refresh 模式。
+##   —— 这不是"调参"，是**消除那个会被打断的动作本身**。依据全部是 IDF 源码：
+##   · bb 模式 = GDMA 每 16,000 B 发一次 EOF，**必须在该中断里 memcpy(PSRAM→内部缓冲)**。
+##     `esp_lcd_panel_rgb.c:1041` 有 IDF 自己的警告原文：
+##       "if the frame buffer is behind a cache, and the cache is disabled,
+##        crash would happen here when auto write back happens"
+##     本工程 `LCD_RGB_ISR_IRAM_SAFE=n`（sdkconfig:1816）⇒ 该中断在 flash 擦写窗口
+##     被**一起关掉** ⇒ 不 crash，但**这块 bounce buffer 漏填** ⇒ 画面错位 = 花屏。
+##     ⇒ 这解释了"为什么偶发闪一下"是 flash 擦写造成的；也说明**打开
+##       ISR_IRAM_SAFE 只会把它从"花屏"变成"崩溃"**，是反向开关，别开。
+##   · AUTO 模式 = 整个 768,000 B framebuffer **预串成一条 DMA link list**
+##     （`esp_lcd_panel_rgb.c:1211-1236`），GDMA 自己顺着描述符扫完整帧，
+##     **软件不参与** ⇒ flash 窗口内没有任何动作可以漏 ⇒ 根因消除。
+##     EOF 时只做回调（`:1084-1090`），**不再读 PSRAM**。
+##   · cache 一致性不用我们操心：驱动在 flush 时自己做
+##     `esp_cache_msync(...C2M...)`，条件正是 `!bb_size`（`:750-753` / `:764-767`）。
+##   ★ 附带收益：显示中断 1699 次/秒 → ~35 次/秒（on_vsync，每帧一次）；
+##     省下 32,000 B 内部 DMA RAM（2 × 800 × 10 × 2）；不再每 444 us 抢一次 PSRAM。
+##   ★ 前提（为什么这里能切）：BSP 把 PCLK 写死在 18 MHz
+##    （`esp32_s31_korvo_1.h:497`），而 bb 模式的卖点只是"更高 PCLK at the cost of
+##      higher CPU consumption"（组件 Kconfig:105）—— **这个能力我们根本不需要**。
+##   ★ `BSP_LCD_RGB_REFRESH_MODE` 是 choice（二选一）：两个**不能同时写**，
+##     写了会撞；`BOUNCE_BUFFER_HEIGHT` 因 depends 失效会自动消失，故一并删除。
+##   ⚠ 必须与顶层 sdkconfig 同值（sdkconfig 生效、这里只在清库重建时兜底）。
+CONFIG_BSP_LCD_RGB_REFRESH_AUTO=y
 CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
 CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
-#CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
+## ★ AVOID_TEAR=y 时 LVGL 画布就是 PSRAM 里的 RGB framebuffer，
+##   BSP_LCD_DRAW_BUF_HEIGHT 因此被忽略 —— 别想靠改它省内存（改不动）。
+## 原写法 "#CONFIG_..." 少一个空格，是死行；这里改成合法形式显式关闭。
+# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is not set
 CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
+
+## ---------------------------------------------------------------------------
+## ★ 内存优化三项（对齐 main 分支已验收配置，2026-09-25）
+##   详见 docs/开发文档/内存优化可执行方案.md §4-P1
+##   ⚠ 这三个值必须与顶层 sdkconfig 完全一致 —— sdkconfig 生效、defaults 只在
+##      清库重建时兜底；两处不一致就会出现"改了配置但行为不变"或
+##      "清库重建后行为突变"两种最坏情况。
+## ---------------------------------------------------------------------------
+## 0 = 默认路径(<=16KB)的小分配不再优先吃内部堆。
+## 旧值 16384 会让 esp-dl 加载期的"小对象海"（算子注册 / std::map 建表 / std::string）
+## 全灌内部堆并把它切碎 ⇒ 而 esp_timer_create 只要内部、**零 PSRAM 回落** ⇒ NO_MEM abort。
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
+## WiFi/lwIP/TCP 缓冲改从 PSRAM 拿，给内部 RAM 腾出连续块。
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+## （第三项曾是 CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_HEIGHT=10，2026-09-25 已随
+##  bounce buffer → auto refresh 的切换一并删除，见上面 display 段：那整块内部
+##  DMA 缓冲现在**不再分配**，等于又多省 32,000 B 内部 RAM。）
 
 ## LVGL9 ##
 CONFIG_LV_CONF_SKIP=y
@@ -49,7 +98,9 @@ CONFIG_LV_USE_FLOAT=y
 CONFIG_LV_USE_GESTURE_RECOGNITION=y
 
 ## PPA (Pixel Processing Accelerator) on ESP32-S31 ##
-## 娉細LVGL 9.5 鍐呯疆 lv_draw_ppa 浠呮敮鎸?ESP32-P4锛堜緷璧?CONFIG_CACHE_L2_CACHE_LINE_SIZE锛孲31 鏃犳 Kconfig锛?## 寰?LVGL 鍚庣画鐗堟湰閫傞厤 S31 鍚庡啀寮€鍚€傚綋鍓嶅厛鐣欑┖锛岃蒋浠舵覆鏌撱€?# CONFIG_LV_USE_PPA is not set
+## 注：LVGL 9.5 内置 lv_draw_ppa 仅支持 ESP32-P4（依赖 CONFIG_CACHE_L2_CACHE_LINE_SIZE，
+##     S31 无此 Kconfig）；待 LVGL 后续版本适配 S31 后再开启。当前先留空，走软件渲染。
+# CONFIG_LV_USE_PPA is not set
 # CONFIG_LV_USE_PPA_IMG is not set
 
 CONFIG_LV_USE_FS_POSIX=y
@@ -61,6 +112,26 @@ CONFIG_CAMERA_OV3660=y
 
 
 ## Face detect model in LittleFS ##
+## ★★ 人脸模型路径机制（2026-09-25 定案，改这 8 行前必读） ##
+##
+##   MODEL_IN_SDCARD=y **不是**"模型放 SD 卡"的意思，它只是"从某个文件系统读"的开关；
+##   真正的"文件系统根"由 BSP_SD_MOUNT_POINT 提供 —— 而它被**故意**设成 "/littlefs"：
+##
+##       human_face_detect.cpp:23   path(BSP_SD_MOUNT_POINT) / SDCARD_DIR / model_name
+##       face_service.cpp:53        FACE_MODEL_DIR = BSP_SD_MOUNT_POINT "/" SDCARD_DIR
+##     ⇒ 两边都得到  /littlefs/models/<model>.espdl
+##     ⇒ 恰好对应 littlefs_content/models/（4 份 .espdl，共 1,186,432 B）
+##        经 littlefs_create_partition_image(storage littlefs_content) 编进 storage 分区。
+##
+##   ⚠⚠ 千万不要把 BSP_SD_MOUNT_POINT "修正" 成 "/sdcard" ——
+##        那会让模型路径变成 /sdcard/models/...，而文件仍在 littlefs
+##        ⇒ 三档人脸模型全部加载失败，FACE 功能彻底废掉。
+##   ⚠ 也正因为这个值被占用，SD 卡服务**必须自己挂到 "/sdcard"**
+##        （见 middleware/periph/sdcard_service.c），
+##        不能用 bsp_sdcard_sdmmc_mount()（它内部硬写 BSP_SD_MOUNT_POINT）。
+##   ⚠ 组件里那句 `#if !defined(CONFIG_BSP_SD_MOUNT_POINT) #define ... "/sdcard"` 是
+##        **!defined 保护的**，因为 sdkconfig 定义了它，所以那句"重定义"根本不生效。
+##
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=n
 CONFIG_DEFAULT_HUMAN_FACE_DETECT_MODEL=1
@@ -71,7 +142,56 @@ CONFIG_HUMAN_FACE_DETECT_MODEL_SDCARD_DIR="models"
 CONFIG_BSP_SD_MOUNT_POINT="/littlefs"
 
 
+## ---------------------------------------------------------------------------
+## ★ FATFS（SD 卡 /sdcard 用；2026-09-25 S1 移植时补齐）
+##   之前这些值**只在 sdkconfig 里生效、defaults 里没写** ⇒ 一旦清库重建
+##   （删 sdkconfig 只留 defaults）会静默回落到 IDF 默认，症状是"长文件名被截断"
+##   或"FATFS 缓冲又跑回内部 RAM"。故在此显式固化，与 sdkconfig 完全一致。
+## ---------------------------------------------------------------------------
+## 长文件名走堆（而非静态表）：省 .bss，且 LFN 缓冲可随文件数动态伸缩。
+CONFIG_FATFS_LFN_HEAP=y
+## LFN 上限 255：照片/录像文件名含日期时间戳，短名 8.3 装不下。
+CONFIG_FATFS_MAX_LFN=255
+## FATFS 的 sector 缓冲优先放 PSRAM（本工程内部 RAM 只有 ~4KB 余量，见内存文档）。
+CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y
+## 逻辑扇区 4096 B（与 sdkconfig 一致）。SD 卡物理扇区 512 B，用 4 KB 逻辑扇区
+## 减少 FAT 元数据访问次数 ⇒ 连续写（录像）吞吐更好。
+CONFIG_FATFS_SECTOR_4096=y
+
+
 ## OV3660 format: 240x240 RGB565 BE (for esp-dl 224x224 input) ##
 CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y
 CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y
 CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_640X480_10FPS=n
+
+
+## ---------------------------------------------------------------------------
+## ★ 屏幕花屏 / WiFi 断连 的**配置侧真值**（2026-09-25 上机日志排查）
+##   诊断链见 docs/开发文档/内存优化可执行方案.md §11、docs/工程规范/11_遇到的问题.md F48。
+##   ⚠ 与上面 display 段同一纪律：这些值必须与顶层 sdkconfig 一致，
+##      否则"清库重建后行为突变"且没有任何日志提示。
+## ---------------------------------------------------------------------------
+## ① 静态 RX 缓冲：IDF 6.1 在 SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y 下的 default 就是 16，
+##    而本工程 sdkconfig 里长期是 **2**（= Kconfig range 的下限，属陈旧遗留值）。
+##    WiFi 硬件只用这几个 buffer 收**所有** 802.11 帧，**beacon 也在其中**；CPU 被
+##    RGB bounce 中断（每 444 us 一次、每次 ~300 us）占满时，WiFi 任务来不及腾空 buffer
+##    ⇒ 新帧直接丢 ⇒ 连续丢 beacon ⇒ reason=200 (BEACON_TIMEOUT)。
+##    ★ 日志已证实：WIFI_PS_NONE 早就设了也没用 —— 因为它不是省电问题，是缓冲只有 2 个。
+##    代价：16 x 1.6 KB = 25.6 KB，走 PSRAM（TRY_ALLOCATE_WIFI_LWIP=y）⇒ 不占内部 RAM。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+## ② PHY 校准数据落 NVS：关联/重连窗口内那几次 94~157 ms 关中断的**嫌疑之一**
+##    （flash 擦写 → spi_flash_disable_interrupts_caches_and_other_cpu）。已排除的两个写点：
+##    `esp_wifi_set_config()`（已改 WIFI_STORAGE_RAM）与 `save_connected_cred()`
+##    （只在 got_ip 才调，而 gap 尖峰发生在 got_ip 之前 —— 见方案 §11.6 的时间线反证）。
+##    此处保持 IDF 默认 y。**优先级低于实验 A**：先关 bounce buffer（治花屏主因），
+##    再回头做本项的 A/B（改 n 重烧，代价是每次开机重做 PHY 校准、开机变慢）。
+CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=y
+## ③ ★★ 不要"顺手打开" LCD_RGB_ISR_IRAM_SAFE —— 在本工程它是**反向**的：
+##    本工程是 bounce buffer 模式，那个 ISR 的核心工作是 memcpy(内部 bounce, **PSRAM 帧缓冲**)。
+##    (a) 关着它：flash 擦写时该 ISR 属非 IRAM 中断、被一起关掉 ⇒ bounce buffer 不填
+##        ⇒ GDMA 读到旧数据 ⇒ 【花屏】（难看，但不崩）。
+##    (b) 打开它：ISR 能在 cache 关闭期间跑，然后它去读 PSRAM —— 而 PSRAM 与 flash
+##        共用同一 cache、此刻已被关 ⇒ 【Cache error / LoadProhibited 崩溃】。
+##    ⇒ 现状是两害相权，唯一出路是"消灭 flash 擦写"或"关掉 bounce 改 GDMA 直读 PSRAM"
+##      （GDMA 不经过 CPU cache，见 §11 的 A/B 实验）。
+# CONFIG_LCD_RGB_ISR_IRAM_SAFE is not set

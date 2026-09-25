@@ -18,6 +18,7 @@
 #include "middleware/audio/audio_service.h"
 #include "middleware/net/link_manager.h"
 #include "middleware/net/session_manager.h"
+#include "middleware/mem_diag.h"
 #include "udp_voice.h"
 
 static const char *TAG = "UDP_VOICE";
@@ -25,7 +26,27 @@ static const char *TAG = "UDP_VOICE";
 #define FRAME_MAGIC1 0x5A
 #define FRAME_VERSION 1
 #define FRAME_HEADER_BYTES 12
-#define REORDER_SLOTS 32
+
+/* ★ P2-1：重排池容量。frame_slot_t = 644 B（bool+pad+uint16+640B PCM）⇒
+ *   32 → 20,608 B；8 → 5,152 B，**省 15,456 B 内部 .bss**。
+ *
+ * ★ 先确认过 S5 规范（"池容量与丢弃阈值不得相等"）：
+ *   本文件把"等不到就先补静音"的阈值**硬编码在播放分支里**
+ *   （见 rx_task：`now - last_play_us >= 60000` ⇒ 60 ms），与 REORDER_SLOTS 无关
+ *   ⇒ 缩池**不会**改丢弃行为。这也是能安全缩的前提。
+ *
+ * ★★ 但"窗口"这个说法只讲了一半 —— 真正的约束是**发送端超前量的上限**：
+ *   slot 下标是 `seq % REORDER_SLOTS`。若收到的 seq 比 expected 超前 **≥ N 帧**，
+ *   就命中 `hdr->seq % N == expected % N`，**直接覆盖掉还没播的那一帧** ⇒ 该帧永久丢失。
+ *   所以 N 不是"抖动窗口"，而是"容忍 PC 侧一次 burst 连发多少帧"。
+ *   - 纯抖动：LAN 抖动 ≪ 50 ms ⇒ N=8（160 ms）绰绰有余（这正是原方案的论证，成立）。
+ *   - **burst 场景（方案漏了）**：WiFi 卡顿 200 ms 后，PC 侧把这十几帧一次性补发，
+ *     超前量可瞬间 >8 ⇒ 丢帧。本工程 WiFi 抖动是已知高发（见 F48 / reason=200）。
+ *   ⇒ 现取 8（按方案 §4-P2-1）；**验收判据 = 现成的 STAT 行 `reorder=` 与 `lost=`**
+ *     （`udp_voice.c` 每 2 s 打一次）：只在 WiFi 抖动期观察，两者不上升才算通过。
+ *     若 `reorder=` 上升 ⇒ 就是 burst 溢出，把本值改 12（240 ms，仍省 12,880 B）
+ *     或 16（320 ms，省 10,304 B）即可，**不需要改任何其它代码**。 */
+#define REORDER_SLOTS 8
 
 typedef struct __attribute__((packed)) {
     uint8_t magic[2];
@@ -61,9 +82,9 @@ static void maybe_audio_stop(void);
 void udp_voice_init(void)
 {
     s_cmd_q = xQueueCreate(8, sizeof(voice_cmd_id_t));
-    assert(s_cmd_q);
+    MEM_FAIL_FAST(s_cmd_q, TAG, "xQueueCreate(8, voice_cmd_id_t)", 8 * sizeof(voice_cmd_id_t));
     BaseType_t ok = xTaskCreatePinnedToCore(control_task, "udp_voice_ctl", 8192, NULL, 5, NULL, 0);
-    assert(ok == pdPASS);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(udp_voice_ctl, 8192)", 8192);
     ESP_LOGI(TAG, "init done, tx=%d rx=%d", UDP_VOICE_TX_PORT, UDP_VOICE_RX_PORT);
 }
 
@@ -124,7 +145,17 @@ static void control_task(void *arg)
             if (!link_manager_is_online()) { notify_evt(VOICE_EVT_NO_PEER); break; }
             ensure_audio_start();
             s_tx_active = true;
-            xTaskCreatePinnedToCore(tx_task, "udp_voice_tx", 8192, NULL, 7, &s_tx_task, 0);
+            /* ★ 任务创建结果原来没人看：失败时 s_tx_active 已经是 true 而任务不存在，
+             * 上层却收到 TX_ON ⇒ 卡死在"TX_ON 但没声音"且无任何日志。
+             * 运行期不 abort（规范 A2），但必须说话 + 回滚状态。 */
+            if (xTaskCreatePinnedToCore(tx_task, "udp_voice_tx", 8192, NULL, 7, &s_tx_task, 0) != pdPASS) {
+                s_tx_task = NULL;
+                s_tx_active = false;
+                MEM_ERR_DIAG(TAG, "xTaskCreatePinnedToCore(udp_voice_tx, 8192) FAILED", 8192);
+                maybe_audio_stop();
+                notify_evt(VOICE_EVT_ERROR);
+                break;
+            }
             ESP_LOGI(TAG, "TX_ON");
             notify_evt(VOICE_EVT_TX_ON);
             break;
@@ -146,11 +177,20 @@ static void control_task(void *arg)
                 if (s_rx_sock >= 0) close(s_rx_sock);
                 s_rx_sock = -1;
                 maybe_audio_stop();
-                notify_evt(VOICE_EVT_NO_PEER);
+                notify_evt(VOICE_EVT_ERROR);
                 break;
             }
             s_rx_active = true;
-            xTaskCreatePinnedToCore(rx_task, "udp_voice_rx", 8192, NULL, 7, &s_rx_task, 0);
+            if (xTaskCreatePinnedToCore(rx_task, "udp_voice_rx", 8192, NULL, 7, &s_rx_task, 0) != pdPASS) {
+                s_rx_task = NULL;
+                s_rx_active = false;
+                MEM_ERR_DIAG(TAG, "xTaskCreatePinnedToCore(udp_voice_rx, 8192) FAILED", 8192);
+                close(s_rx_sock);
+                s_rx_sock = -1;
+                maybe_audio_stop();
+                notify_evt(VOICE_EVT_ERROR);
+                break;
+            }
             ESP_LOGI(TAG, "RX_ON");
             notify_evt(VOICE_EVT_RX_ON);
             break;

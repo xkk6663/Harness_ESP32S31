@@ -17,7 +17,7 @@ enum {
     CALL_UI_LINK_ONLINE, CALL_UI_LINK_OFFLINE,
     CALL_UI_TX_ON, CALL_UI_TX_OFF,
     CALL_UI_RX_ON, CALL_UI_RX_OFF,
-    CALL_UI_NO_PEER
+    CALL_UI_NO_PEER, CALL_UI_VOICE_ERR
 };
 static QueueHandle_t s_evt_q;
 static lv_timer_t *s_timer;
@@ -43,6 +43,7 @@ static void on_voice(voice_evt_t evt) {
     case VOICE_EVT_RX_ON:  post(CALL_UI_RX_ON, NULL); break;
     case VOICE_EVT_RX_OFF: post(CALL_UI_RX_OFF, NULL); break;
     case VOICE_EVT_NO_PEER: post(CALL_UI_NO_PEER, NULL); break;
+    case VOICE_EVT_ERROR:   post(CALL_UI_VOICE_ERR, NULL); break;
     }
 }
 
@@ -73,6 +74,9 @@ static void apply_timer(lv_timer_t *timer) {
             lv_label_set_text_static(s_status, "STANDBY  |  No PC peer");
         } else if (evt.kind == CALL_UI_NO_PEER) {
             lv_label_set_text_static(s_status, "PC peer required");
+        } else if (evt.kind == CALL_UI_VOICE_ERR) {
+            /* 启动失败（栈/堆不足、bind 失败…）—— 与"没有对端"分开报，别误导。 */
+            lv_label_set_text_static(s_status, "VOICE start FAILED (see log)");
         }
         refresh_buttons();
     }
@@ -97,7 +101,7 @@ static void rx_btn_cb(lv_event_t *e) {
 }
 
 void tab_call_build(lv_obj_t *screen, lv_group_t *group) {
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(screen, false);
     lv_obj_set_style_bg_color(screen, COL_BG, 0);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(screen, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

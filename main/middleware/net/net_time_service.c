@@ -25,6 +25,7 @@
 
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif_sntp.h"
@@ -37,6 +38,7 @@
 #include "freertos/semphr.h"
 
 #include "net_time_service.h"
+#include "middleware/mem_diag.h"
 
 static const char *TAG = "NET_TIME";
 
@@ -52,7 +54,22 @@ static SemaphoreHandle_t s_lock;         /* 保护 s_weather，服务任务写 /
 static TaskHandle_t      s_task;
 static bool              s_time_valid;   /* SNTP 已校时 */
 static weather_data_t    s_weather;
-static char              s_http_buf[NET_TIME_HTTP_BUF];
+
+/* ★ P2-2：HTTP 响应累积缓冲 8 KB，从 .bss（内部 RAM）挪到 PSRAM。
+ *
+ * 为什么可以放 PSRAM：这个缓冲**不参与任何 DMA**。esp_http_client 自己的收发
+ * 缓冲由 cfg.buffer_size=1024 在**堆上**单独分配（lwIP 收到的字节先落那里），
+ * 我们在 HTTP_EVENT_ON_DATA 里 memcpy / inflate 出来写这块；cJSON 也只在 CPU 侧读它。
+ * （对照：RGB 屏被 GDMA 扫的帧缓冲 / I2S DMA / esp-dl 张量那种才必须内部或专用区域。）
+ *
+ * 生命周期：net_time_service_start() 里一次性分配、永不释放（常驻服务，一次就够）。
+ * 降级：PSRAM 拿不到就退回内部 RAM —— 宁可少 8 KB 内部，也不让天气功能整个消失；
+ *       两处都拿不到才拒绝启动任务（并明说原因）。
+ * 用法约束：**长度一律写 NET_TIME_HTTP_BUF，不许再写 sizeof(s_http_buf)**
+ *          （它现在是指针，sizeof 会变成 4/8，静默算错长度）。
+ * ★ 类型必须是 char：内容就是 JSON 文本，要直接喂 cJSON_Parse(const char *)；
+ *   写成 uint8_t* 会触发 -Werror=pointer-sign。zlib 那侧本就有显式 (Bytef*) 转换。 */
+static char             *s_http_buf;
 
 /* ==================== 和风天气状况 → 英文 ==================== */
 
@@ -91,7 +108,20 @@ static const wx_code_map_t s_wx_map[] = {
  * @brief 和风天气状况文本 → 英文短名
  * @note  cJSON 解析出来的 text 是中文；优先按 icon 主码查表，
  *        查不到则回退到中文关键字匹配，最后回退到 "N/A"。
+ *
+ * ★★ 2026-09-25 标注：**当前无人调用**（连同它专用的 s_wx_map[]）。
+ *    原因不是漏做，而是**时过境迁**：天气卡已经改用中文 bin 字体
+ *    （`overlay_wallpaper.c:276` 用 `&lv_font_cn_30`），直接显示 API 返回的中文
+ *    （`overlay_wallpaper.c:390` 取 `wx.now_text`，为空才回退 `text_en`）
+ *    ⇒ 不再需要"把中文转成英文"这一步。当年用 Montserrat（无 CJK 字形）时才需要。
+ *
+ *    ⇒ 这里**只做"消除 -Wunused-function 警告"，不改行为**：
+ *       加 `unused` 属性 + 保留代码，因为它是"英文 UI"这条可选路线现成的资产，
+ *       删掉等于把那张 icon→英文映射表也一起丢掉。
+ *    ⚠ 若确定不要再做英文天气文案，**可以整块删除**（本函数 + s_wx_map[]）——
+ *       这是产品决定，不替用户拍板。
  */
+__attribute__((unused))
 static const char *wx_text_to_en(const char *icon, const char *text)
 {
     if (icon && icon[0]) {
@@ -186,7 +216,7 @@ static esp_err_t http_evt_cb(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_DATA: {
         if (!s_gz.gz) {
             /* 非压缩：直接拷进输出缓冲 */
-            if (s_gz.out_used + (size_t)evt->data_len < sizeof(s_http_buf)) {
+            if (s_gz.out_used + (size_t)evt->data_len < NET_TIME_HTTP_BUF) {
                 memcpy(s_http_buf + s_gz.out_used, evt->data, evt->data_len);
                 s_gz.out_used += (size_t)evt->data_len;
             } else {
@@ -201,10 +231,10 @@ static esp_err_t http_evt_cb(esp_http_client_event_t *evt)
 
         while (s_gz.zs.avail_in > 0) {
             s_gz.zs.next_out  = (Bytef *)(s_http_buf + s_gz.out_used);
-            s_gz.zs.avail_out = (uInt)(sizeof(s_http_buf) - 1 - s_gz.out_used);
+            s_gz.zs.avail_out = (uInt)(NET_TIME_HTTP_BUF - 1 - s_gz.out_used);
 
             int rc = inflate(&s_gz.zs, Z_NO_FLUSH);
-            s_gz.out_used = sizeof(s_http_buf) - 1 - s_gz.zs.avail_out;
+            s_gz.out_used = NET_TIME_HTTP_BUF - 1 - s_gz.zs.avail_out;
 
             if (rc == Z_STREAM_END) {
                 break;
@@ -229,7 +259,7 @@ static esp_err_t http_evt_cb(esp_http_client_event_t *evt)
             inflateEnd(&s_gz.zs);
             s_gz.inited = false;
         }
-        s_http_buf[s_gz.out_used < sizeof(s_http_buf) ? s_gz.out_used : sizeof(s_http_buf) - 1] = '\0';
+        s_http_buf[s_gz.out_used < NET_TIME_HTTP_BUF ? s_gz.out_used : NET_TIME_HTTP_BUF - 1] = '\0';
         break;
     }
 
@@ -251,7 +281,11 @@ static esp_err_t http_evt_cb(esp_http_client_event_t *evt)
 /** 通用 GET：url → 解压后 JSON 字符串（写进 s_http_buf），成功返回 true */
 static bool http_get_json(const char *url)
 {
-    memset(s_http_buf, 0, sizeof(s_http_buf));
+    if (!s_http_buf) {          /* ★ P2-2：缓冲没分配成功就不该走到这里 */
+        ESP_LOGE(TAG, "http buf not allocated");
+        return false;
+    }
+    memset(s_http_buf, 0, NET_TIME_HTTP_BUF);
     memset(&s_gz, 0, sizeof(s_gz));
 
     esp_http_client_config_t cfg = {
@@ -269,6 +303,9 @@ static bool http_get_json(const char *url)
 
     bool ok = false;
     esp_err_t err = esp_http_client_perform(client);
+    /* ★ P0-1 补盲区：TLS 握手 + 收 body 是上电期最大的一笔**瞬时**内部占用，
+     *   前后各一刀才能把它与"常驻"区分开（实测 free 会回涨 ~21KB，largest 不涨）。 */
+    MEM_STAGE(TAG, "http_get: post (TLS+body done)");
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "http perform failed: %s", esp_err_to_name(err));
         goto out;
@@ -356,7 +393,17 @@ static void parse_weather_now(weather_data_t *out)
     cJSON_Delete(root);
 }
 
-/** 解析 /v7/air/now：填 aqi/aqi_cat */
+/**
+ * @brief 解析 /v7/air/now：填 aqi/aqi_cat
+ *
+ * ★★ 2026-09-25 标注：**当前无人调用**，且 `weather_data_t.aqi / aqi_cat`
+ *    在 UI 侧也**完全没被读过**（`grep -rn "aqi" main/ui/` 为空）。
+ *    ⇒ 加 `unused` 属性消除 -Wunused-function 警告，**不改行为**：
+ *      不擅自去拉 /v7/air/now（那会多一次 HTTP 请求 + 多一份 cJSON 解析开销）。
+ *    ⚠ 若要在天气卡上显示 AQI，需两步：① 在天气刷新流程里真的请求 air/now 并调用本函数；
+ *      ② UI 加上对应 label。这是新功能，不替用户拍板。
+ */
+__attribute__((unused))
 static void parse_air_now(weather_data_t *out)
 {
     cJSON *root = cJSON_Parse(s_http_buf);
@@ -528,6 +575,23 @@ void net_time_service_start(void)
     if (!s_lock) {
         ESP_LOGE(TAG, "mutex create failed");
         return;
+    }
+
+    /* ★ P2-2：8 KB HTTP 缓冲从内部 .bss 挪到 PSRAM（理由见 s_http_buf 声明处）。 */
+    if (!s_http_buf) {
+        s_http_buf = (char *)heap_caps_malloc(NET_TIME_HTTP_BUF, MALLOC_CAP_SPIRAM);
+        if (s_http_buf) {
+            ESP_LOGI(TAG, "http buf %d B -> PSRAM (freed %d B internal)",
+                     NET_TIME_HTTP_BUF, NET_TIME_HTTP_BUF);
+        } else {
+            /* 降级：PSRAM 不可用（或已耗尽）时退回内部 RAM —— 天气功能不要跟着消失。 */
+            s_http_buf = (char *)heap_caps_malloc(NET_TIME_HTTP_BUF, MALLOC_CAP_INTERNAL);
+            if (!s_http_buf) {
+                ESP_LOGE(TAG, "http buf alloc failed (PSRAM and INTERNAL both), service NOT started");
+                return;
+            }
+            ESP_LOGW(TAG, "PSRAM alloc failed, http buf falls back to INTERNAL RAM");
+        }
     }
 
     if (xTaskCreatePinnedToCore(net_time_task, "net_time", NET_TIME_TASK_STACK,

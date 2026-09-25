@@ -1,5 +1,16 @@
 # FACE 加载 NO_MEM 问题优化方案
 
+> ⚠ **2026-09-25 更正（读代码后复核，勿再照本文档的"推荐组合"执行）**
+>
+> 本文档写于 2026-09-18，是基于**猜测**写的。逐行核对组件源码后，**方案 A 已不存在可做的对象**：
+> 本工程 `CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y`，LVGL 画布**就是** PSRAM 里的 RGB framebuffer
+> （`esp_lvgl_port_disp.c:361-369` 直接取 `esp_lcd_rgb_panel_get_frame_buffer()`），
+> 根本没有"内部 RAM 里的 ~150KB draw buffer"可挪。**方案 D 也不存在**（esp-dl 3.3 无该 Kconfig，
+> 且模型张量本来就在 PSRAM——见 §3.3）。
+>
+> 真正的根因链、可执行改动与验证方法，**以 `docs/开发文档/内存优化可执行方案.md`（2026-09-25）为准**。
+> 本文档保留作历史记录。
+
 ## 问题根因
 
 模型加载时 `new HumanFaceDetect()` 在独立任务（8KB 栈）里执行，但加载过程中：

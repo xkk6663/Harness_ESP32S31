@@ -197,7 +197,7 @@ lv_obj_t *overlay_wp_particles_build(lv_obj_t *parent)
 
     /* touch: repel particles from finger */
     lv_obj_add_event_cb(s_canvas, wp_touch_cb, LV_EVENT_ALL, NULL);
-    lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(s_canvas, true);
 
     for (int i = 0; i < PARTICLE_COUNT; i++) spawn(&s_p[i], true);
     memcpy(s_buf, s_base, buflen);

@@ -78,7 +78,7 @@ static lv_obj_t *splash_create(lv_obj_t *parent)
 
     s_wallpaper = overlay_wp_particles_build(page);
     if (s_wallpaper) {
-        lv_obj_add_flag(s_wallpaper, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_clickable(s_wallpaper, true);
         lv_obj_add_event_cb(s_wallpaper, splash_pressed_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_wallpaper, splash_pressing_cb, LV_EVENT_PRESSING, NULL);
     }

@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "middleware/mem_diag.h"
 #include <string.h>
 
 /* gcc -Werror=stringop-truncation: 本文件 strncpy 均按 sizeof(dst)-1 拷贝并由
@@ -85,9 +86,23 @@ static esp_err_t store_commit(const wifi_store_t *store)
     return err;
 }
 
-/* 相同 SSID 更新密码并置顶；新 SSID 插队首；满了淘汰队尾 */
-static void store_upsert(wifi_store_t *store, const char *ssid, const char *pass)
+/* 相同 SSID 更新密码并置顶；新 SSID 插队首；满了淘汰队尾。
+ *
+ * ★★ F48：返回 true 只代表"内容真的变了、需要落 NVS"。
+ *   背景：原实现在 GOT_IP 里无条件 store_commit() ⇒ 每次连接成功都擦写 flash。
+ *   spi_flash 擦写会走 spi_flash_disable_interrupts_caches_and_other_cpu()：
+ *   关中断 + 关 cache（PSRAM 与 flash 映射共用同一 cache）⇒ 实测单次窗口可达
+ *   94~157 ms（`[panelprobe] gap max`）。这个窗口会打乱 WiFi 收发与音频 DMA。
+ *   ★ 2026-09-25 起屏已切到 auto refresh 模式（不再有 bounce buffer），**"花屏"**
+ *     这一后果已被结构性消除；但**窗口本身仍在** ⇒ 少写 flash 依然是净收益。
+ *   自动重连时凭证本来就是同一组、且已在队首 ⇒ 判定"未变"直接跳过，0 次 flash 写。 */
+static bool store_upsert(wifi_store_t *store, const char *ssid, const char *pass)
 {
+    /* 队首就是同一组 SSID+密码 ⇒ upsert 是幂等的，无变化 */
+    bool changed = !(store->count > 0 &&
+                     strcmp(store->creds[0].ssid, ssid) == 0 &&
+                     strcmp(store->creds[0].password, pass ? pass : "") == 0);
+
     wifi_cred_t node;
     memset(&node, 0, sizeof(node));
     strncpy(node.ssid, ssid, WIFI_SSID_LEN_MAX);
@@ -114,9 +129,10 @@ static void store_upsert(wifi_store_t *store, const char *ssid, const char *pass
     }
     store->magic = WIFI_STORE_MAGIC;
     store->version = WIFI_STORE_VERSION;
+    return changed;
 }
 
-/* 连接成功后保存当前凭证 */
+/* 连接成功后保存当前凭证（★ F48：仅在有真实变化时才落 NVS） */
 static void save_connected_cred(void)
 {
     wifi_config_t cur = {0};
@@ -128,7 +144,15 @@ static void save_connected_cred(void)
     if (store_load(&store) != ESP_OK) {
         store.count = 0;   /* 首次使用，空表 */
     }
-    store_upsert(&store, (const char *)cur.sta.ssid, (const char *)cur.sta.password);
+    if (!store_upsert(&store, (const char *)cur.sta.ssid, (const char *)cur.sta.password)) {
+        /* ★ F48：凭证没变（自动重连的常态）⇒ 跳过 NVS 落盘。
+         * 省掉的这次 flash 擦写会把中断 + cache 关掉上百 ms，足以打乱 WiFi
+         * 收发与音频 DMA（★ 屏侧"花屏"已因切到 auto refresh 模式而消失，
+         * 所以这里现在是"减少抖动"，不再是"治花屏"）。 */
+        ESP_LOGI(TAG, "cred \"%s\" unchanged, skip NVS write (no flash erase)",
+                 cur.sta.ssid);
+        return;
+    }
     esp_err_t err = store_commit(&store);
     ESP_LOGI(TAG, "saved \"%s\" to NVS (%s), total=%d",
              cur.sta.ssid, esp_err_to_name(err), store.count);
@@ -345,7 +369,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         wifi_event_sta_disconnected_t *d =
             (wifi_event_sta_disconnected_t *)event_data;
         s_connected = false;
-        ESP_LOGW(TAG, "disconnected from \"%s\", reason=%d", s_cur_ssid, d->reason);
+        /* ★ F48 取证：断联瞬间把内部堆真值一起打出来。判读口径照工程约定 ——
+         * 只看 INT largest（不看 free）。若这里 largest 已经很低，说明断联与
+         * "内部 RAM 被挤干"同源；若 largest 正常，则更像 RF/共存问题。 */
+        ESP_LOGW(TAG, "disconnected from \"%s\", reason=%d | " MEM_DIAG_FMT,
+                 s_cur_ssid, d->reason, MEM_DIAG_ARGS(0));
 
         if (s_phase == PHASE_TRYING) {
             /* 连接阶段失败：计数重试 */
@@ -412,6 +440,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_have_active = true;
         esp_timer_stop(s_reconnect_timer);
         ESP_LOGI(TAG, "got ip: %s", s_ip);
+        /* ★ P0-1 补盲区：上电账单原来看不出"WiFi 关联 + DHCP"这一段吃了多少内部 RAM。
+         *   实测：关联+TLS 那段窗口（splash 与 camera 埋点之间）内部 heap 少 28KB、
+         *   largest 从 90,112 掉到 55,296 且不再回升 —— 必须在这里切一刀才定位得到。 */
+        MEM_STAGE(TAG, "assoc+dhcp done (got ip)");
 
         /* 联网成功：保存/置顶凭证到 NVS */
         save_connected_cred();
@@ -436,6 +468,18 @@ void wifi_manager_init(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    /* ★★ F48：斩断运行期 flash 写入（减少"关中断 + 关 cache"窗口的次数）。
+     * 默认 WIFI_STORAGE_FLASH 下，每次 esp_wifi_set_config() 都会把 sta 配置写进 NVS；
+     * 而"运行中掉线 → apply_candidate()"这条重连路径正是每次都会调它（见本文件
+     * WIFI_EVENT_STA_DISCONNECTED 分支）⇒ 每次重连都擦写一次 flash。
+     * flash 擦写走 spi_flash_disable_interrupts_caches_and_other_cpu()：关中断 + 关 cache
+     * （PSRAM/flash 共用同一 cache），实测窗口 94~157 ms ⇒ 期间 WiFi/音频都会被打乱。
+     * ★ 屏侧后果已变：2026-09-25 起切到 auto refresh 模式（无 bounce buffer），
+     *   不再有"中断停摆 ⇒ 补不上 bounce buffer ⇒ 花屏"这条链；这里纯粹是减少抖动。
+     * 凭证持久化本文件已有自己的 NVS 表（store_commit），驱动的这份是纯冗余。
+     * WIFI_STORAGE_RAM 下 esp_wifi_get_config() 照常可读（save_connected_cred 依赖它）。 */
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
@@ -455,6 +499,15 @@ void wifi_manager_init(void)
     /* 默认上电 STA 模式：开发板自动连已保存路由；UI 可切 AP 开热点 */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* ★ F48 针对 reason=200 (WIFI_REASON_BEACON_TIMEOUT) 的实验项：
+     * 默认 WIFI_PS_MIN_MODEM 让射频在 DTIM 之间休眠，靠软件按时唤醒收 beacon；
+     * 本工程早期 CPU 长期被 RGB bounce 中断（1699 次/秒 x ~300 us）占满 ⇒
+     * 唤醒编程一迟就漏 beacon ⇒ 连续漏 N 个就报 beacon timeout 断联。
+     * ★ 该中断已随 2026-09-25 的 auto refresh 切换消失（现 ~35 次/秒），
+     *   但电源域这条**别无副作用**，且仍有其它抖动源（相机/模型加载）⇒ 保留。
+     * 本机是市电供电的音箱，放弃省电换稳定是划算的。
+     * 若日后要恢复默认省电：删掉本行即可。 */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     wifi_manager_auto_connect();
 
     ESP_LOGI(TAG, "wifi STA init done, auto-connecting saved creds");

@@ -12,6 +12,7 @@
 #include "lvgl.h"
 #include "esp_jpeg_dec.h"
 #include "fs_service.h"
+#include "middleware/mem_diag.h"
 
 static const char *TAG = "FS_SVC";
 
@@ -68,5 +69,8 @@ void fs_service_init(void)
     /* JPEG 解码输出缓冲：按 LCD 全屏大小分配（开屏壁纸 / 图片查看共用） */
     file_buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES * sizeof(lv_color_t);
     file_buffer = jpeg_calloc_align(file_buffer_size, 16);
-    assert(file_buffer);
+    /* ★ P0-4：这是全工程最大的一笔单点分配（800*480*2 = 768,000 B），
+     * 失败时原来只给一句 assert —— 现在先落三元组，能直接看出是 PSRAM 不够还是碎片。 */
+    MEM_FAIL_FAST(file_buffer, TAG, "jpeg_calloc_align(JPEG frame buffer)", file_buffer_size);
+    MEM_STAGE(TAG, "jpeg frame buffer allocated");
 }

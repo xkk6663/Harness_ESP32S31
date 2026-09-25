@@ -8,7 +8,9 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/stat.h>
+#include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -18,6 +20,7 @@
 #include "lwip/sockets.h"
 #include "middleware/audio/audio_service.h"
 #include "middleware/periph/fs_service.h"
+#include "middleware/mem_diag.h"
 #include "middleware/net/link_manager.h"
 #include "middleware/net/session_manager.h"
 #include "record_service.h"
@@ -28,6 +31,8 @@ static const char *TAG = "RECORD";
 #define RECORD_FLUSH_BYTES (64U * 1024U)
 #define RECORD_CHUNK_PAYLOAD 4090
 #define RECORD_PENDING_PATH FS_MNT_PATH "/recordings/pending.wav"
+/* 分区名（不是挂载点）：esp_littlefs_info() 要的是 partition label */
+#define RECORD_FS_PARTITION "storage"
 
 typedef struct __attribute__((packed)) {
     char riff[4]; uint32_t file_size; char wave[4]; char fmt[4]; uint32_t fmt_size;
@@ -48,6 +53,8 @@ static bool open_tcp(int *sock, uint32_t base_offset, const char *session_id);
 static bool send_all(int sock, const void *data, size_t len);
 static bool send_chunk(int sock, const uint8_t *pcm, uint16_t len, uint32_t offset);
 static uint16_t crc16_ccitt(const uint8_t *data, size_t len);
+static int64_t fs_avail_bytes(void);
+static bool write_pcm(FILE *file, const uint8_t *pcm, size_t len);
 static FILE *open_local(uint32_t *bytes);
 static void finalize_local(FILE *file, uint32_t bytes);
 static void upload_pending(void);
@@ -57,11 +64,28 @@ void record_service_init(void)
     mkdir(FS_MNT_PATH "/recordings", 0775);
     mkdir(FS_MNT_PATH "/wallpapers", 0775);
     s_cmd_q = xQueueCreate(8, sizeof(record_cmd_id_t));
-    assert(s_cmd_q);
+    MEM_FAIL_FAST(s_cmd_q, TAG, "xQueueCreate(8, record_cmd_id_t)", 8 * sizeof(record_cmd_id_t));
     link_manager_add_evt_cb(link_cb);
     BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 8192, NULL, 5, NULL, 0);
-    assert(ok == pdPASS);
-    ESP_LOGI(TAG, "init done, local cap=%u bytes", (unsigned)RECORD_MAX_PCM_BYTES);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(record_service, 8192)", 8192);
+    /* ★ 录音的"代码里写的上限"与"磁盘实际能给的空间"是两个数，且现在不一致：
+     * RECORD_MAX_PCM_BYTES 声明 300s ≈ 9.6MB，而 storage 分区只有 6,160,384 B
+     * （littlefs_content 已占 768,380）⇒ 实际可用 ≈5.2MB ≈ 166 秒就会先 ENOSPC。
+     * 这里把真实剩余空间打出来，免得再靠脑补。
+     * ★★ 踩坑：esp_littlefs **没有实现 statvfs/statfs**（2026-09-25 上机实测：
+     *    statvfs() 直接失败，日志打成了 "fs avail unknown"）。它给的是自己的
+     *    esp_littlefs_info(partition_label, &total, &used)。 */
+    int64_t avail = fs_avail_bytes();
+    if (avail >= 0) {
+        ESP_LOGI(TAG, "init done | pcm cap=%u B (%.0f s @ %u Hz mono16) | fs avail=%.2f MB (%.0f s)",
+                 (unsigned)RECORD_MAX_PCM_BYTES,
+                 (double)RECORD_MAX_PCM_BYTES / (SAMPLE_RATE * 2.0), (unsigned)SAMPLE_RATE,
+                 (double)avail / (1024 * 1024), (double)avail / (SAMPLE_RATE * 2.0));
+    } else {
+        ESP_LOGW(TAG, "init done | pcm cap=%u B (%.0f s); esp_littlefs_info(%s) failed, fs avail unknown",
+                 (unsigned)RECORD_MAX_PCM_BYTES,
+                 (double)RECORD_MAX_PCM_BYTES / (SAMPLE_RATE * 2.0), RECORD_FS_PARTITION);
+    }
 }
 
 void record_service_post_cmd(record_cmd_id_t cmd)
@@ -136,6 +160,7 @@ static void run_recording(void)
     int64_t last_report = esp_timer_get_time();
     uint32_t last_flush = 0;
     bool stop = false;
+    bool disk_full = false;
     while (!stop) {
         record_cmd_id_t cmd;
         if (xQueueReceive(s_cmd_q, &cmd, 0) == pdPASS && cmd == RECORD_CMD_STOP) {
@@ -162,8 +187,11 @@ static void run_recording(void)
                     local = open_local(&local_bytes);
                     if (!local) { stop = true; }
                     if (local && chunk_used) {
-                        fwrite(chunk, 1, chunk_used, local);
-                        local_bytes += chunk_used;
+                        if (write_pcm(local, chunk, chunk_used)) {
+                            local_bytes += chunk_used;
+                        } else {
+                            disk_full = true;
+                        }
                         chunk_used = 0;
                     }
                 }
@@ -178,11 +206,24 @@ static void run_recording(void)
                 stop = true;
                 continue;
             }
-            local_bytes += fwrite(frame, 1, sizeof(frame), local);
+            if (write_pcm(local, frame, sizeof(frame))) {
+                local_bytes += sizeof(frame);
+            } else {
+                disk_full = true;
+            }
             if (local_bytes - last_flush >= RECORD_FLUSH_BYTES) {
                 fflush(local);
                 last_flush = local_bytes;
             }
+        }
+        /* ★ 写盘失败 ⇒ 立即收口并**主动告知**（RECORD_EVT_ERROR），
+         *   不能再让循环空转（那正是"静默数据丢失"的形态）。 */
+        if (disk_full) {
+            ESP_LOGE(TAG, "LOCAL write failed => stop early, recorded=%u B (of cap %u)",
+                     (unsigned)local_bytes, (unsigned)RECORD_MAX_PCM_BYTES);
+            notify(RECORD_EVT_ERROR, s_mode, base_offset + local_bytes);
+            stop = true;
+            continue;
         }
         uint32_t total = s_mode == RECORD_MODE_STREAM ? sent_bytes + chunk_used : base_offset + local_bytes;
         if (esp_timer_get_time() - last_report > 1000000) {
@@ -218,6 +259,40 @@ static void run_recording(void)
     notify(RECORD_EVT_STOPPED, done_mode, total);
 }
 
+/* 分区剩余字节数；失败返回 -1。
+ * ★ esp_littlefs 没有 statvfs/statfs（实测失败），只能用 esp_littlefs_info()。 */
+static int64_t fs_avail_bytes(void)
+{
+    size_t total = 0, used = 0;
+    if (esp_littlefs_info(RECORD_FS_PARTITION, &total, &used) != ESP_OK) {
+        return -1;
+    }
+    return (int64_t)total - (int64_t)used;
+}
+
+/* ★ P0（方案 §8-F-1）：磁盘满时 fwrite 返回 0，而原代码不看返回值 ⇒
+ *   local_bytes 冻结 ⇒ 停止条件 local_bytes >= RECORD_MAX_PCM_BYTES 永远不成立
+ *   ⇒ 录音"看着还在继续"、文件却不再增长、**一句日志都没有**（静默数据丢失）。
+ *   这里统一改成"短写即失败"，并把 errno 与分区剩余空间一起打出来。 */
+static bool write_pcm(FILE *file, const uint8_t *pcm, size_t len)
+{
+    size_t wrote = fwrite(pcm, 1, len, file);
+    if (wrote == len) {
+        return true;
+    }
+    int64_t avail = fs_avail_bytes();
+    ESP_LOGE(TAG, "fwrite short: want=%u wrote=%u errno=%d (%s) | fs avail=%s",
+             (unsigned)len, (unsigned)wrote, errno, strerror(errno),
+             avail < 0 ? "unknown" : "see below");
+    if (avail >= 0) {
+        ESP_LOGE(TAG, "  -> fs avail=%.2f MB", (double)avail / (1024.0 * 1024.0));
+    }
+    if (ferror(file)) {
+        clearerr(file);
+    }
+    return false;
+}
+
 static FILE *open_local(uint32_t *bytes)
 {
     FILE *file = fopen(RECORD_PENDING_PATH, "wb");
@@ -226,7 +301,10 @@ static FILE *open_local(uint32_t *bytes)
         return NULL;
     }
     wav_header_t blank = {0};
-    fwrite(&blank, 1, sizeof(blank), file);
+    if (!write_pcm(file, (const uint8_t *)&blank, sizeof(blank))) {
+        fclose(file);
+        return NULL;   /* 头都写不进去（通常就是空间不足）⇒ 别开这场录音 */
+    }
     *bytes = 0;
     return file;
 }
@@ -238,7 +316,11 @@ static void finalize_local(FILE *file, uint32_t bytes)
                         .sample_rate = SAMPLE_RATE, .byte_rate = SAMPLE_RATE * 2, .block_align = 2,
                         .bits = 16, .data = {'d','a','t','a'}, .data_size = bytes};
     fseek(file, 0, SEEK_SET);
-    fwrite(&hdr, 1, sizeof(hdr), file);
+    if (!write_pcm(file, (const uint8_t *)&hdr, sizeof(hdr))) {
+        /* 头写不回去 ⇒ 这个 wav 不可播（upload_pending 会靠 memcmp("RIFF") 拦住它，
+         * 不会把坏文件传上去）。 */
+        ESP_LOGE(TAG, "wav header rewrite FAILED, %u B pcm stays header-less", (unsigned)bytes);
+    }
     fflush(file);
     fclose(file);
 }

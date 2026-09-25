@@ -30,6 +30,10 @@ typedef enum {
     VOICE_EVT_RX_ON,
     VOICE_EVT_RX_OFF,
     VOICE_EVT_NO_PEER,
+    /* 运行期启动失败（栈/堆不足、socket bind 失败…）。
+     * ★ 与 NO_PEER 分开是刻意的：把"内存不足"报成"对方不在线"是**错的信号**，
+     *   会把人引到错误方向（见工程规范：错的日志比没有日志更坏）。 */
+    VOICE_EVT_ERROR,
 } voice_evt_t;
 
 typedef void (*voice_evt_cb_t)(voice_evt_t evt);
