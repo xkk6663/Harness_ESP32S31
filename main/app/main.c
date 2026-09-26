@@ -34,6 +34,7 @@
 #include "middleware/camera/capture_service.h"       /* ★ S2a 拍照 */
 #include "middleware/camera/viewfinder.h"            /* ★ 2026-09-25 取景器（开机预分配） */
 #include "middleware/media/record_video_service.h"   /* ★ S2b 录像 */
+#include "middleware/media/file_mgr_service.h"       /* ★ S4 文件管理（预览/播放缓冲） */
 #include "middleware/mem_diag.h"
 
 static const char *TAG = "main";
@@ -289,17 +290,20 @@ static const task_slot_t s_task_reg[] = {
      *   已核对的创建处：esp_lvgl_port（本文件覆盖 12288，实测峰值 6,576 B）、
      *   audio_service.c / record_service.c / udp_voice.c / link_manager.c /
      *   net_time_service.c / camera_service.c（CAM_TASK_STACK）/ led_service.c。 */
-    { "taskLVGL",       12288 },   /* P2-4 已从 16384 缩到 12288（依据见 app_main 注释） */
-    { "audio_task",      8192 },
-    { "audio_stream",    8192 },
-    { "record_service",  8192 },
-    { "udp_voice_ctl",   8192 },
-    { "udp_voice_tx",    8192 },   /* 按 TX 开关按需创建，未跑时为 NULL */
-    { "udp_voice_rx",    8192 },   /* 按 RX 开关按需创建，未跑时为 NULL */
-    { "link_manager",    8192 },
-    { "net_time",        8192 },
-    { "cam",             6144 },   /* P2-5 定稿：实测峰值仅 2,140 B，**不扩**（见 camera_service.c） */
-    { "led_task",        4096 },
+    /* ★ 2026-09-26 按水位全面收缩（本次 [stack] 报告：可省 ~32 KB 内部 RAM）。
+     *   只缩"跑过全路径"的任务；audio_stream / udp_voice_tx / rx 没水位数据，
+     *   保持 8192 不动。回退条件：回归后任一任务被判"偏紧"或出现栈溢出症状。 */
+    { "taskLVGL",       9728 },   /* 峰值 6396，need=9728（P2-4 后二次收缩） */
+    { "audio_task",      2048 },  /* 峰值 756 */
+    { "audio_stream",    8192 },  /* 按需创建，无水位数据，不动 */
+    { "record_service",  1536 },  /* 峰值 352 */
+    { "udp_voice_ctl",   1536 },  /* 峰值 428 */
+    { "udp_voice_tx",    8192 },  /* 按需创建，无水位数据，不动 */
+    { "udp_voice_rx",    8192 },  /* 按需创建，无水位数据，不动 */
+    { "link_manager",    3072 },  /* 峰值 1536，留 2x（链路解析最深） */
+    { "net_time",        8192 },  /* 峰值 4296，吃满一半，不动 */
+    { "cam",             3584 },  /* 两次观测大者 2140（含同步写盘路径）×1.5 */
+    { "led_task",        1536 },  /* 峰值 656 */
 };
 
 static void stack_report_dump(void)
@@ -392,6 +396,10 @@ void app_main(void)
      * 掉到 4 KB 以下，就改回 16384（同时改下面 s_task_reg 里的登记值）。
      * bsp_display_start() 内部就是组装下面这份默认 cfg（见 bsp_display.c:274-291），
      * 这里照抄后只覆盖 task_stack，其余行为不变。 */
+    /* ★ P2-4 + 2026-09-26 二次水位收缩：taskLVGL 7168 -> 16384 -> 12288 -> **9728**。
+     * 本次依据：FILES/VIDEO/相机全路径跑过后 hwm=5892（峰值 6,396 B），
+     * need=6396×1.5=9728；与 P2-4 时代的峰值 6,576 B 基本一致（路径已覆盖）。
+     * 回退条件不变：`[stack] taskLVGL ... !! 偏紧` 或 hwm 掉到 4 KB 以下 ⇒ 回 12288。 */
     bsp_display_cfg_t dsp_cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
@@ -408,7 +416,7 @@ void app_main(void)
     };
     /* 不能写进上面的指定初始化器 —— 整体初始化 .lvgl_port_cfg 后再覆盖子成员会触发
      * -Woverride-init。 */
-    dsp_cfg.lvgl_port_cfg.task_stack = 12288;
+    dsp_cfg.lvgl_port_cfg.task_stack = 9728;
     bsp_display_start_with_config(&dsp_cfg);
     MEM_STAGE(TAG, "after bsp_display_start");
 
@@ -453,6 +461,12 @@ void app_main(void)
      *     拍照/录像完全不受影响。 */
     viewfinder_init();
     MEM_STAGE(TAG, "after viewfinder_init");
+    /* ★ S4 文件管理服务：预览/播放双显示缓冲（2x460.8 KB PSRAM）+ files 任务
+     *   （4.6 KB 内部栈，做文件 IO 的任务栈必须内部 RAM，F35）。
+     *   解码不在这里配 —— 复用 viewfinder 的单例引擎与 staging（S4 方案 §4.2）。
+     *   ★ 失败不中断开机：FILES 页所有操作会在守卫处被拒（状态行报错）。 */
+    file_mgr_init();
+    MEM_STAGE(TAG, "after file_mgr_init");
     /* ★ S2a/S2b：拍照与录像服务。两者都**不建常驻任务**
      *   （拍照/录像时才建一次性任务，收尾完即删），所以这里不占内部 RAM：
      *   - capture_service_init 只是把状态归零；

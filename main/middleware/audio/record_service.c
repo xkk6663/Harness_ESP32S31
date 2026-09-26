@@ -66,8 +66,9 @@ void record_service_init(void)
     s_cmd_q = xQueueCreate(8, sizeof(record_cmd_id_t));
     MEM_FAIL_FAST(s_cmd_q, TAG, "xQueueCreate(8, record_cmd_id_t)", 8 * sizeof(record_cmd_id_t));
     link_manager_add_evt_cb(link_cb);
-    BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 8192, NULL, 5, NULL, 0);
-    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(record_service, 8192)", 8192);
+    /* 栈收缩（2026-09-26 水位法）：实测峰值 352 B，1536 = 4.4x 余量 */
+    BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 1536, NULL, 5, NULL, 0);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(record_service, 1536)", 1536);
     /* ★ 录音的"代码里写的上限"与"磁盘实际能给的空间"是两个数，且现在不一致：
      * RECORD_MAX_PCM_BYTES 声明 300s ≈ 9.6MB，而 storage 分区只有 6,160,384 B
      * （littlefs_content 已占 768,380）⇒ 实际可用 ≈5.2MB ≈ 166 秒就会先 ENOSPC。

@@ -22,6 +22,7 @@
 #include "tab_sys_entry.h"
 #include "tab_camera.h"
 #include "tab_video.h"
+#include "tab_files.h"
 #include "overlay_wallpaper.h"
 #include "page_wav_player.h"
 
@@ -30,6 +31,7 @@ static const char *TAG = "PAGE_MAIN";
 static lv_obj_t  *s_tabview;
 static lv_obj_t  *s_tab_btns;
 static uint32_t   s_tab_vid_idx = 3;    /* VIDEO 页下标：建页时按实际顺序算出（见 main_create） */
+static uint32_t   s_tab_files_idx = 4;  /* FILES 页下标（S4 文件管理，同上） */
 static lv_group_t *s_group_call;
 static lv_group_t *s_group_rec;
 static lv_group_t *s_group_sys;
@@ -37,11 +39,15 @@ static lv_group_t *s_group_sys;
 static void tab_changed_event(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
-        /* ★★ 取景流与 tab 绑定（2026-09-25）：只有 VIDEO 页活跃时它才占着相机。
+        /* ★★ tab 绑定的后台动作（取景流 / 文件管理页）都写在这里。
          *   ★ 必须放在 refresh_group() **之前**：那个函数在没有 encoder 输入设备的
          *     触摸方案下整段 early-out（连 s_group_* 判空都不做直接 return），
-         *     把通知写进去就永远收不到 —— 这正是本工程反复踩的"静默失效"形态。 */
-        tab_video_set_active(lv_tabview_get_tab_active(s_tabview) == s_tab_vid_idx);
+         *     把通知写进去就永远收不到 —— 这正是本工程反复踩的"静默失效"形态。
+         *   ★ 两个 set_active 天然互斥：同一时刻只有一个 tab 活跃。 */
+        bool vid_act   = (lv_tabview_get_tab_active(s_tabview) == s_tab_vid_idx);
+        bool files_act = (lv_tabview_get_tab_active(s_tabview) == s_tab_files_idx);
+        tab_video_set_active(vid_act);
+        tab_files_set_active(files_act);
         page_main_refresh_group();
     }
 }
@@ -61,16 +67,16 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     lv_obj_t *tab_call = lv_tabview_add_tab(s_tabview, LV_SYMBOL_AUDIO"  CALL");
     lv_obj_t *tab_rec  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SAVE"  REC");
     lv_obj_t *tab_cam  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_VIDEO"  CAM");
-    /* ★ S2-0：第 5 个 tab。插在 CAM 与 SYS 之间 —— CAM 是"看/试"（RGB565 预览 + 模型），
-     *   VIDEO 是"采"（JPEG 1280x720 拍照/录像），语义相邻；SYS 是设置，天然垫底。
-     *   ★ 标签宽度增到 5 个：tab bar 是 F46 的敏感区（页对象自带 pad，子对象越界会被裁），
-     *     上机需确认 5 个标签不被挤压/裁字 —— 已列入验收清单。 */
+    /* ★ S2-0：VIDEO 插在 CAM 与 SYS 之间 —— CAM 是"看/试"（RGB565 预览 + 模型），
+     *   VIDEO 是"采"（JPEG 1280x720 拍照/录像），语义相邻。
+     * ★ S4：FILES（文件管理）插在 VIDEO 与 SYS 之间；SYS 是设置，天然垫底。
+     * ★ 下标**紧跟 add 之后**取 count-1 —— 旧写法"加完全部再取 count-1"只因为
+     *   VIDEO 恰好是最后一个才对，插进 FILES 后那样取会指到 SYS（静默错页）。 */
     lv_obj_t *tab_vid  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_IMAGE"  VIDEO");
-    lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
-
-    /* ★ VIDEO 页下标按"第几个加的"反推，不写死 —— 以后再插 tab 也不会错。
-     *   （tab_changed_event 用它判断"当前是不是 VIDEO 页"，见上。） */
     s_tab_vid_idx = lv_tabview_get_tab_count(s_tabview) - 1;
+    lv_obj_t *tab_files = lv_tabview_add_tab(s_tabview, LV_SYMBOL_LIST"  FILES");
+    s_tab_files_idx = lv_tabview_get_tab_count(s_tabview) - 1;
+    lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
 
     /* Tab bar styling */
     s_tab_btns = lv_tabview_get_tab_btns(s_tabview);
@@ -103,6 +109,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     tab_record_build(tab_rec, s_group_rec);
     tab_camera_build(tab_cam, NULL);
     tab_video_build(tab_vid, NULL);
+    tab_files_build(tab_files, NULL);
     tab_sys_entry_build(tab_sys, s_group_sys);
 
     /* Pull-down wallpaper overlay on lv_layer_top. */
@@ -121,6 +128,7 @@ static void main_destroy(lv_obj_t *page)
     tab_record_destroy();
     tab_camera_destroy();
     tab_video_destroy();
+    tab_files_destroy();
     tab_sys_entry_destroy();
     overlay_wallpaper_deinit();
 

@@ -25,9 +25,9 @@
  *   1.8 MB 的出图缓冲一旦因为 PSRAM 被切碎而拿不到，后面就再也拿不回来了
  *   （见 开发文档/内存优化可执行方案.md 手段 B"预分配常驻"）。
  *   所以在 main.c 开机阶段（camera_service_init 之后）就调 viewfinder_init() 拿齐，
- *   顺便进 [mem] 分步账单。总预算 ≈ 2.2 MB PSRAM：
+ *   顺便进 [mem] 分步账单。总预算 ≈ 3.0 MB PSRAM（§32 起 staging 扩到驱动上限）：
  *     - 出图缓冲   1,843,200 B（1280x720 RGB565，jpeg_alloc_decoder_mem 分配）
- *     - staging    192 KB（JPEG 码流中转，供观察者拷贝）
+ *     - staging    921,600 B（JPEG 码流中转 = 驱动 JPEG 单缓冲上限）
  *     - 显示缓冲 x2  115,200 B x2（320x180 RGB565 双缓冲，防撕裂）
  */
 #pragma once
@@ -43,6 +43,10 @@ extern "C" {
  *  ★ 4 必须是 1280 与 720 的公约数（1/2=640x360、1/4=320x180、1/8=160x90）。 */
 #define VF_W    320u
 #define VF_H    180u
+
+/** 解码源尺寸（本工程唯一媒体档：720p JPEG）。文件预览/播放的抽点也按它算。 */
+#define VF_SRC_W 1280u
+#define VF_SRC_H  720u
 
 /** 一帧取景画面（只读！缓冲归本模块所有，下次 take 到新帧前内容稳定） */
 typedef struct {
@@ -80,6 +84,27 @@ bool viewfinder_take(viewfinder_frame_t *out);
 uint32_t viewfinder_decoded_count(void);    /**< 成功解码并发布的帧数 */
 uint32_t viewfinder_dropped_count(void);    /**< 因限速/解码任务忙而丢掉的帧数 */
 uint32_t viewfinder_last_decode_us(void);   /**< 上一次"解码+抽点"耗时（us） */
+
+/* ---- 文件媒体共享解码入口（S4 文件管理页，2026-09-26）----
+ * 照片预览 / AVI 播放复用本模块的**单例硬件引擎 + staging + 出图缓冲**，
+ * 不再自配 1.8 MB 出图缓冲（PSRAM 扛不起第二份，见 S4 方案 §4.2）。
+ *
+ * ★★ 使用守约（file_mgr_service 必须遵守）：
+ *   1. 仅当 `!viewfinder_is_enabled()` 时使用 —— s_stage/s_dec_out 与 vf_task 互斥；
+ *   2. staging 由调用方借去装 JPEG 码流（fread 目标），借期内不得被别人写；
+ *   3. decode 返回的指针是**单缓冲**，只在下一次 decode 调用前有效；
+ *   4. 典型节奏（播放）：borrow_stage → fread 一帧 → decode_jpeg_mem → 抽点到
+ *      自己的显示缓冲 → 下一帧。 */
+
+/** 借出 JPEG 码流 staging（921,600 B，PSRAM）。未 init 返回 NULL。 */
+uint8_t *viewfinder_borrow_stage(size_t *cap);
+
+/**
+ * @brief 同步解码一段 JPEG（720p）→ 1280x720 RGB565
+ * @return 出图指针（VF_SRC_W*VF_SRC_H uint16，**下次调用前有效**）；失败 NULL
+ * @param err ESP_ERR_INVALID_STATE = 取景器正在用共享缓冲；其余为解码/尺寸对账错误
+ */
+const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len, esp_err_t *err);
 
 #ifdef __cplusplus
 }

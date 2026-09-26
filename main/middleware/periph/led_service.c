@@ -120,7 +120,7 @@ void led_service_init(void)
     /* create in app_main context (proven to work); task only serializes commands */
     ESP_ERROR_CHECK(bsp_led_indicator_create(s_leds, NULL, BSP_LED_NUM));
     s_q = xQueueCreate(8, sizeof(led_cmd_t));
-    xTaskCreate(led_task, "led_task", 4096, NULL, 5, NULL);
+    xTaskCreate(led_task, "led_task", 1536, NULL, 5, NULL);  /* 栈收缩：峰值 656 B，1536=2.3x */
     /* boot: red breathing = not connected */
     set_color(255, 0, 0, true);
     ESP_LOGI(TAG, "RGB LED init: GPIO37, red breathe=disconnected");

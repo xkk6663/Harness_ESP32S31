@@ -120,8 +120,9 @@ void audio_service_init(void)
     MEM_FAIL_FAST(mic_rb_mux && spk_rb_mux, TAG, "xSemaphoreCreateMutex(mic_rb/spk_rb)", 0);
 
     /* 常驻音频任务（栈 8KB：WAV 头 + 采样信息 + 命令缓冲都在栈帧里） */
-    BaseType_t ok = xTaskCreate(audio_task, "audio_task", 8192, NULL, 6, NULL);
-    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreate(audio_task, 8192)", 8192);
+    /* 栈收缩（2026-09-26 水位法）：实测峰值 756 B，2048 = 2.7x 余量 */
+    BaseType_t ok = xTaskCreate(audio_task, "audio_task", 2048, NULL, 6, NULL);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreate(audio_task, 2048)", 2048);
     ESP_LOGI(TAG, "audio_service ready");
 }
 

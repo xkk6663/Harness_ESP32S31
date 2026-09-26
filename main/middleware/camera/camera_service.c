@@ -45,7 +45,10 @@
  * ⇒ 6144 不动，省下本来要花的 2 KB 内部 RAM。
  * 判据留好了：main.c 的 `[stack]` 全任务水位表会在 `hwm ≤ size/8` 时打 "!! 偏紧"；
  * 若以后换成更重的模型（YOLO / 更大输入）或把 run() 挪进来，看到那行再扩。 */
-#define CAM_TASK_STACK         6144
+/* P2-5 复核（2026-09-26 按两次水位观测收敛）：P2-5 时代实测峰值 2,140 B（含
+ * rec_frame_cb 同步写盘路径），今日预览+拍照会话仅 716 B —— 取大者 ×1.5 向上取
+ * 512 ⇒ 3584。回退条件：全路径回归后 [stack] 判"偏紧"就回 6144。 */
+#define CAM_TASK_STACK         3584
 
 static int  s_fd = -1;
 static void *s_buf[BUF_CNT] = {0};

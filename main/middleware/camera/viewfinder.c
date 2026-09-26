@@ -39,9 +39,11 @@
 
 #define TAG "VFD"
 
-/* ---- 源档位（本工程唯一收录的媒体档，见 ov3660_fmt.c / camera_service.h）---- */
-#define SRC_W   1280u
-#define SRC_H   720u
+/* ---- 源档位（本工程唯一收录的媒体档，见 ov3660_fmt.c / camera_service.h）----
+ * 用头文件宏（文件预览/播放也按它算抽点），这里只做一致性锚定。 */
+#define SRC_W   VF_SRC_W
+#define SRC_H   VF_SRC_H
+_Static_assert(SRC_W == 1280u && SRC_H == 720u, "viewfinder source size drift");
 
 /* ---- 稀疏抽点倍率 ----
  * 1280 = 2^8 * 5，720 = 2^4 * 3^2 * 5 ⇒ 公约数 1,2,4,5,8,10,16,20...
@@ -53,9 +55,15 @@
  * 1280 与 720 本来就是 16 的倍数 ⇒ 恰好无补齐。用 out_size 与此对账（见 vf_task）。 */
 #define DEC_OUT_BYTES   (SRC_W * SRC_H * 2u)        /* 1,843,200 */
 
-/* staging：JPEG 码流中转。Q8 档实测 max frame 见 VIDEO 页仪表盘；
- * 192 KB 对 Q8~Q24 绰绰有余，超过就丢帧并告警（而不是静默截断）。 */
-#define STAGE_BYTES     (192u * 1024u)
+/* staging：JPEG 码流中转。
+ * ★★ 上限必须是"驱动单缓冲能交付的最大帧"：esp_video.c:2164-2184 对 JPEG 用
+ *     w*h*bpp/8（bpp=8，esp_video.c:84）= 1280*720 = 921,600 B，本工程 S_FMT
+ *     不设 sizeimage ⇒ 这就是驱动缓冲上限，比它大的帧根本进不了 V4L2。
+ *   【教训】192 KB 时代的实现：Q8~Q24 帧才 30~70 KB 绰绰有余，但 Q1（最高质量）
+ *     单帧轻松超 192 KB ⇒ vf_observe 每帧都丢 ⇒ 取景黑屏（2026-09-26 用户实报）。
+ *   代价：常驻 PSRAM +720 KB（viewfinder 总占用 ~2.2 MB → ~2.97 MB），换来
+ *     "任何质量档预览都不可能因 staging 而丢帧"。 */
+#define STAGE_BYTES     (SRC_W * SRC_H)     /* 921,600 = 驱动 JPEG 缓冲上限 */
 
 /* 取景限速。传感器 12 fps，这里只取 ~6.7 fps：取景够流畅，
  * 又把 PSRAM 带宽（~7 MB/s）与解码 CPU 留给录像/显示。
@@ -98,6 +106,8 @@ static uint32_t          s_seen_seq   = 0;  /* LVGL 侧已看过的序号 */
 static volatile uint32_t s_decoded  = 0;
 static volatile uint32_t s_dropped  = 0;
 static volatile uint32_t s_last_us  = 0;
+/* 超限告警只吼一次的旗标 —— 文件级，enable 时清零（否则复测/换档后永远看不到告警） */
+static bool s_oversize_warned = false;
 
 /* ---------------------------------------------------------------------------
  *  观察者（cam_task 上下文）—— 本模块唯一会被流回调的入口
@@ -111,11 +121,10 @@ static void vf_observe(const uint8_t *data, uint32_t size,
     if (w != SRC_W || h != SRC_H) return;   /* 只认 720p 媒体档；RGB565 预览流不归我们管 */
     if (s_stage_ready)         return;      /* 上一帧还没解码完 ⇒ 丢（限速的一部分） */
     if (size == 0 || size > STAGE_BYTES) {
-        static bool s_warned = false;
-        if (!s_warned) {
+        if (!s_oversize_warned) {
             ESP_LOGW(TAG, "frame size %u > staging %u, drop (raise STAGE_BYTES)",
                      (unsigned)size, (unsigned)STAGE_BYTES);
-            s_warned = true;                /* 只吼一次：每帧打日志会拖垮 fps */
+            s_oversize_warned = true;       /* 只吼一次：每帧打日志会拖垮 fps */
         }
         s_dropped++;
         return;
@@ -293,6 +302,7 @@ esp_err_t viewfinder_enable(void)
 
     s_stage_ready   = false;
     s_last_accept_us = 0;                       /* 立刻收第一帧，别等 150 ms */
+    s_oversize_warned = false;                  /* 本轮还没吼过，超限要重新告警 */
     s_enabled = true;
 
     if (xTaskCreatePinnedToCore(vf_task, "vfind", VF_TASK_STACK, NULL,
@@ -351,3 +361,49 @@ bool viewfinder_take(viewfinder_frame_t *out)
 uint32_t viewfinder_decoded_count(void)  { return s_decoded; }
 uint32_t viewfinder_dropped_count(void)  { return s_dropped; }
 uint32_t viewfinder_last_decode_us(void) { return s_last_us; }
+
+/* ---------------------------------------------------------------------------
+ *  文件媒体共享解码入口（S4 文件管理页；守约见 viewfinder.h）
+ * ------------------------------------------------------------------------- */
+uint8_t *viewfinder_borrow_stage(size_t *cap)
+{
+    if (cap) *cap = STAGE_BYTES;
+    return s_stage;         /* 未 init 时为 NULL，调用方自检 */
+}
+
+const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len, esp_err_t *err)
+{
+    jpeg_decode_cfg_t cfg = {
+        /* ★ 字节序必须 BGR（= 不 scramble），证据见文件头，不要改成 RGB。 */
+        .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+        .rgb_order     = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
+        .conv_std      = JPEG_YUV_RGB_CONV_STD_BT601,
+    };
+    uint32_t out_size = 0;
+    esp_err_t e = ESP_OK;
+
+    if (err) *err = ESP_OK;
+
+    if (!s_inited) {
+        e = viewfinder_init();              /* 兜底懒初始化（同 enable 路径） */
+    } else if (s_enabled) {
+        e = ESP_ERR_INVALID_STATE;          /* ★ 共享缓冲正被 vf_task 用，拒绝 */
+    }
+    if (e == ESP_OK && (jpg == NULL || len == 0)) e = ESP_ERR_INVALID_ARG;
+
+    if (e == ESP_OK) {
+        e = jpeg_decoder_process(s_dec, &cfg, jpg, len, s_dec_out, s_dec_out_sz, &out_size);
+        /* 与 vf_task 同一条对账铁律：720p 无补齐，尺寸一变宁可失败也不画面错乱 */
+        if (e == ESP_OK && out_size != DEC_OUT_BYTES) {
+            ESP_LOGE(TAG, "decoded %u != expected %u (1280x720 RGB565)",
+                     (unsigned)out_size, (unsigned)DEC_OUT_BYTES);
+            e = ESP_ERR_INVALID_SIZE;
+        }
+    }
+
+    if (e != ESP_OK) {
+        if (err) *err = e;
+        return NULL;
+    }
+    return (const uint16_t *)s_dec_out;     /* 单缓冲：下次调用前有效 */
+}

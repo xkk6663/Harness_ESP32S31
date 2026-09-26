@@ -83,8 +83,10 @@ void udp_voice_init(void)
 {
     s_cmd_q = xQueueCreate(8, sizeof(voice_cmd_id_t));
     MEM_FAIL_FAST(s_cmd_q, TAG, "xQueueCreate(8, voice_cmd_id_t)", 8 * sizeof(voice_cmd_id_t));
-    BaseType_t ok = xTaskCreatePinnedToCore(control_task, "udp_voice_ctl", 8192, NULL, 5, NULL, 0);
-    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(udp_voice_ctl, 8192)", 8192);
+    /* 栈收缩（2026-09-26 水位法）：实测峰值 428 B，1536 = 3.6x 余量。
+     * ★ tx/rx 两个任务保持 8192 不动 —— 没跑过通话，没有水位数据。 */
+    BaseType_t ok = xTaskCreatePinnedToCore(control_task, "udp_voice_ctl", 1536, NULL, 5, NULL, 0);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(udp_voice_ctl, 1536)", 1536);
     ESP_LOGI(TAG, "init done, tx=%d rx=%d", UDP_VOICE_TX_PORT, UDP_VOICE_RX_PORT);
 }
 

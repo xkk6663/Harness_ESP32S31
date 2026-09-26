@@ -33,8 +33,9 @@ void link_manager_init(void)
 {
     s_mux = xSemaphoreCreateMutex();
     MEM_FAIL_FAST(s_mux, TAG, "xSemaphoreCreateMutex(link s_mux)", 0);
-    BaseType_t ok = xTaskCreatePinnedToCore(link_task, "link_manager", 8192, NULL, 4, NULL, 0);
-    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(link_manager, 8192)", 8192);
+    /* 栈收缩（2026-09-26 水位法）：实测峰值 1,536 B，3072 = 2x 余量（链路解析最深） */
+    BaseType_t ok = xTaskCreatePinnedToCore(link_task, "link_manager", 3072, NULL, 4, NULL, 0);
+    MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreatePinnedToCore(link_manager, 3072)", 3072);
     ESP_LOGI(TAG, "init done, UDP %d", LINK_SIGNAL_PORT);
 }
 
