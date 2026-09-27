@@ -6,7 +6,9 @@
 
 /**
  * @file tab_record.h
- * @brief REC tab content builder (local 5s test recording).
+ * @brief REC tab：本地录音（一键录/停，存 /sdcard/music，FILES 页回放）。
+ *        2026-09-26 重建版——原版（page_wav_player + record_service 上云链）
+ *        已随 call/rec 阉割删除，本版为纯本地闭环。
  */
 
 #pragma once
@@ -17,12 +19,8 @@
 extern "C" {
 #endif
 
-void tab_record_build(lv_obj_t *tab, lv_group_t *group);
+void tab_record_build(lv_obj_t *screen, lv_group_t *group);
 void tab_record_destroy(void);
-
-/* Re-enable buttons after an audio task finishes (called by audio evt cb). */
-void tab_record_on_play_done(void);
-void tab_record_on_record_done(void);
 
 #ifdef __cplusplus
 }

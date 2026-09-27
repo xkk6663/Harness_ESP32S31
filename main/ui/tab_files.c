@@ -29,6 +29,7 @@
 #include "tab_video.h"
 #include "ui_theme.h"
 #include "middleware/media/file_mgr_service.h"
+#include "middleware/audio/media_player_service.h"
 #include "middleware/periph/sdcard_service.h"
 
 #include "esp_log.h"
@@ -84,6 +85,7 @@ static lv_obj_t *s_title, *s_status;
 static lv_obj_t *s_pv_canvas;       /* 预览/播放画布 640x360 */
 static lv_obj_t *s_pv_hint;         /* "tap to exit"（画在画布上层） */
 static lv_obj_t *s_prog;            /* 播放进度条（画布上层叠加） */
+static lv_obj_t *s_mp_stop_btn;     /* MP3 播放态的大 STOP 按钮（画布中心） */
 static lv_timer_t *s_timer;         /* 事件排空 30ms */
 static lv_timer_t *s_tick_timer;    /* 50ms：帧上画布/倒计时/按钮态（必须可删） */
 static QueueHandle_t s_evt_q;
@@ -96,7 +98,7 @@ static bool     s_del_armed;        /* 两步删除：第一下已按 */
 static int      s_del_ticks;        /* 确认倒计时（refresh 拍数，50ms/拍） */
 static bool     s_pv_shown;         /* 预览/播放首帧已上画布（此前画布不显示） */
 
-typedef enum { MODE_BROWSE = 0, MODE_PREVIEW, MODE_PLAY } files_mode_t;
+typedef enum { MODE_BROWSE = 0, MODE_PREVIEW, MODE_PLAY, MODE_MP3 } files_mode_t;
 static files_mode_t s_mode = MODE_BROWSE;
 
 /* ===========================================================================
@@ -222,6 +224,30 @@ static void open_path(const char *name, bool is_dir)
         file_mgr_post_cmd(&cmd);
         return;
     }
+    /* S5 M2：MP3/WAV 走 media_player_service（音频域，esp_player 链路：
+     * MP3 用 mp3 解，WAV 用 wav 容器 + PCM 解；rec_local 录的 16k WAV
+     * 由 render proc 链（rate_cvt）重采样到 44.1k 输出）。
+     * 与 AVI 正交：互斥由 audio_service ext 协议（REC/小智独占租借）保证。
+     * ★ §43 修：原只认 .mp3，rec_local 录的 .wav 落到 "Unsupported"。 */
+    if (ext != NULL && (strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".wav") == 0)) {
+        s_mode = MODE_MP3;
+        s_pv_shown = false;
+        apply_mode_visibility();
+        lv_label_set_text_static(s_status, "Opening...");
+        lv_obj_set_style_text_color(s_status, COL_SUBTEXT, 0);
+        esp_err_t err = media_player_service_play(full);
+        if (err != ESP_OK) {
+            enter_browse_mode();
+            lv_label_set_text_static(s_status,
+                (err == ESP_ERR_INVALID_STATE) ? "Audio busy (rec/call/AI?)"
+                                               : "Open failed");
+            lv_obj_set_style_text_color(s_status, COL_RED, 0);
+        } else {
+            lv_label_set_text_static(s_status, "Playing MP3");
+            lv_obj_set_style_text_color(s_status, COL_TEXT, 0);
+        }
+        return;
+    }
     lv_label_set_text_static(s_status, "Unsupported file type");
     lv_obj_set_style_text_color(s_status, COL_SUBTEXT, 0);
 }
@@ -264,9 +290,14 @@ static void rebuild_list(void)
     s_sel_btn  = NULL;
 
     for (int i = 0; i < count; i++) {
+        /* ★ §43：音频类（avi/mp3/wav）用 PLAY 图标，其余图片 IMAGE */
+        const char *nm = entries[i].name;
+        bool is_media = entries[i].is_dir ? false :
+                        strstr(nm, ".avi") || strstr(nm, ".AVI") ||
+                        strstr(nm, ".mp3") || strstr(nm, ".MP3") ||
+                        strstr(nm, ".wav") || strstr(nm, ".WAV");
         const char *sym = entries[i].is_dir ? LV_SYMBOL_DIRECTORY
-                        : (strstr(entries[i].name, ".avi") || strstr(entries[i].name, ".AVI"))
-                          ? LV_SYMBOL_PLAY : LV_SYMBOL_IMAGE;
+                        : is_media ? LV_SYMBOL_PLAY : LV_SYMBOL_IMAGE;
         lv_obj_t *btn = lv_list_add_btn(s_list, sym, entries[i].name);
         lv_obj_set_style_bg_color(btn, COL_CARD, 0);
         lv_obj_set_style_bg_color(btn, COL_CYAN, LV_STATE_PRESSED);
@@ -296,10 +327,23 @@ static void apply_mode_visibility(void)
     lv_obj_set_hidden(s_pv_canvas, browse || !s_pv_shown);
     lv_obj_set_hidden(s_pv_hint, browse || !s_pv_shown);
     lv_obj_set_hidden(s_prog, s_mode != MODE_PLAY || !s_pv_shown);
+    /* MP3 态：无视频帧，画布保持隐藏，中央给一个大 STOP 按钮 */
+    lv_obj_set_hidden(s_mp_stop_btn, s_mode != MODE_MP3);
+}
+
+/* MP3 播放态的退出（画布中央 STOP 按钮） */
+static void mp_stop_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    media_player_service_stop();
+    /* 模式回切在 refresh 轮询里做（is_playing()==false → 回浏览态） */
 }
 
 static void enter_browse_mode(void)
 {
+    if (s_mode == MODE_MP3) {
+        media_player_service_stop();    /* 离开 MP3 态必停（幂等） */
+    }
     s_mode = MODE_BROWSE;
     s_pv_shown = false;
     apply_mode_visibility();
@@ -402,6 +446,12 @@ static void refresh(lv_timer_t *t)
 
     /* ---- 预览/播放帧上画布（有新帧才动） ---- */
     if (s_mode != MODE_BROWSE) {
+        if (s_mode == MODE_MP3) {
+            /* MP3：无帧上画布；播完（FINISHED/ERROR 后 is_playing=false）自动回浏览 */
+            if (!media_player_service_is_playing()) {
+                enter_browse_mode();
+            }
+        } else {
         file_mgr_frame_t f;
         if (file_mgr_preview_take(&f)) {
             lv_canvas_set_buffer(s_pv_canvas, (void *)f.buf, (int32_t)f.w, (int32_t)f.h,
@@ -415,6 +465,7 @@ static void refresh(lv_timer_t *t)
         if (s_mode == MODE_PLAY && file_mgr_is_playing()) {
             lv_label_set_text_static(s_status, "Playing - tap picture to stop");
         }
+        }
     }
 
     /* ---- 两步删除确认倒计时 ---- */
@@ -425,7 +476,7 @@ static void refresh(lv_timer_t *t)
     }
 
     /* ---- 播放态按钮禁用（浏览动作在播放时无意义） ---- */
-    if (file_mgr_is_playing()) {
+    if (file_mgr_is_playing() || media_player_service_is_playing()) {
         lv_obj_add_state(s_up_btn, LV_STATE_DISABLED);
         lv_obj_add_state(s_open_btn, LV_STATE_DISABLED);
         lv_obj_add_state(s_del_btn, LV_STATE_DISABLED);
@@ -547,6 +598,21 @@ void tab_files_build(lv_obj_t *screen, lv_group_t *group)
     lv_bar_set_range(s_prog, 0, 100);
     lv_obj_set_hidden(s_prog, true);
 
+    /* ---- MP3 播放态的大 STOP 按钮（画布中心；仅 MODE_MP3 显示） ---- */
+    s_mp_stop_btn = lv_btn_create(screen);
+    lv_obj_set_size(s_mp_stop_btn, 200, 72);
+    lv_obj_set_pos(s_mp_stop_btn, PV_X + (640 - 200) / 2, PV_Y + (360 - 72) / 2);
+    lv_obj_set_style_radius(s_mp_stop_btn, 36, 0);
+    lv_obj_set_style_bg_color(s_mp_stop_btn, COL_RED, 0);
+    lv_obj_set_style_border_width(s_mp_stop_btn, 0, 0);
+    lv_obj_add_event_cb(s_mp_stop_btn, mp_stop_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *mp_lb = lv_label_create(s_mp_stop_btn);
+    lv_label_set_text_static(mp_lb, LV_SYMBOL_STOP "  STOP");
+    lv_obj_set_style_text_color(mp_lb, COL_DARK, 0);
+    lv_obj_set_style_text_font(mp_lb, UI_FONT, 0);
+    lv_obj_center(mp_lb);
+    lv_obj_set_hidden(s_mp_stop_btn, true);
+
     /* ---- 事件队列 + 定时器 ---- */
     s_evt_q = xQueueCreate(EVT_Q_DEPTH, sizeof(file_mgr_evt_t));
     s_timer = lv_timer_create(evt_drain_cb, 30, NULL);
@@ -565,6 +631,7 @@ void tab_files_destroy(void)
 {
     file_mgr_cmd_t cmd = { .id = FMC_STOP };
     file_mgr_post_cmd(&cmd);                    /* 播放中退出主页面：请求停止 */
+    media_player_service_stop();                /* MP3 同理（幂等，未播放无害） */
     if (s_timer) {
         lv_timer_del(s_timer);
         s_timer = NULL;
@@ -604,6 +671,9 @@ void tab_files_set_active(bool active)
         if (file_mgr_is_playing()) {
             file_mgr_cmd_t cmd = { .id = FMC_STOP };
             file_mgr_post_cmd(&cmd);
+        }
+        if (media_player_service_is_playing()) {
+            media_player_service_stop();
         }
         enter_browse_mode();
     }

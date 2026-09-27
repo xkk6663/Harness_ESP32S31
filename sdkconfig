@@ -1258,6 +1258,192 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# ESP Speech Recognition
+#
+# default:
+CONFIG_MODEL_IN_FLASH=y
+# default:
+# CONFIG_MODEL_IN_SDCARD is not set
+# default:
+CONFIG_AFE_INTERFACE_V1=y
+# default:
+CONFIG_SR_NSN_WEBRTC=y
+# default:
+# CONFIG_SR_NSN_NSNET2 is not set
+# default:
+CONFIG_SR_VADN_WEBRTC=y
+# default:
+# CONFIG_SR_VADN_VADNET1_MEDIUM is not set
+
+#
+# Load Multiple Wake Words (WakeNet9s)
+#
+# default:
+# CONFIG_SR_WN_WN9S_HILEXIN is not set
+# default:
+# CONFIG_SR_WN_WN9S_HIESP is not set
+# default:
+# CONFIG_SR_WN_WN9S_NIHAOXIAOZHI is not set
+# default:
+# CONFIG_SR_WN_WN9S_HIJASON is not set
+# end of Load Multiple Wake Words (WakeNet9s)
+
+#
+# Load Multiple Wake Words (WakeNet9 or WakeNet10)
+#
+# default:
+# CONFIG_SR_WN_WN10_HILEXIN_INT16 is not set
+# default:
+# CONFIG_SR_WN_WN10_XIAOAITONGXUE is not set
+# default:
+# CONFIG_SR_WN_WN10_XIAOAITONGXUE_INT16 is not set
+# default:
+# CONFIG_SR_WN_WN10_NIHAOXIAOZHI is not set
+# default:
+# CONFIG_SR_WN_WN10_NIHAOXIAOZHI_INT16 is not set
+# default:
+# CONFIG_SR_WN_WN9_HILEXIN is not set
+# default:
+# CONFIG_SR_WN_WN9_HIESP is not set
+# default:
+# CONFIG_SR_WN_WN10_MOSAICO is not set
+# default:
+# CONFIG_SR_WN_WN10_HEYHERMES is not set
+# default:
+# CONFIG_SR_WN_WN10_HEYNOVA is not set
+# default:
+# CONFIG_SR_WN_WN9L_JA_KONNICHIHAESP_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9L_FR_BONJOURESP_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOMIAOBAN_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOAITONGXUE is not set
+# default:
+# CONFIG_SR_WN_WN9L_XIAOAITONGXUE is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9L_NIHAOXIAOZHI_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_ALEXA is not set
+# default:
+# CONFIG_SR_WN_WN9_JARVIS_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_COMPUTER_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYWILLOW_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HIMFIVE is not set
+# default:
+# CONFIG_SR_WN_WN9_SOPHIA_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYWANDA_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HIJOLLY_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_HIFAIRY_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYPRINTER_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_MYCROFT_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HIJOY_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HIJASON_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_ASTROLABE_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYILY_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_BLUECHIP_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_HIANDY_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYIVY_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9L_HISTACKCHAN_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_HEYKIRA_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9L_HEYGIGI_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOLONGXIAOLONG_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HIMIAOMIAO_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_MIAOMIAOTONGXUE_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOXIAOXIN_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOMEITONGXUE_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HILILI_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HITELLY_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOBINXIAOBIN_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_HAIXIAOWU_TTS is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOYAXIAOYA_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_LINAIBAN_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOSUROU_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOYUTONGXUE_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOMINGTONGXUE_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOKANGTONGXUE_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOJIANXIAOJIAN_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOTEXIAOTE_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOXIAOYI_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOBAIYING_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAODONGDONG_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_HIWALLE_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAOLUXIAOLU_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NIHAOXIAOAN_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NI3HAO3XIAO3MAI4_TTS2 is not set
+# default:
+# CONFIG_SR_WN_WN9_NI3HAO3XIAO3RUI4_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_HAI1XIAO3OU1_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAO3JIA1XIAO3JIA1_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_XIAO3FENG1XIAO3FENG1_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9_HAI1XIAO3XIANG4_TTS3 is not set
+# default:
+# CONFIG_SR_WN_WN9L_NI3HAO3XING1BAO3_TTS3 is not set
+# end of Load Multiple Wake Words (WakeNet9 or WakeNet10)
+
+# default:
+CONFIG_SR_MN_CN_NONE=y
+# default:
+# CONFIG_SR_MN_CN_MULTINET7_QUANT is not set
+# default:
+# CONFIG_SR_MN_CN_MULTINET7_AC_QUANT is not set
+# default:
+CONFIG_SR_MN_EN_NONE=y
+# default:
+# CONFIG_SR_MN_EN_MULTINET7_QUANT is not set
+# default:
+CONFIG_ESP_SR_EXTERNAL_MODEL_PATH=""
+# end of ESP Speech Recognition
+
+#
 # Compiler options
 #
 # CONFIG_COMPILER_OPTIMIZATION_DEBUG is not set
@@ -1634,6 +1820,29 @@ CONFIG_ESP_HTTP_CLIENT_EVENT_POST_TIMEOUT=2000
 # default:
 CONFIG_ESP_HTTP_CLIENT_STRICT_HEADER_BUFFER=y
 # end of ESP HTTP client
+
+#
+# HTTP Server
+#
+# default:
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# default:
+CONFIG_HTTPD_MAX_URI_LEN=512
+# default:
+CONFIG_HTTPD_ERR_RESP_NO_DELAY=y
+# default:
+CONFIG_HTTPD_PURGE_BUF_LEN=32
+# default:
+# CONFIG_HTTPD_LOG_PURGE_DATA is not set
+# default:
+# CONFIG_HTTPD_WS_SUPPORT is not set
+# default:
+# CONFIG_HTTPD_QUEUE_WORK_BLOCKING is not set
+# default:
+CONFIG_HTTPD_ENABLE_EVENTS=y
+# default:
+CONFIG_HTTPD_SERVER_EVENT_POST_TIMEOUT=2000
+# end of HTTP Server
 
 #
 # Hardware Settings
@@ -3886,6 +4095,44 @@ CONFIG_LITTLEFS_ASSERTS=y
 # end of LittleFS
 
 #
+# Xiaozhi Assistant
+#
+# default:
+CONFIG_XIAOZHI_OTA_URL="https://api.tenclass.net/xiaozhi/ota/"
+# default:
+CONFIG_XIAOZHI_INFO_TIMEOUT_MS=30000
+# default:
+CONFIG_XIAOZHI_INFO_BUFFER_SIZE=4096
+# default:
+CONFIG_XIAOZHI_INFO_MAX_RESPONSE_SIZE=8192
+# default:
+CONFIG_XIAOZHI_SYNC_SYSTEM_TIME_FROM_SERVER=y
+
+#
+# Xiaozhi Chat Audio
+#
+# default:
+CONFIG_XIAOZHI_UDP_RECEIVE_BUFFER_SIZE=2048
+# default:
+CONFIG_XIAOZHI_UDP_MAX_AUDIO_PAYLOAD_SIZE=1400
+# default:
+CONFIG_XIAOZHI_MAX_CONSECUTIVE_UDP_ERRORS=10
+# default:
+CONFIG_XIAOZHI_HELLO_MESSAGE_SIZE=1024
+# default:
+CONFIG_XIAOZHI_AUDIO_TASK_CORE=-1
+# default:
+CONFIG_XIAOZHI_AUDIO_TASK_PRIORITY=5
+# default:
+CONFIG_XIAOZHI_AUDIO_TASK_STACK_SIZE=8192
+# default:
+CONFIG_XIAOZHI_AUDIO_TASK_ALLOC_STATIC=y
+# default:
+# CONFIG_XIAOZHI_AUDIO_TASK_ALLOC_DYNAMIC is not set
+# end of Xiaozhi Chat Audio
+# end of Xiaozhi Assistant
+
+#
 # IoT Button
 #
 # default:
@@ -3905,6 +4152,15 @@ CONFIG_ADC_BUTTON_MAX_BUTTON_PER_CHANNEL=8
 # default:
 CONFIG_ADC_BUTTON_SAMPLE_TIMES=1
 # end of IoT Button
+
+#
+# cJSON
+#
+# default:
+CONFIG_CJSON_NESTING_LIMIT=1000
+# default:
+CONFIG_CJSON_CIRCULAR_LIMIT=10000
+# end of cJSON
 
 #
 # CMake Utilities
@@ -3962,6 +4218,35 @@ CONFIG_PIX_CVT_YUV_TO_HSV_SUPPORT=y
 CONFIG_PIX_CVT_YUV_TO_YUV_SUPPORT=y
 # end of Vision/Image: Pixel Convert Support
 # end of ESP-DL Configuration
+
+#
+# DSP Library
+#
+# default:
+CONFIG_DSP_OPTIMIZATIONS_SUPPORTED=y
+# default:
+# CONFIG_DSP_ANSI is not set
+# default:
+CONFIG_DSP_OPTIMIZED=y
+# default:
+CONFIG_DSP_OPTIMIZATION=1
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_512 is not set
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_1024 is not set
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_2048 is not set
+# default:
+CONFIG_DSP_MAX_FFT_SIZE_4096=y
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_8192 is not set
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_16384 is not set
+# default:
+# CONFIG_DSP_MAX_FFT_SIZE_32768 is not set
+# default:
+CONFIG_DSP_MAX_FFT_SIZE=4096
+# end of DSP Library
 
 #
 # Board Support Package (ESP32-S31-Korvo-1)
@@ -4040,6 +4325,102 @@ CONFIG_BSP_LED_RGB_BACKEND_RMT=y
 CONFIG_BSP_I2S_NUM=1
 # end of Audio
 # end of Board Support Package (ESP32-S31-Korvo-1)
+
+#
+# Audio Codec Configuration
+#
+
+#
+# Audio Decoder Configuration
+#
+# CONFIG_AUDIO_DECODER_AAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_DECODER_MP3_SUPPORT=y
+# CONFIG_AUDIO_DECODER_G711_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_AMRNB_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_AMRWB_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_FLAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_DECODER_OPUS_SUPPORT=y
+# CONFIG_AUDIO_DECODER_VORBIS_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_ADPCM_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_ALAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_DECODER_PCM_SUPPORT=y
+# CONFIG_AUDIO_DECODER_SBC_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_LC3_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_G722_SUPPORT is not set
+# end of Audio Decoder Configuration
+
+#
+# Audio Simple Decoder Configuration
+#
+# default:
+CONFIG_AUDIO_SIMPLE_DEC_WAV_SUPPORT=y
+# CONFIG_AUDIO_SIMPLE_DEC_M4A_SUPPORT is not set
+# CONFIG_AUDIO_SIMPLE_DEC_TS_SUPPORT is not set
+# CONFIG_AUDIO_SIMPLE_DEC_OGG_SUPPORT is not set
+# end of Audio Simple Decoder Configuration
+
+#
+# Audio Encoder Configuration
+#
+# CONFIG_AUDIO_ENCODER_AAC_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_G711_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_AMRNB_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_AMRWB_SUPPORT is not set
+# default:
+CONFIG_AUDIO_ENCODER_OPUS_SUPPORT=y
+# CONFIG_AUDIO_ENCODER_ADPCM_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_ALAC_SUPPORT is not set
+# default:
+CONFIG_AUDIO_ENCODER_PCM_SUPPORT=y
+# CONFIG_AUDIO_ENCODER_SBC_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_LC3_SUPPORT is not set
+# default:
+CONFIG_AUDIO_ENCODER_G722_SUPPORT=y
+# end of Audio Encoder Configuration
+# end of Audio Codec Configuration
+
+#
+# Espressif Audio Render Configuration
+#
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_STACK_SIZE=4096
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_CORE_ID=0
+# default:
+CONFIG_ESP_AUDIO_RENDER_MIXER_THREAD_PRIORITY=20
+# end of Espressif Audio Render Configuration
+
+#
+# ESP Audio Simple Player
+#
+
+#
+# Audio Simple Player IO Stream
+#
+# default:
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_HTTP_EN=y
+# default:
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_FILE_EN=y
+# default:
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_EMBED_FLASH_EN=y
+# end of Audio Simple Player IO Stream
+
+#
+# Audio Simple Player Filters
+#
+# default:
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN=y
+# default:
+CONFIG_AUDIO_SIMPLE_PLAYER_RESAMPLE_DEST_RATE=48000
+# default:
+# CONFIG_ESP_AUDIO_SIMPLE_PLAYER_CH_CVT_EN is not set
+# default:
+# CONFIG_ESP_AUDIO_SIMPLE_PLAYER_BIT_CVT_EN is not set
+# end of Audio Simple Player Filters
+# end of ESP Audio Simple Player
 
 #
 # Espressif Camera Sensors Configurations
@@ -4175,6 +4556,44 @@ CONFIG_CODEC_TAS5805M_SUPPORT=y
 # end of Audio Codec Device Configuration
 
 #
+# Espressif Extractor Configuration
+#
+# default:
+CONFIG_EXTRACTOR_CUSTOM_SUPPORT=y
+# default:
+CONFIG_WAV_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_MP4_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_TS_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_OGG_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_AVI_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_AUDIO_ES_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_CAF_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_FLV_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_MJPEG_EXTRACTOR_SUPPORT=y
+# default:
+CONFIG_EXTRACTOR_HELPER_FILE_IO_CACHE_SIZE=1024
+# end of Espressif Extractor Configuration
+
+#
+# ESP H264 Configuration
+#
+# default:
+# CONFIG_ESP_H264_S31_USE_ASM is not set
+# default:
+CONFIG_ESP_H264_DECODER_IRAM=y
+# default:
+# CONFIG_ESP_H264_DUAL_TASK is not set
+# end of ESP H264 Configuration
+
+#
 # ESP LCD TOUCH
 #
 # default:
@@ -4189,6 +4608,49 @@ CONFIG_ESP_LCD_TOUCH_MAX_BUTTONS=1
 # default:
 # CONFIG_LVGL_PORT_ENABLE_PPA is not set
 # end of ESP LVGL PORT
+
+#
+# ESP_Muxer Configuration
+#
+# default:
+CONFIG_ESP_MUXER_MP4_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_TS_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_OGG_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_WAV_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_FLV_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_CAF_SUPPORT=y
+# default:
+CONFIG_ESP_MUXER_AVI_SUPPORT=y
+# end of ESP_Muxer Configuration
+
+#
+# ESP Player
+#
+# default:
+CONFIG_ESP_PLAYER_ENABLE_AUDIO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_VIDEO=y
+
+#
+# At least one of the two options above must stay enabled for a usable player.
+#
+
+#
+# Input IO sources
+#
+# default:
+CONFIG_ESP_PLAYER_ENABLE_FILE_IO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_HTTP_IO=y
+# default:
+CONFIG_ESP_PLAYER_ENABLE_HLS_IO=y
+# end of Input IO sources
+# end of ESP Player
 
 #
 # Espressif SCCB Configurations
@@ -4216,6 +4678,61 @@ CONFIG_ESP_VIDEO_ENABLE_DVP_VIDEO_DEVICE=y
 #
 # end of Video Data Preprocessing
 # end of Espressif Video Configuration
+
+#
+# Video Codec Configuration
+#
+
+#
+# Video Decoder Configuration
+#
+# default:
+CONFIG_VIDEO_DECODER_SW_H264_SUPPORT=y
+# default:
+CONFIG_VIDEO_DECODER_SW_MJPEG_SUPPORT=y
+# default:
+CONFIG_VIDEO_DECODER_HW_MJPEG_SUPPORT=y
+# end of Video Decoder Configuration
+
+#
+# Video Encoder Configuration
+#
+# default:
+CONFIG_VIDEO_ENCODER_SW_H264_SUPPORT=y
+# default:
+CONFIG_VIDEO_ENCODER_HW_MJPEG_SUPPORT=y
+# default:
+CONFIG_VIDEO_ENCODER_SW_MJPEG_SUPPORT=y
+# end of Video Encoder Configuration
+# end of Video Codec Configuration
+
+#
+# Video Render Configuration
+#
+# default:
+# CONFIG_ESP_VIDEO_RENDER_LVGL_BACKEND_SUPPORT is not set
+# default:
+CONFIG_ESP_VIDEO_RENDER_WIDGET_SUPPORT=y
+# default:
+# CONFIG_ESP_VIDEO_RENDER_TEXT_WIDGET_SUPPORT is not set
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_STACK_SIZE=20480
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_CORE_ID=0
+# default:
+CONFIG_ESP_VIDEO_RENDER_BLEND_THREAD_PRIORITY=8
+# default:
+# CONFIG_VIDEO_RENDER_MEASURE_ENABLE is not set
+# end of Video Render Configuration
+
+#
+# ESP WebSocket client
+#
+# default:
+# CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER is not set
+# default:
+# CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK is not set
+# end of ESP WebSocket client
 
 #
 # models: human_face_detect
@@ -4256,6 +4773,107 @@ CONFIG_LEDC_TIMER_BIT_NUM=13
 CONFIG_LEDC_TIMER_FREQ_HZ=5000
 # end of LEDC Config
 # end of LED Indicator
+
+#
+# Model Context Protocol
+#
+# default:
+CONFIG_MCP_TRANSPORT_HTTP_SERVER=y
+# default:
+CONFIG_MCP_HTTP_SSE_ENABLE=y
+# default:
+CONFIG_MCP_HTTP_SSE_MAX_CLIENTS=4
+# default:
+CONFIG_MCP_HTTP_SSE_QUEUE_LEN=32
+# default:
+CONFIG_MCP_HTTP_SSE_REPLAY_DEPTH=128
+# default:
+CONFIG_MCP_HTTP_SSE_TASK_STACK_SIZE=4096
+# default:
+CONFIG_MCP_HTTP_SSE_HEARTBEAT_MS=15000
+# default:
+CONFIG_MCP_HTTP_SESSION_TTL_MS=600000
+# default:
+CONFIG_MCP_RESOURCE_SUBSCRIPTIONS_MAX=64
+# default:
+CONFIG_MCP_HTTP_DEFAULT_PROTOCOL_VERSION="2025-03-26"
+# default:
+# CONFIG_MCP_HTTP_CORS_ENABLE is not set
+# default:
+# CONFIG_MCP_HTTP_AUTH_ENABLE is not set
+# default:
+CONFIG_MCP_HTTP_OAUTH_METADATA_ENABLE=y
+# default:
+CONFIG_MCP_HTTP_OAUTH_ISSUER="https://example.local"
+# default:
+CONFIG_MCP_HTTP_OAUTH_JWKS_URI="https://example.local/.well-known/jwks.json"
+# default:
+CONFIG_MCP_HTTP_OAUTH_AUTH_SERVER="https://example.local"
+# default:
+CONFIG_MCP_HTTP_OAUTH_AUTHORIZATION_ENDPOINT="https://example.local/oauth/authorize"
+# default:
+CONFIG_MCP_HTTP_OAUTH_TOKEN_ENDPOINT="https://example.local/oauth/token"
+# default:
+CONFIG_MCP_HTTP_OAUTH_REGISTRATION_ENDPOINT="https://example.local/oauth/register"
+# default:
+CONFIG_MCP_HTTP_OAUTH_RESOURCE="mcp://esp32"
+# default:
+CONFIG_MCP_TRANSPORT_HTTP_CLIENT=y
+# default:
+CONFIG_MCP_TOOLCALL_STACK_SIZE=8192
+# default:
+CONFIG_MCP_TOOLLIST_MAX_SIZE=8192
+# default:
+CONFIG_MCP_TASK_POLL_INTERVAL_MS=1000
+# default:
+CONFIG_MCP_TASKS_LIST_MAX_COUNT=100
+# end of Model Context Protocol
+
+#
+# Media Library System Abstraction Layer Configuration
+#
+# default:
+CONFIG_MEDIA_LIB_CRYPT_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_SOCKET_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_TLS_ENABLE=y
+# default:
+CONFIG_MEDIA_LIB_NETIF_ENABLE=y
+# default:
+# CONFIG_MEDIA_LIB_MEM_AUTO_TRACE is not set
+# end of Media Library System Abstraction Layer Configuration
+
+#
+# ESP-MQTT Configurations
+#
+# default:
+CONFIG_MQTT_PROTOCOL_311=y
+# default:
+# CONFIG_MQTT_PROTOCOL_5 is not set
+# default:
+CONFIG_MQTT_TRANSPORT_SSL=y
+# default:
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=y
+# default:
+CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE=y
+# default:
+# CONFIG_MQTT_MSG_ID_INCREMENTAL is not set
+# default:
+# CONFIG_MQTT_SKIP_PUBLISH_IF_DISCONNECTED is not set
+# default:
+# CONFIG_MQTT_REPORT_DELETED_MESSAGES is not set
+# default:
+# CONFIG_MQTT_USE_CUSTOM_CONFIG is not set
+# default:
+# CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED is not set
+# default:
+# CONFIG_MQTT_BUFFERS_ON_EXTERNAL_MEMORY is not set
+# default:
+# CONFIG_MQTT_TASK_STACK_ON_EXTERNAL_MEMORY is not set
+# default:
+# CONFIG_MQTT_CUSTOM_OUTBOX is not set
+# end of ESP-MQTT Configurations
 
 #
 # USB-OTG
@@ -4319,6 +4937,18 @@ CONFIG_UVC_CHECK_PAYLOAD_HEADER_EOH=y
 # default:
 CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR=y
 # end of USB HOST UVC
+
+#
+# Audio/Video Processor Configuration
+#
+CONFIG_AUDIO_PROCESSOR_IMPL_GMF=y
+# CONFIG_AUDIO_PROCESSOR_IMPL_LIGHT is not set
+# CONFIG_VIDEO_PROCESSOR_ENABLE is not set
+CONFIG_AUDIO_AFE_ENABLE=y
+# CONFIG_AUDIO_HLS_ENABLE is not set
+# default:
+# CONFIG_MEDIA_DUMP_ENABLE is not set
+# end of Audio/Video Processor Configuration
 
 #
 # LVGL
@@ -5109,8 +5739,8 @@ CONFIG_LV_FS_POSIX_CACHE_SIZE=0
 # CONFIG_LV_USE_FS_UEFI is not set
 # default:
 # CONFIG_LV_USE_FS_FROGFS is not set
-# default:
-# CONFIG_LV_USE_FS_MEMFS is not set
+CONFIG_LV_USE_FS_MEMFS=y
+CONFIG_LV_FS_MEMFS_LETTER=65
 # end of File System
 
 #

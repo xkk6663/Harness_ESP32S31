@@ -22,6 +22,7 @@ extern "C" {
 typedef enum {
     OVERLAY_NONE = 0,
     OVERLAY_WALLPAPER,   /* pull-down wallpaper layer  */
+    OVERLAY_AI,          /* AI chat fullscreen popup (S6) */
 } overlay_type_t;
 
 /* Open an overlay (auto-closes the active one). */

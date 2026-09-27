@@ -19,16 +19,16 @@
 #include "ui/page_splash.h"
 #include "ui/page_main.h"
 #include "ui/overlay_manager.h"
+#include "ui/ui_binfont.h"
 #include "middleware/audio/audio_service.h"
+#include "middleware/audio/rec_local_service.h"
+#include "middleware/audio/media_player_service.h"
+#include "middleware/ai/xiaozhi_service.h"
 #include "middleware/periph/fs_service.h"
 #include "middleware/periph/sdcard_service.h"
 #include "middleware/periph/led_service.h"
 #include "middleware/periph/button_service.h"
 #include "middleware/net/wifi_manager.h"
-#include "middleware/net/session_manager.h"
-#include "middleware/net/link_manager.h"
-#include "middleware/audio/udp_voice.h"
-#include "middleware/audio/record_service.h"
 #include "middleware/net/net_time_service.h"
 #include "middleware/camera/camera_service.h"
 #include "middleware/camera/capture_service.h"       /* ★ S2a 拍照 */
@@ -288,19 +288,16 @@ typedef struct {
 static const task_slot_t s_task_reg[] = {
     /* ★ 本表必须与真实创建处**逐字同步**，否则水位百分比/可缩建议全是错的。
      *   已核对的创建处：esp_lvgl_port（本文件覆盖 12288，实测峰值 6,576 B）、
-     *   audio_service.c / record_service.c / udp_voice.c / link_manager.c /
-     *   net_time_service.c / camera_service.c（CAM_TASK_STACK）/ led_service.c。 */
+     *   audio_service.c / net_time_service.c / camera_service.c（CAM_TASK_STACK）/
+     *   led_service.c。
+     *   ★ 2026-09-27 call/rec 阉割：record_service / udp_voice / link_manager 的
+     *     任务已随功能删除，表中对应行移除。 */
     /* ★ 2026-09-26 按水位全面收缩（本次 [stack] 报告：可省 ~32 KB 内部 RAM）。
-     *   只缩"跑过全路径"的任务；audio_stream / udp_voice_tx / rx 没水位数据，
-     *   保持 8192 不动。回退条件：回归后任一任务被判"偏紧"或出现栈溢出症状。 */
+     *   只缩"跑过全路径"的任务。
+     *   回退条件：回归后任一任务被判"偏紧"或出现栈溢出症状。 */
     { "taskLVGL",       9728 },   /* 峰值 6396，need=9728（P2-4 后二次收缩） */
     { "audio_task",      2048 },  /* 峰值 756 */
-    { "audio_stream",    8192 },  /* 按需创建，无水位数据，不动 */
-    { "record_service",  1536 },  /* 峰值 352 */
-    { "udp_voice_ctl",   1536 },  /* 峰值 428 */
-    { "udp_voice_tx",    8192 },  /* 按需创建，无水位数据，不动 */
-    { "udp_voice_rx",    8192 },  /* 按需创建，无水位数据，不动 */
-    { "link_manager",    3072 },  /* 峰值 1536，留 2x（链路解析最深） */
+    { "rec_task",        4096 },  /* §40 本地录音：SD FATFS IO，内部栈（F35） */
     { "net_time",        8192 },  /* 峰值 4296，吃满一半，不动 */
     { "cam",             3584 },  /* 两次观测大者 2140（含同步写盘路径）×1.5 */
     { "led_task",        1536 },  /* 峰值 656 */
@@ -375,6 +372,13 @@ void app_main(void)
     ESP_ERROR_CHECK(fs_service_mount());
     MEM_STAGE(TAG, "after fs_service_mount");
 
+    /* ★ §50 全 CJK bin 字体（AI 对话页中文）：阶段 1 读文件进 PSRAM。
+     *   F40 约束：~2.7MB 的 flash read 按 16KB 分块、每块关一次全局 cache，
+     *   窗口内任何核的 PSRAM 访问都会 Cache error —— 必须在后续任务创建
+     *   （LVGL/服务任务）之前做，此刻 app_main 串行、零并发，天然安全。 */
+    ui_binfont_load();
+    MEM_STAGE(TAG, "after ui_binfont_load");
+
     /* ★ SD 卡（可选介质）：**故意不用 ESP_ERROR_CHECK** —— 没插卡时只打一条 WARN，
      *   其余功能必须照常（方案 §9 阶段 S1 的验收判据之一）。
      *   位置刻意在 bsp_display_start() 之前：此刻内部 RAM 最空、PSRAM 尚未被切碎，
@@ -420,6 +424,12 @@ void app_main(void)
     bsp_display_start_with_config(&dsp_cfg);
     MEM_STAGE(TAG, "after bsp_display_start");
 
+    /* ★ §50 阶段 2：lv_init() 已在 bsp_display_start 内完成，纯 RAM 解析
+     *   成 LVGL 运行时字体（dynamic_glyph_load=ON，位图按需现读）。失败时
+     *   ui_binfont_get() 返 NULL，tab_ai 自动回退 cn_20。 */
+    ui_binfont_attach();
+    MEM_STAGE(TAG, "after ui_binfont_attach");
+
     bsp_display_lock(0);
     lv_timer_create(stack_hwm_cb, 10000, NULL);
     bsp_display_unlock();
@@ -429,6 +439,8 @@ void app_main(void)
     MEM_STAGE(TAG, "after fs_service_init");
     audio_service_init();
     MEM_STAGE(TAG, "after audio_service_init");
+    rec_local_service_init();   /* ★ §40 本地录音（ext EXCLUSIVE mic 租借） */
+    MEM_STAGE(TAG, "after rec_local_service_init");
 
     led_service_init();
     MEM_STAGE(TAG, "after led_service_init");
@@ -442,14 +454,6 @@ void app_main(void)
     MEM_STAGE(TAG, "before wifi_manager_init");
     wifi_manager_init();
     MEM_STAGE(TAG, "after wifi_manager_init");
-    session_manager_init();
-    MEM_STAGE(TAG, "after session_manager_init");
-    link_manager_init();
-    MEM_STAGE(TAG, "after link_manager_init");
-    udp_voice_init();
-    MEM_STAGE(TAG, "after udp_voice_init");
-    record_service_init();
-    MEM_STAGE(TAG, "after record_service_init");
     camera_service_init();
     MEM_STAGE(TAG, "after camera_service_init");
     /* ★ 2026-09-25：取景器常驻缓冲（硬件 JPEG 解码出图 1.8 MB + staging 192 KB +
@@ -467,6 +471,13 @@ void app_main(void)
      *   ★ 失败不中断开机：FILES 页所有操作会在守卫处被拒（状态行报错）。 */
     file_mgr_init();
     MEM_STAGE(TAG, "after file_mgr_init");
+    /* ★ S5 M2/M3：MP3 播放服务（esp_player 链路惰性建，首次 PLAY 才占内存）+
+     *   小智对话服务（只建任务/队列；音频管线与网络会话在对话期才建立）。
+     *   两者都不在此占 codec —— 音频出声一律经 audio_service ext 协议仲裁。 */
+    media_player_service_init();
+    MEM_STAGE(TAG, "after media_player_service_init");
+    xiaozhi_service_init();
+    MEM_STAGE(TAG, "after xiaozhi_service_init");
     /* ★ S2a/S2b：拍照与录像服务。两者都**不建常驻任务**
      *   （拍照/录像时才建一次性任务，收尾完即删），所以这里不占内部 RAM：
      *   - capture_service_init 只是把状态归零；

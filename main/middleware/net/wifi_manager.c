@@ -197,6 +197,40 @@ static int  s_retry_num;
 static char s_cur_ssid[WIFI_SSID_LEN_MAX + 1];
 static wifi_store_t s_pending_store;       /* 自动连接扫描期间暂存凭证表 */
 static esp_timer_handle_t s_reconnect_timer;
+static esp_timer_handle_t s_heal_timer;
+static bool s_wifi_stopped;    /* give-up 后 esp_wifi_stop 过，自愈时要先 start */
+
+/* ★ §41 断连自愈：give up ≠ 永久死亡。
+ * 实证（2026-09-26）：reason=200 bcn_timeout 后 10 连击 NO_AP_FOUND（两个 SSID
+ * 同时不可见）= 路由器 2.4G 假死/重启；旧逻辑 give up + esp_wifi_stop() 后
+ * **永不重试**，路由器几分钟后恢复、音箱却永久离线。
+ * 自愈 = 每 60s 重跑 auto_connect（scan→connect），连上即由 GOT_IP 停表。 */
+#define WIFI_HEAL_PERIOD_MS  60000
+
+static void heal_timer_arm(void)
+{
+    esp_timer_stop(s_heal_timer);   /* 幂等：已停时无害 */
+    esp_timer_start_periodic(s_heal_timer, (uint64_t)WIFI_HEAL_PERIOD_MS * 1000ULL);
+}
+
+static void heal_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_connected || s_role != WIFI_ROLE_STA) {
+        return;                       /* 兜底：连着/AP 角色不动作 */
+    }
+    if (s_phase != PHASE_IDLE || s_have_active) {
+        return;                       /* 正在尝试或用户手动流程中，不打扰 */
+    }
+    if (s_wifi_stopped) {
+        if (esp_wifi_start() != ESP_OK) {
+            return;
+        }
+        s_wifi_stopped = false;
+    }
+    ESP_LOGW(TAG, "heal: retry auto-connect (router may be back)");
+    wifi_manager_auto_connect();
+}
 
 static void notify(wifi_evt_t evt, const char *info)
 {
@@ -292,8 +326,10 @@ static void next_candidate_or_giveup(void)
         s_phase = PHASE_IDLE;
         s_have_active = false;
         s_connected = false;
-        ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up");
+        ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up (heal timer armed)");
         s_enabled = false; esp_wifi_stop();  /* auto-disable after 5 retries */
+        s_wifi_stopped = true;
+        heal_timer_arm();                    /* ★ §41：60s 后自愈重扫 */
         notify(WIFI_EVT_ALL_FAILED, NULL);
     }
 }
@@ -424,8 +460,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 apply_candidate(&s_candidates[0]);
             } else {
                 s_phase = PHASE_IDLE;
-                ESP_LOGW(TAG, "no saved Wi-Fi visible, give up");
+                ESP_LOGW(TAG, "no saved Wi-Fi visible, give up (heal timer armed)");
                 s_enabled = false; esp_wifi_stop();  /* auto-disable: no saved AP */
+                s_wifi_stopped = true;
+                heal_timer_arm();                    /* ★ §41：60s 后自愈重扫 */
                 notify(WIFI_EVT_ALL_FAILED, NULL);
             }
         } else {
@@ -438,7 +476,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_connected = true;
         s_phase = PHASE_IDLE;
         s_have_active = true;
+        s_enabled = true;               /* ★ §41：自愈重连成功，UI 开关态归位 */
         esp_timer_stop(s_reconnect_timer);
+        esp_timer_stop(s_heal_timer);   /* ★ §41：连上了，自愈表停 */
         ESP_LOGI(TAG, "got ip: %s", s_ip);
         /* ★ P0-1 补盲区：上电账单原来看不出"WiFi 关联 + DHCP"这一段吃了多少内部 RAM。
          *   实测：关联+TLS 那段窗口（splash 与 camera 埋点之间）内部 heap 少 28KB、
@@ -493,6 +533,14 @@ void wifi_manager_init(void)
         .name = "wifi_rc",
     };
     ESP_ERROR_CHECK(esp_timer_create(&targ, &s_reconnect_timer));
+
+    /* §41 断连自愈定时器（60s 周期，give up 后武装） */
+    esp_timer_create_args_t harg = {
+        .callback = heal_timer_cb,
+        .name = "wifi_heal",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&harg, &s_heal_timer));
+    s_wifi_stopped = false;
 
     s_client_mtx = xSemaphoreCreateMutex();
 

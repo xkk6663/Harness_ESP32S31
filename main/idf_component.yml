@@ -3,7 +3,36 @@ dependencies:
     version: '*'
   esp_new_jpeg: ^1
   espressif/zlib: ^1.3.2~1
-  espressif/esp-dl: "^3.3"
+  # ★ esp-dl 锁 3.3.11：^3.3 会解析到 3.3.12，其 zip 在中国镜像
+  #   components-file.espressif.com.cn 上 403（2026-09-26 实测，302→.cn→403）；
+  #   3.3.11 本地已装且编译验证过 ⇒ 锁定后零下载。
+  espressif/esp-dl: "3.3.11"
   espressif/human_face_detect: "^0.4"
+  ## ---- S5 M2：MP3 本地播放（main 主线同款，同芯片已验证）----
+  # esp_player 1.0.6 锁定 gmf 全家 ~1.0（1.0.5/1.0.6/1.0.7 同约束；1.0.0 才是 0.8 代）。
+  espressif/esp_player: "1.0.6"
+  ## ---- S5 M3：小智对话 ----
+  # ★ 全 1.0 代组合（2026-09-26 依赖裁决）：av_processor 0.5.x 全系要求
+  #   esp_audio_render ^0.7/^0.8 + gmf_ai_audio ~0.7/~0.8（0.8 代），与 esp_player
+  #   1.0.6 的 ~1.0 硬冲突（registry manifest 实证，无交集）⇒ 只能升 av_processor
+  #   0.7.0（它要求 esp_audio_render ~1.0.0 + gmf_ai_audio ^1.0.0 + esp_audio_codec
+  #   ^2.5.0，与 esp_player 1.0.6 同代自洽）。
+  # ★ 代价：vocat 代码按 gmf_ai_audio 0.8.x / av_processor 0.5.x API 写，1.0.x 的
+  #   audio_processor.h / esp_gmf_afe.h 接口可能变化 ⇒ xiaozhi_service.c 编译期对齐。
+  jason-mao/av_processor: "0.7.0"
+  espressif/gmf_ai_audio: "~1.0"
+  ## ★ 显式声明 av_processor 的两个"条件依赖"（rules: if AUDIO_PROCESSOR_IMPL_GMF）：
+  ##   第一轮 configure 时 sdkconfig 还没有该符号 ⇒ 管理器不拉取 ⇒ main 的
+  ##   PRIV_REQUIRES 解析失败（2026-09-26 实报 unknown name）。声明进来进 lock，
+  ##   配合 managed_components 手动预置（zip 走 7890 海外代理下载，.cn 镜像 403）。
+  ##   esp_hls_stream 必须用 1.0.4（1.0.0-1.0.2 要求 gmf_io ~0.8，与全 1.0 代死结）。
+  espressif/media_lib_sal: "1.0.0"
+  espressif/esp_hls_stream: "1.0.4"
+  ## gmf_core/gmf_audio/gmf_io 不再显式 pin：esp_player ~1.0 + gmf_ai_audio ~1.0
+  ## 已把三者锁进 1.0.x（0.8 pin 与 esp_player 死结，2026-09-26 实测）。
+  ## 不引入（S5 §4.6.1）：78/xiaozhi-fonts、esp_emote_expression、esp_mmap_assets、
+  ## esp_board_manager（绑定点直接喂 audio_service 句柄）。
+  ## 另：sdkconfig.defaults 里 CONFIG_VIDEO_PROCESSOR_ENABLE=n，
+  ## 否则 av_processor 条件依赖会把 esp_capture+esp_video_codec 拉进来（不需要）。
 description: BSP Display Audio Photo Example
 # esp_littlefs 由工程本地 components/esp_littlefs 提供（组件注册表 403，已离线 clone）

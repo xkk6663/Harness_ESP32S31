@@ -1,15 +1,24 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # Note: if you change the phy_init or app partition offset, make sure to change the offset in Kconfig.projbuild
-# ★★ 2026-09-25 §28：app bin 涨到 0x507ad0，超出 0x500000 的 OTA 槽 0x7ad0（31 KB）
-#    ⇒ 两个 OTA 槽各扩到 0x600000（6 MB），storage 后移。16 MB flash 仍被精确占满：
-#      storage 结束 = 0xC20000 + 0x3E0000 = 0x1000000 ✓
-#    ★ 改分区表后必须 `idf.py flash`（全量，含 ota_data_initial.bin 复位 otadata）
-#      + `idf.py storage-flash` 重烧素材镜像（storage 偏移变了，旧数据无人读）。
-#      nvs(0x9000) 不动 ⇒ WiFi 配置保留。
-#    ★ ota_1 现在的偏移 0x620000 恰好是**改造前** storage 的旧偏移 —— 别被旧笔记带偏。
+# ★★ S5 v1.1（2026-09-26 定稿）：布局与用户已烧录验证过的 v1 完全一致（偏移/大小零变化，
+#    上机功能正常），仅 srmodels → model 改名对齐 esp-sr 生态默认
+#    （esp_srmodel_init("model")；vocat/xiaozhi-esp32 官方均用此名）。
+#      0x20000+0x700000=0x720000 → 0x720000+0x300000=0xA20000 → 0xA20000+0x5E0000=0x1000000 ✓
+#    ★ 放弃双 OTA：单 app 槽 OTA 实质失效，回退唯一手段 = USB 全量烧录。otadata 保留无害。
+#    ★ model（data/spiffs, 3MB）：esp-sr 模型分区，整分区 mmap 零拷贝读模型——必须独立
+#      裸分区（littlefs 文件物理不连续无法 mmap）。3MB 预留 > vocat 实证 912KB，充足。
+#      ★ v1 无唤醒词（按键触发 + ai_mode_wakeup=false）⇒ model 分区暂不烧录；
+#        唤醒词回归时 `esptool write_flash 0x720000 srmodels.bin`，无需改表。
+#    ★ storage 0xA20000/0x5E0000：与已烧录版本一致 ⇒ storage-flash 重烧素材与否均可
+#      （偏移未变，旧素材仍可读）；app 槽 7MB，当前 bin 0x507ad0，余 ~1.9MB 给新依赖。
+#    ★ 烧录：`idf.py reconfigure`（改名生效）→ `idf.py build` → `idf.py flash`。
+#      app 分区偏移/大小与 subtype 均未变，无需 erase-flash、无需 storage-flash。
+#    ★ 历史：§28 双 OTA 6+6MB → S5 v1 单 app 7MB + srmodels 3MB + storage 5.875MB
+#      （已烧录验证）→ S5 v1.1 仅改名 srmodels→model（曾短暂评估 vocat 布局
+#      model 912KB+nvs 64K+storage 8MB，用户拍板保持已验证布局不动）。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 otadata,  data, ota,     0x11000,  0x2000,
-ota_0,    app,  ota_0,   0x20000,  0x600000,
-ota_1,    app,  ota_1,   0x620000, 0x600000,
-storage,  data, littlefs, 0xC20000, 0x3E0000,
+ota_0,    app,  ota_0,   0x20000,  0x700000,
+model,    data, spiffs,  0x720000, 0x300000,
+storage,  data, littlefs, 0xA20000, 0x5E0000,

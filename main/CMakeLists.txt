@@ -1,11 +1,10 @@
 idf_component_register(SRCS
                         "app/main.c"
                         "middleware/audio/audio_service.c"
-                        "middleware/audio/udp_voice.c"
-                        "middleware/audio/record_service.c"
+                        "middleware/audio/rec_local_service.c"
+                        "middleware/audio/media_player_service.c"
+                        "middleware/ai/xiaozhi_service.c"
                         "middleware/net/wifi_manager.c"
-                        "middleware/net/session_manager.c"
-                        "middleware/net/link_manager.c"
                         "middleware/net/net_time_service.c"
                         "middleware/periph/fs_service.c"
                         "middleware/periph/sdcard_service.c"
@@ -27,14 +26,14 @@ idf_component_register(SRCS
                         "ui/ui_common.c"
                         "ui/page_splash.c"
                         "ui/page_main.c"
-                        "ui/tab_call.c"
                         "ui/tab_record.c"
+                        "ui/overlay_ai.c"
+                        "ui/ui_binfont.c"
                         "ui/tab_camera.c"
                         "ui/tab_video.c"
                         "ui/tab_files.c"
                         "ui/tab_sys_entry.c"
                         "ui/overlay_wallpaper.c"
-                        "ui/page_wav_player.c"
                         "ui/page_wifi.c"
                         "ui/page_bluetooth.c"
                         "ui/page_rgb.c"
@@ -48,12 +47,17 @@ idf_component_register(SRCS
                                     "ui/ui_manager"
                                     "middleware"
                                     "middleware/audio"
+                                    "middleware/ai"
                                     "middleware/net"
                                     "middleware/periph"
                                     "middleware/camera"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
                                     esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1
                                     esp_driver_jpeg
+                                    ## ---- S5 M2/M3：MP3 播放 + 小智对话（组件名以拉取后为准）----
+                                    esp_player esp_audio_render esp_extractor esp_audio_codec
+                                    media_lib_sal gmf_core gmf_audio gmf_io
+                                    av_processor gmf_ai_audio esp-sr esp_xiaozhi
                                     fatfs sdmmc)
 
 # =============================================================================
@@ -78,6 +82,27 @@ idf_component_register(SRCS
 # =============================================================================
 target_include_directories(${COMPONENT_LIB} PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../managed_components/espressif__esp_cam_sensor/sensors/ov3660/private_include")
+
+# =============================================================================
+#  ★ mcp-c-sdk × GCC 15.2 兼容补丁（2026-09-26，build 实报）
+#
+#  现象：espressif__mcp-c-sdk 里 8+ 处 `strncpy(dst, src, sizeof(dst) - 1)` 模式
+#        （截断+手动补 NUL 的合法写法）触发 GCC 15 新的 -Wstringop-truncation，
+#        而 IDF 全局 -Werror 把它升级成 error ⇒ 编译失败。
+#        该组件按老 GCC 发布；IDF 自带组件全部为 GCC 15.2 适配过，无此问题。
+#  处置：对**整个组件**把该告警从 -Werror 降回 warning（同 IDF 自己的
+#        -Wno-error=deprecated-declarations 惯例），不逐个改 managed 源码
+#        （重新求解会被冲掉）。仅此一个组件、仅此一个告警，影响面最小。
+#  依赖：main 在组件拓扑序的最后（依赖 esp_xiaozhi→mcp-c-sdk），
+#        此时 mcp 的 target 已注册，可安全 target_compile_options。
+# =============================================================================
+idf_component_get_property(_mcp_lib espressif__mcp-c-sdk COMPONENT_LIB)
+if(_mcp_lib)
+    target_compile_options(${_mcp_lib} PRIVATE -Wno-error=stringop-truncation)
+else()
+    message(WARNING "mcp-c-sdk target not found; GCC15 strncpy patch skipped")
+endif()
+
 
 
 # =============================================================================

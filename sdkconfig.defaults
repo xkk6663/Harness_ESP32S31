@@ -195,3 +195,55 @@ CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=y
 ##    ⇒ 现状是两害相权，唯一出路是"消灭 flash 擦写"或"关掉 bounce 改 GDMA 直读 PSRAM"
 ##      （GDMA 不经过 CPU cache，见 §11 的 A/B 实验）。
 # CONFIG_LCD_RGB_ISR_IRAM_SAFE is not set
+
+## ---------------------------------------------------------------------------
+## ★ S5 M3 小智 / av_processor 0.7.0（2026-09-26）
+##   ⚠ 这些符号来自 av_processor 的 Kconfig，组件首次参与构建后才存在；
+##     初次写进 defaults 即可，reconfigure 成功后应核对顶层 sdkconfig 同值。
+## ---------------------------------------------------------------------------
+## GMF 实现（默认就是 y，显式写出以便组件管理器评估 $CONFIG 条件时确定）。
+CONFIG_AUDIO_PROCESSOR_IMPL_GMF=y
+## ★★ 必须关！S31 上默认 y ⇒ 会把 esp_capture + esp_video_codec 两个大包拉进
+##   依赖图（条件依赖 rules），我们有自己的摄像头管线，纯浪费 flash/构建时间。
+CONFIG_VIDEO_PROCESSOR_ENABLE=n
+## AFE 全双工前端（S31 默认 y，小智上行 VAD/AEC 依赖它，显式固化）。
+CONFIG_AUDIO_AFE_ENABLE=y
+## HLS 在线播放（.m3u8）不需要，关掉省 flash（S31 默认 y）。
+# CONFIG_AUDIO_HLS_ENABLE is not set
+## 媒体转储（调试用）保持默认 n。
+
+## ---------------------------------------------------------------------------
+## ★ S5 音频编解码裁剪（2026-09-26，app 超 ota_0 分区 19.4KB 实报）
+##   libesp_audio_codec.a 全格式默认拉满占了 ~962KB flash；
+##   本工程只需要 MP3 解(MP3 v1) + Opus 编/解(小智) + PCM 解(WAV) + WAV 容器，
+##   Opus 之外编码全无用。后续要 AAC 再单独打开。
+## ---------------------------------------------------------------------------
+# CONFIG_AUDIO_DECODER_AAC_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_G711_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_AMRNB_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_AMRWB_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_FLAC_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_VORBIS_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_ADPCM_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_ALAC_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_SBC_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_LC3_SUPPORT is not set
+# CONFIG_AUDIO_DECODER_G722_SUPPORT is not set
+# CONFIG_AUDIO_SIMPLE_DEC_M4A_SUPPORT is not set
+# CONFIG_AUDIO_SIMPLE_DEC_TS_SUPPORT is not set
+# CONFIG_AUDIO_SIMPLE_DEC_OGG_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_AAC_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_G711_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_AMRNB_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_AMRWB_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_ADPCM_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_ALAC_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_SBC_SUPPORT is not set
+# CONFIG_AUDIO_ENCODER_LC3_SUPPORT is not set
+
+## ★ §50 AI 对话页中文：全 CJK bin 字体从 PSRAM 加载（littlefs_content/fonts/） ##
+## `lv_binfont_create_from_buffer()` 依赖 memfs（LV_USE_FS_MEMFS），
+## 它把内存里的字体文件当"伪文件"喂给 lv_fs，**不是** FS_POSIX。
+## LETTER=65（'A'）为 memfs 盘符；本分支 POSIX=76（'L'），不冲突。
+CONFIG_LV_USE_FS_MEMFS=y
+CONFIG_LV_FS_MEMFS_LETTER=65
