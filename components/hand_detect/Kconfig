@@ -1,0 +1,21 @@
+menu "models: hand_detect"
+    choice
+        prompt "default model"
+        default ESPDET_PICO_224_224_HAND
+        help
+            default hand_detect model
+        config ESPDET_PICO_224_224_HAND
+            bool "espdet_pico_224_224_hand"
+    endchoice
+
+    config DEFAULT_HAND_DETECT_MODEL
+        int
+        default 0 if ESPDET_PICO_224_224_HAND
+
+    config HAND_DETECT_MODEL_SDCARD_DIR
+        string "hand_detect model sdcard dir"
+        default "models"
+        help
+            Directory of models relative to sdcard mount point.
+            ★ 上游默认值只写了 s3/p4（不含 S31），本工程必须 "models"。
+endmenu

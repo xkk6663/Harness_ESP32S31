@@ -14,6 +14,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -27,10 +28,12 @@
 static lv_obj_t *s_state_label;
 static lv_obj_t *s_start_btn;
 static lv_obj_t *s_ap_list;
-static lv_obj_t *s_pwd_row;       /* textarea + keyboard container, hidden until AP picked */
+static lv_obj_t *s_pwd_row;       /* full-page connect sub-view, hidden until AP picked */
 static lv_obj_t *s_pwd_ta;
 static lv_obj_t *s_kb;
 static lv_obj_t *s_connect_btn;
+static lv_obj_t *s_ssid_lab;      /* target SSID shown in connect sub-view header */
+static lv_obj_t *s_cancel_btn;
 static lv_timer_t *s_poll_timer;
 static lv_obj_t *s_mode_btn;
 static lv_obj_t *s_mode_lab;
@@ -47,7 +50,7 @@ static char s_ip[16];
 static volatile bool s_scan_done;
 static volatile bool s_got_ip;
 static volatile bool s_state_changed;
-static char s_state_txt[40];
+static char s_state_txt[80];      /* "Connected: <32B ssid> (<15B ip>)" needs > 40 */
 
 /* ---- wifi event -> flags only (do not touch LVGL here) ---- */
 static void wifi_evt_cb(wifi_evt_t evt, const char *info)
@@ -81,6 +84,58 @@ static void wifi_evt_cb(wifi_evt_t evt, const char *info)
 
 static void ap_click_cb(lv_event_t *e);
 
+/* ---- connect sub-view (full-page password entry) ----
+ * 点选 AP 后独占整页：隐藏主开关/模式/扫描/列表，pwd_row 放大占满剩余空间，
+ * 保证键盘与 CONNECT 按钮完整可见可点（旧版 pwd_row 230px 被页面裁掉，键盘够不着）。 */
+static void show_connect_view(bool enter)
+{
+    lv_obj_set_hidden(s_power_btn, enter);
+    lv_obj_set_hidden(s_mode_btn, enter);
+    lv_obj_set_hidden(s_start_btn, enter);
+    lv_obj_set_hidden(s_ap_list, enter);
+    lv_obj_set_hidden(s_pwd_row, !enter);
+    if (enter) {
+        lv_keyboard_set_textarea(s_kb, s_pwd_ta);
+    } else {
+        lv_keyboard_set_textarea(s_kb, NULL);
+        lv_textarea_set_text(s_pwd_ta, "");
+    }
+}
+
+static void do_connect(void)
+{
+    const char *pass = lv_textarea_get_text(s_pwd_ta);
+    wifi_manager_connect(s_cur_ssid, pass);
+    show_connect_view(false);     /* 回列表视图，状态栏显示 Connecting... */
+}
+
+static void connect_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    do_connect();
+}
+
+/* 键盘回车（✓）键 → textarea 收到 LV_EVENT_READY，直接连，省去够按钮 */
+static void ta_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    do_connect();
+}
+
+static void cancel_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    show_connect_view(false);
+    snprintf(s_state_txt, sizeof(s_state_txt), "Cancelled");
+    s_state_changed = true;
+}
+
+/* AP 行删除时释放 strdup 的 ssid（lv_obj_clean 只删对象，user_data 会漏） */
+static void ap_row_delete_cb(lv_event_t *e)
+{
+    free(lv_event_get_user_data(e));
+}
+
 static void refresh_ap_list(void)
 {
     /* clear old rows */
@@ -102,10 +157,11 @@ static void refresh_ap_list(void)
         lv_obj_set_style_text_color(lab, COL_TEXT, 0);
         lv_obj_center(lab);
 
-        /* stash ssid in user_data */
+        /* stash ssid in user_data (freed on row delete) */
         char *ssid_copy = strdup(buf[i].ssid);
         lv_obj_set_user_data(btn, ssid_copy);
         lv_obj_add_event_cb(btn, ap_click_cb, LV_EVENT_CLICKED, ssid_copy);
+        lv_obj_add_event_cb(btn, ap_row_delete_cb, LV_EVENT_DELETE, ssid_copy);
     }
     if (n == 0) {
         lv_obj_t *empty = lv_label_create(s_ap_list);
@@ -114,7 +170,7 @@ static void refresh_ap_list(void)
     }
 }
 
-/* AP row clicked: remember ssid, reveal password + keyboard */
+/* AP row clicked: remember ssid, switch to full-page connect sub-view */
 static void ap_click_cb(lv_event_t *e)
 {
     const char *ssid = (const char *)lv_event_get_user_data(e);
@@ -125,10 +181,10 @@ static void ap_click_cb(lv_event_t *e)
     s_cur_ssid[sizeof(s_cur_ssid) - 1] = 0;
 
     lv_textarea_set_text(s_pwd_ta, "");
+    lv_label_set_text(s_ssid_lab, s_cur_ssid);
     snprintf(s_state_txt, sizeof(s_state_txt), "Selected: %s", ssid);
     s_state_changed = true;
-    lv_obj_set_hidden(s_pwd_row, false);
-    lv_keyboard_set_textarea(s_kb, s_pwd_ta);
+    show_connect_view(true);
 }
 
 static void mode_btn_cb(lv_event_t *e)
@@ -153,16 +209,6 @@ static void start_btn_cb(lv_event_t *e)
     snprintf(s_state_txt, sizeof(s_state_txt), "Scanning...");
     s_state_changed = true;
     wifi_manager_start_scan();
-}
-
-static void connect_btn_cb(lv_event_t *e)
-{
-    (void)e;
-    const char *pass = lv_textarea_get_text(s_pwd_ta);
-    wifi_manager_connect(s_cur_ssid, pass);
-    /* hide keyboard after connect */
-    lv_obj_set_hidden(s_pwd_row, true);
-    lv_keyboard_set_textarea(s_kb, NULL);
 }
 
 static void poll_cb(lv_timer_t *t)
@@ -227,7 +273,8 @@ static void poll_cb(lv_timer_t *t)
     }
     if (s_got_ip) {
         s_got_ip = false;
-        snprintf(s_state_txt, sizeof(s_state_txt), "Connected: %s", s_ip);
+        snprintf(s_state_txt, sizeof(s_state_txt), "Connected: %s (%s)",
+                 wifi_manager_get_sta_ssid(), s_ip);
         s_state_changed = true;
     }
     if (s_state_changed) {
@@ -303,31 +350,59 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     lv_obj_set_flex_flow(s_ap_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_ap_list, 4, 0);
 
-    /* password row: textarea + keyboard (hidden until an AP is picked) */
+    /* connect sub-view: ssid header + textarea + keyboard + connect button
+     * (hidden until an AP is picked; then shown full-page over the list) */
     s_pwd_row = lv_obj_create(page);
-    lv_obj_set_size(s_pwd_row, BSP_LCD_H_RES - 80, 230);
+    lv_obj_set_size(s_pwd_row, BSP_LCD_H_RES - 80, 340);
     lv_obj_set_style_bg_color(s_pwd_row, COL_CARD, 0);
     lv_obj_set_style_border_color(s_pwd_row, COL_BORDER, 0);
     lv_obj_set_style_border_width(s_pwd_row, 1, 0);
     lv_obj_set_style_radius(s_pwd_row, 10, 0);
+    lv_obj_set_style_pad_all(s_pwd_row, 8, 0);
     lv_obj_set_flex_flow(s_pwd_row, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_pwd_row, 4, 0);
+    lv_obj_set_scrollable(s_pwd_row, false);
     lv_obj_set_hidden(s_pwd_row, true);
+
+    /* header: target SSID + cancel */
+    lv_obj_t *hdr = lv_obj_create(s_pwd_row);
+    lv_obj_set_size(hdr, BSP_LCD_H_RES - 110, 32);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_set_scrollable(hdr, false);
+
+    s_ssid_lab = lv_label_create(hdr);
+    lv_label_set_text_static(s_ssid_lab, "");
+    lv_obj_set_style_text_color(s_ssid_lab, COL_TEXT, 0);
+    lv_obj_align(s_ssid_lab, LV_ALIGN_LEFT_MID, 0, 0);
+
+    s_cancel_btn = lv_button_create(hdr);
+    lv_obj_set_size(s_cancel_btn, 90, 30);
+    lv_obj_set_style_bg_color(s_cancel_btn, COL_RED, 0);
+    lv_obj_set_style_radius(s_cancel_btn, 8, 0);
+    lv_obj_align(s_cancel_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_t *xl = lv_label_create(s_cancel_btn);
+    lv_label_set_text_static(xl, LV_SYMBOL_CLOSE"  Cancel");
+    lv_obj_set_style_text_color(xl, COL_DARK, 0);
+    lv_obj_center(xl);
+    lv_obj_add_event_cb(s_cancel_btn, cancel_btn_cb, LV_EVENT_CLICKED, NULL);
 
     s_pwd_ta = lv_textarea_create(s_pwd_row);
     lv_obj_set_size(s_pwd_ta, BSP_LCD_H_RES - 110, 36);
     lv_textarea_set_placeholder_text(s_pwd_ta, "Password");
+    lv_obj_add_event_cb(s_pwd_ta, ta_ready_cb, LV_EVENT_READY, NULL);
     /* password visible (no mask) */
 
     s_kb = lv_keyboard_create(s_pwd_row);
-    lv_obj_set_size(s_kb, BSP_LCD_H_RES - 110, 160);
+    lv_obj_set_size(s_kb, BSP_LCD_H_RES - 110, 200);
 
     s_connect_btn = lv_button_create(s_pwd_row);
-    lv_obj_set_size(s_connect_btn, BSP_LCD_H_RES - 110, 34);
+    lv_obj_set_size(s_connect_btn, BSP_LCD_H_RES - 110, 38);
     lv_obj_set_style_bg_color(s_connect_btn, COL_GREEN, 0);
     lv_obj_set_style_radius(s_connect_btn, 8, 0);
     lv_obj_t *cl = lv_label_create(s_connect_btn);
-    lv_label_set_text_static(cl, "CONNECT");
+    lv_label_set_text_static(cl, LV_SYMBOL_OK"  CONNECT");
     lv_obj_center(cl);
     lv_obj_add_event_cb(s_connect_btn, connect_btn_cb, LV_EVENT_CLICKED, NULL);
 
@@ -338,8 +413,9 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     {
         char ip[16];
         wifi_manager_get_ip(ip, sizeof(ip));
-        if (ip[0]) {
-            snprintf(s_state_txt, sizeof(s_state_txt), "Connected: %s", ip);
+        if (wifi_manager_is_connected() && ip[0]) {
+            snprintf(s_state_txt, sizeof(s_state_txt), "Connected: %s (%s)",
+                     wifi_manager_get_sta_ssid(), ip);
         } else {
             snprintf(s_state_txt, sizeof(s_state_txt), "Not started");
         }
@@ -360,6 +436,7 @@ static void wifi_destroy(lv_obj_t *page)
     lv_obj_del(page);
     s_state_label = s_start_btn = s_ap_list = s_pwd_row = NULL;
     s_pwd_ta = s_kb = s_connect_btn = NULL;
+    s_ssid_lab = s_cancel_btn = NULL;
     s_mode_btn = s_mode_lab = s_ap_info_label = s_clients_label = NULL;
     s_power_btn = s_power_lab = NULL;
     s_last_role = (wifi_role_t)-1;

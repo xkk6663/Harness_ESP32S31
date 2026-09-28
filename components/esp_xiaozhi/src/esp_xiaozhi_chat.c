@@ -42,6 +42,8 @@
 #include "esp_xiaozhi_chat.h"
 
 #define ESP_XIAOZHI_CHAT_MAX_STRING_SIZE 256
+#define ESP_XIAOZHI_CHAT_VISION_URL_SIZE   256   /*!< §58 vision explain endpoint */
+#define ESP_XIAOZHI_CHAT_VISION_TOKEN_SIZE 256   /*!< §58 vision bearer token */
 #define ESP_XIAOZHI_CHAT_AES_NONCE_SIZE 16
 #define ESP_XIAOZHI_CHAT_AES_KEY_SIZE 16
 
@@ -118,6 +120,11 @@ typedef struct {
     char session_id[ESP_XIAOZHI_CHAT_MAX_STRING_SIZE];  /*!< Session ID */
     int server_sample_rate;                             /*!< Server sample rate */
     int server_frame_duration;                          /*!< Server frame duration */
+
+    /* §58 Vision：MCP initialize response 的 capabilities.vision{url,token}
+     * 原样缓存在此（vendor 不用它，只透出给 app 的 explain 客户端） */
+    char vision_url[ESP_XIAOZHI_CHAT_VISION_URL_SIZE];      /*!< Vision explain endpoint URL */
+    char vision_token[ESP_XIAOZHI_CHAT_VISION_TOKEN_SIZE];  /*!< Vision bearer token */
 
     esp_xiaozhi_chat_audio_type_t       audio_type;     /*!< Audio type */
     esp_xiaozhi_chat_audio_callback_t   audio_callback; /*!< Callback function for handling audio data */
@@ -526,6 +533,46 @@ static esp_err_t esp_xiaozhi_chat_mcp_handler(esp_xiaozhi_chat_t *xiaozhi_chat, 
     cJSON *method = cJSON_GetObjectItem(payload_obj, "method");
     if (cJSON_IsString(method)) {
         ESP_LOGI(TAG, "Received MCP method: %s", method->valuestring);
+    }
+
+    /* §58/§59b 勘误 Vision：本设备是 MCP **server**（云端 LLM 是 client），
+     * explain 端点由云端在 MCP initialize **请求**的
+     * params.capabilities.vision{url,token} 里下发（client 在请求里声明
+     * 自己的能力/资源），不是 result——原 peek 只看响应形 result 路径，
+     * 永远抓不到（实机证据："vision endpoint not ready"）。
+     * 保留 result 路径做兼容；缓存幂等，app 经
+     * esp_xiaozhi_chat_get_vision_endpoint() 取用。 */
+    {
+        bool is_init_req = (cJSON_IsString(method) &&
+                            strcmp(method->valuestring, "initialize") == 0);
+        cJSON *caps = NULL;
+        if (is_init_req) {
+            cJSON *params = cJSON_GetObjectItem(payload_obj, "params");
+            caps = (params && cJSON_IsObject(params))
+                       ? cJSON_GetObjectItem(params, "capabilities") : NULL;
+        } else {
+            cJSON *result = cJSON_GetObjectItem(payload_obj, "result");
+            caps = (result && cJSON_IsObject(result))
+                       ? cJSON_GetObjectItem(result, "capabilities") : NULL;
+        }
+        cJSON *vision = (caps && cJSON_IsObject(caps)) ? cJSON_GetObjectItem(caps, "vision") : NULL;
+        if (is_init_req && !cJSON_IsObject(vision)) {
+            ESP_LOGW(TAG, "MCP initialize request: no vision capability (server may not enable it)");
+        }
+        if (cJSON_IsObject(vision)) {
+            cJSON *vurl = cJSON_GetObjectItem(vision, "url");
+            if (cJSON_IsString(vurl) && vurl->valuestring[0] != '\0') {
+                strlcpy(xiaozhi_chat->vision_url, vurl->valuestring, sizeof(xiaozhi_chat->vision_url));
+                cJSON *vtoken = cJSON_GetObjectItem(vision, "token");
+                if (cJSON_IsString(vtoken)) {
+                    strlcpy(xiaozhi_chat->vision_token, vtoken->valuestring, sizeof(xiaozhi_chat->vision_token));
+                } else {
+                    xiaozhi_chat->vision_token[0] = '\0';
+                }
+                ESP_LOGI(TAG, "Vision endpoint captured (%u chars)",
+                         (unsigned)strlen(xiaozhi_chat->vision_url));
+            }
+        }
     }
 
     char *payload_mcp = cJSON_PrintUnformatted(payload_obj);
@@ -1626,6 +1673,26 @@ esp_err_t esp_xiaozhi_chat_send_stop_listening(esp_xiaozhi_chat_handle_t chat_hd
     ret = esp_xiaozhi_chat_send_json_message(xiaozhi_chat, root);
     cJSON_Delete(root);
     return ret;
+}
+
+/* §58 Vision：透出 MCP initialize 响应缓存的 explain 端点（app 的 vision 客户端用） */
+esp_err_t esp_xiaozhi_chat_get_vision_endpoint(esp_xiaozhi_chat_handle_t chat_hd,
+                                               char *url, size_t url_size,
+                                               char *token, size_t token_size)
+{
+    ESP_RETURN_ON_FALSE(chat_hd, ESP_ERR_INVALID_ARG, TAG, "Invalid handle");
+    ESP_RETURN_ON_FALSE(url && url_size, ESP_ERR_INVALID_ARG, TAG, "Invalid url buf");
+
+    esp_xiaozhi_chat_t *xiaozhi_chat = (esp_xiaozhi_chat_t *)chat_hd;
+    if (xiaozhi_chat->vision_url[0] == '\0') {
+        return ESP_ERR_NOT_FOUND;   /* initialize response 还没到 */
+    }
+
+    strlcpy(url, xiaozhi_chat->vision_url, url_size);
+    if (token && token_size) {
+        strlcpy(token, xiaozhi_chat->vision_token, token_size);
+    }
+    return ESP_OK;
 }
 
 esp_err_t esp_xiaozhi_chat_send_abort_speaking(esp_xiaozhi_chat_handle_t chat_hd, esp_xiaozhi_chat_abort_speaking_reason_t reason)

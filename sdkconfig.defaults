@@ -141,6 +141,15 @@ CONFIG_ESPDET_PICO_416_416_FACE=n
 CONFIG_HUMAN_FACE_DETECT_MODEL_SDCARD_DIR="models"
 CONFIG_BSP_SD_MOUNT_POINT="/littlefs"
 
+## ---- §60 异族模型（vendor 本地组件 hand_detect / hand_gesture_recognition）----
+## ★ 两个组件的 SDCARD_DIR 上游默认只写了 s3/p4（不含 S31）⇒ 必须 "models"，
+##   且 sdkconfig 与 defaults 同写（reconfigure 铁律）。
+## ★ §62 阉割 POSE：coco_pose 组件与其 CONFIG_COCO_POSE_* 一并删除。
+CONFIG_HAND_DETECT_MODEL_SDCARD_DIR="models"
+CONFIG_DEFAULT_HAND_DETECT_MODEL=0
+CONFIG_HAND_GESTURE_CLS_MODEL_SDCARD_DIR="models"
+CONFIG_DEFAULT_HAND_GESTURE_CLS_MODEL=0
+
 
 ## ---------------------------------------------------------------------------
 ## ★ FATFS（SD 卡 /sdcard 用；2026-09-25 S1 移植时补齐）

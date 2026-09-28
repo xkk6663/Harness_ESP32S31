@@ -48,6 +48,7 @@ typedef enum {
     XZ_EVT_TTS_STATE,     /* TTS start/stop/sentence_start；text 仅 sentence_start */
     XZ_EVT_ERROR,         /* err + text(=source 提示) */
     XZ_EVT_ACT_CODE,      /* 设备未激活；text=激活码（去 xiaozhi.me 输入） */
+    XZ_EVT_EMOJI,         /* §58 A2：LLM 情绪标签；text = "happy"/"sad"/... */
 } xiaozhi_evt_id_t;
 
 typedef struct {
@@ -93,9 +94,25 @@ esp_err_t xiaozhi_service_ptt_start(void);
 void xiaozhi_service_ptt_stop(void);
 
 /**
+ * @brief 对话态设置扬声器音量（作用于会话借出的 spk 句柄，0~90）。
+ *        非会话期返回 INVALID_STATE（播放态音量走 audio_service 通道）。
+ *        §56：由 ai_speaker MCP 工具三通道之一调用
+ */
+esp_err_t xiaozhi_service_set_volume(int vol);
+
+/**
  * @brief 注册事件回调（覆盖式；在服务任务上下文调用，勿阻塞勿碰 LVGL）
  */
 void xiaozhi_service_set_evt_cb(xiaozhi_evt_cb_t cb);
+
+/**
+ * @brief §58 A1：透出 MCP initialize 响应缓存的 vision explain 端点
+ *        （vendor esp_xiaozhi_chat_get_vision_endpoint 的服务层包装）。
+ *        非会话期 INVALID_STATE；端点未知 NOT_FOUND。
+ *        供 ai_camera 的 explain 任务在上传前现取（token 会随会话刷新）
+ */
+esp_err_t xiaozhi_service_get_vision_endpoint(char *url, size_t url_size,
+                                              char *token, size_t token_size);
 
 #ifdef __cplusplus
 }

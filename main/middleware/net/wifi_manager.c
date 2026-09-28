@@ -626,6 +626,8 @@ wifi_role_t wifi_manager_get_role(void) { return s_role; }
 
 const char *wifi_manager_get_ap_ssid(void) { return AP_DEFAULT_SSID; }
 
+const char *wifi_manager_get_sta_ssid(void) { return s_cur_ssid; }
+
 /* 以硬件真实关联列表为准清理幽灵客户端（软断开可能收不到 DISCONNECT 事件） */
 static void reconcile_clients_locked(void)
 {

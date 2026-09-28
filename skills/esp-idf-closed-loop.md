@@ -95,42 +95,86 @@ idf.py build
 
 ## 3. 烧录（分场景，避免每次都写 10MB）
 
-> 当前分区：`ota_0/ota_1 各 3MB` + `storage littlefs 9.87MB(@0x620000)`。
+> 当前分区（**唯一真源 = 工程根 `partitions.csv`；本分支 S5 v1.2，2026-09-28**）：
+> `nvs 24KB(0x9000)` + `phy_init 4KB` + `otadata 8KB(0x11000)`
+> + `ota_0 app 7MB(@0x20000)`（**单槽，已无 ota_1**）
+> + `storage littlefs 8.875MB(@0x720000, size=0x8E0000)`，0x720000+0x8E0000=0x1000000 排满 16MB。
 > 已去掉 `FLASH_IN_PROJECT`，默认 **不再重烧 storage 素材镜像**，板子上已有素材/录音保留。
 > 原则：**只写这次真正变了的那一块**，其余不动。
+> ★★ **改过 `partitions.csv` ⇒ 那一次必须 `idf.py flash`（含 0x8000 分区表），不能只用
+>    `app-flash`** —— 否则设备留在旧表上，littlefs 会挂到旧地址并被静默格式化（血案见 3.4）。
 
 ### 3.1 选哪条命令（按改动内容对号入座）
 
 | 这次改了什么 | 用哪条命令 | 烧写内容 | 耗时 |
 |---|---|---|---|
 | 只改了 `main/` 业务代码（最常见） | `idf.py -p COM9 app-flash` | 仅 ota_0 app | **~2–5 秒** |
-| 改了 `sdkconfig` / bootloader / 分区表 | `idf.py -p COM9 flash` | bootloader+partition+otadata+app（~2MB） | ~10–20 秒 |
-| 改了 `littlefs_content/` 里的素材（壁纸/wav） | 先 `flash` 再单独烧 storage | 上述 + storage.bin@0x620000（10.35MB） | ~11 分钟 |
-| 新板子 / 整片擦除后首次烧录 | 全套：`flash` + 烧 storage | 全部 | ~11 分钟 |
-| 阶段六 OTA 升级 | 不烧录，走 wifi TCP 写 ota_1 | — | — |
+| 改了 `sdkconfig` / bootloader / **`partitions.csv`** | `idf.py -p COM9 flash` | bootloader(0x2000)+partition(0x8000)+otadata(0x11000)+app(0x20000) | ~10–20 秒 |
+| 改了 `littlefs_content/` 里的素材（壁纸/wav/models） | `idf.py -p COM9 storage-flash` | 仅 storage.bin@**0x720000**（8.875MB） | ~40–60 秒 |
+| 换过分区表 / 新板子 / 整片擦除后首次 | `flash -a` + `storage-flash` | 全部 | ~1–2 分钟 |
+| 阶段六 OTA 升级 | 不烧录，走 wifi TCP 写 app 槽 | — | — |
 
 > 日常开发 99% 用第一条 `app-flash`。不要无脑 `flash` 更不要每次都写 storage。
 
 ### 3.2 单独烧 storage 素材镜像（仅素材变更/首次时）
 
-> 注意：`idf.py flash-storage` **不是有效 target**（会报 unknown target）。
-> 去 `FLASH_IN_PROJECT` 后没有自动的 storage 烧录 target，必须用 esptool 手动写：
+`littlefs_create_partition_image(storage littlefs_content)`（根 CMakeLists 末行）**自带
+`storage-flash` target**，偏移/大小由分区表自动推出，零硬编码：
+
+```powershell
+idf.py -p COM9 storage-flash      # ✅ 先生成 storage.bin，再按分区表偏移写入
+```
+
+- **构建期偏移真源** = `build/storage-flash_args`（当前应为 `0x720000 storage.bin`）。
+  烧前扫一眼这一行，就知道这次写到哪，不用背数字、更别抄注释；
+- ❌ `idf.py flash-storage` 是**错的**（unknown target，词序反了，旧笔记写反过）；
+- 手动兜底（仅在 target 异常时用，地址同样以 `storage-flash_args` 为准）：
 
 ```powershell
 cd build
 & "C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe" -m esptool `
   --chip esp32s31 -p COM9 -b 921600 --before default-reset --after hard-reset `
-  write-flash 0x620000 storage.bin
+  write-flash 0x720000 storage.bin
 ```
 
-要点：参数顺序是 **`write-flash <地址> <文件>`**（地址在前）；921600 波特 + esptool 压缩约 35 秒写完 10MB。
+要点：参数顺序是 **`write-flash <地址> <文件>`**（地址在前）；921600 波特 + esptool 压缩约 40 秒写完 8.875MB。
 
 ### 3.3 注意事项
 - 不要在这条命令后直接跟 `monitor`（见第 4 节）；
 - 成功标志：`Hash of data verified` + `Hard resetting via RTS pin...`，烧完板子自动复位；
 - **ESP32-S31 ROM 不支持整片 `erase-flash`**（报 `does not support function erase_flash`），不要用；直接覆盖烧录即可；
 - 进下载模式偶发 `Invalid head of packet (0x78)` / `Failed to enter flash download mode`：多半是板子在跑旧固件占串口，等 3–4 秒或重插 USB 后重试；
-- 波特率 921600；app 约 1.6MB，`app-flash` 几秒完成。
+- 波特率 921600；app 约 6.4MB（S5 起含小智），`app-flash` 十几秒完成。
+
+### 3.4 ★★ 血案：分区表没烧 ⇒ littlefs "挂错地址" ⇒ 素材静默全灭（2026-09-28）
+
+**症状**：日志满屏 `WP_PART: wallpaper not found` / `VISION: model file missing/empty`，
+但 `FS_SVC` 挂载行**不报错**、app 不 panic、相机/网络/LVGL 全正常 ⇒ 很像"littlefs 挂到了错误地址"。
+
+**真因**：`partitions.csv` 升级 S5 v1.2（storage `0xA20000/0x5E0000` → `0x720000/0x8E0000`）后，
+只跑了 `app-flash` + `storage-flash`（新镜像写到**新**地址 0x720000），**没跑 `idf.py flash`**：
+1. 设备 0x8000 处仍是**旧分区表** ⇒ app 按 label `"storage"` 拿到**旧地址 0xA20000**；
+2. 0xA20000 处的内容已被新镜像（覆盖 0x720000..0x1000000）冲掉 ⇒ 不是合法 littlefs ⇒ 挂载失败；
+3. `fs_service.c` 里 `format_if_mount_failed = true` ⇒ **就地格式化** ⇒ 挂载"成功"但**空 FS**；
+4. 更糟：格式化范围 0xA20000..0x1000000 与刚写的新镜像**重叠** ⇒ 新素材也被擦掉一截。
+
+**判据（一眼定案，不用读片）**：
+- 开机 `FS_SVC: LittleFS mounted ... @0x?????? size=????KB` —— `@` 地址/容量与
+  `partitions.csv` 不符 = 分区表没烧（旧表会显示 `size=6016KB`，新表 `size=9088KB`）；
+- `build/partition_table/partition_table_flashed.bin` 是 IDF 快速重烧的比对副本
+  （`--diff-with` + `ONLY_IF_DIFFERENT`）：**它的 mtime 早于 `partition-table.bin`
+  ⇒ 上次烧录根本没写分区表**（IDF v6.1 默认"没变就不写"）。
+
+**修复配方（顺序不可换）**：
+
+```powershell
+idf.py -p COM9 flash -a        # -a 关掉 fast-reflash，确保 0x8000 新分区表真的写进去
+idf.py -p COM9 storage-flash   # 再重写素材镜像（上一步的错位挂载已污染过它）
+```
+
+**教训**：动过 `partitions.csv` 的那一次必须 `flash`；`format_if_mount_failed = true`
+会把"分区表没烧"这类配置错误**静默降级**成"素材全丢"，排查时先看 FS_SVC 的 `@地址`，
+别先怀疑素材没打包进镜像。
 
 ---
 

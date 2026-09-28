@@ -369,6 +369,28 @@ esp_err_t esp_xiaozhi_chat_send_stop_listening(esp_xiaozhi_chat_handle_t chat_hd
  */
 esp_err_t esp_xiaozhi_chat_send_abort_speaking(esp_xiaozhi_chat_handle_t chat_hd, esp_xiaozhi_chat_abort_speaking_reason_t reason);
 
+/**
+ * @brief  Get the vision explain endpoint captured from the MCP initialize response
+ *
+ * §58: the server sends `capabilities.vision {url, token}` in the MCP initialize
+ * response; the protocol layer caches it verbatim (does not use it itself) and
+ * exposes it here for the application's vision explain client.
+ *
+ * @param[in]   chat_hd    Handle to the chat instance
+ * @param[out]  url        Buffer for the explain endpoint URL
+ * @param[in]   url_size   Size of url in bytes
+ * @param[out]  token      Optional buffer for the bearer token (may be empty)
+ * @param[in]   token_size Size of token in bytes (ignored if token is NULL)
+ *
+ * @return
+ *       - ESP_OK              On success
+ *       - ESP_ERR_INVALID_ARG Invalid handle or url buffer
+ *       - ESP_ERR_NOT_FOUND   No initialize response seen yet (endpoint unknown)
+ */
+esp_err_t esp_xiaozhi_chat_get_vision_endpoint(esp_xiaozhi_chat_handle_t chat_hd,
+                                               char *url, size_t url_size,
+                                               char *token, size_t token_size);
+
 #ifdef __cplusplus
 }
 #endif  /* __cplusplus */

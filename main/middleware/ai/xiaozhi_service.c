@@ -46,6 +46,10 @@
 #include "esp_xiaozhi_info.h"       /* 激活状态/OTA info（board 默认实现自带 uuid） */
 
 #include "xiaozhi_service.h"
+#include "ai_light.h"
+#include "ai_speaker.h"
+#include "ai_camera.h"
+#include "ai_device.h"
 #include "audio_service.h"
 
 static const char *TAG = "XZ_SVC";
@@ -132,6 +136,13 @@ static void notify(xiaozhi_evt_id_t id, const char *text, int role, esp_err_t er
         xiaozhi_evt_t evt = { .id = id, .text = text, .role = role, .err = err };
         s_evt_cb(&evt);
     }
+}
+
+/* §58 A1：ai_camera explain 结果 → XZ_EVT_TEXT(role=assistant) 进浮窗对话记录
+ * （ai_camera explain 任务上下文调用，回调链非阻塞） */
+static void on_ai_camera_result(const char *text)
+{
+    notify(XZ_EVT_TEXT, text, 1, ESP_OK);
 }
 
 static void set_state(xiaozhi_state_t st)
@@ -225,8 +236,28 @@ static void chat_event_cb(esp_xiaozhi_chat_event_t event, void *event_data, void
         notify(XZ_EVT_ERROR, e ? e->source : NULL, 0, e ? e->code : ESP_FAIL);
         break;
     }
+    case ESP_XIAOZHI_CHAT_EVENT_CHAT_EMOJI: {
+        /* §58 A2：LLM 情绪标签（vendor chat.c:624 已 emit），转发浮窗对话记录 */
+        const char *emo = (const char *)event_data;
+        ESP_LOGI(TAG, "emoji: %s", emo ? emo : "(null)");
+        notify(XZ_EVT_EMOJI, emo, 0, ESP_OK);
+        break;
+    }
+    case ESP_XIAOZHI_CHAT_EVENT_CHAT_SYSTEM_CMD: {
+        /* §58 A3：服务器命令（vendor 只上报）。reboot = 立即重启（78 固件
+         * 同款；esp_restart 不做清理——NVS 无在写操作，codec 状态重启后
+         * 重新 init，风险可接受）。其他命令忽略。 */
+        const char *cmdstr = (const char *)event_data;
+        ESP_LOGW(TAG, "system cmd: %s", cmdstr ? cmdstr : "(null)");
+        if (cmdstr && strcmp(cmdstr, "reboot") == 0) {
+            notify(XZ_EVT_TEXT, "Rebooting device...", 1, ESP_OK);
+            vTaskDelay(pdMS_TO_TICKS(200));   /* 给 notify/日志一点落盘时间 */
+            esp_restart();
+        }
+        break;
+    }
     default:
-        break;   /* SPEECH_STARTED/STOPPED、EMOJI、SYSTEM_CMD：v1 忽略 */
+        break;   /* SPEECH_STARTED/STOPPED：v1 忽略（EMOJI/SYSTEM_CMD 见上） */
     }
 }
 
@@ -266,9 +297,10 @@ static esp_err_t chat_setup(void)
     cfg.event_callback_ctx = NULL;
     /* ★ MCP 引擎是 vendor 的**会话载体**（esp_xiaozhi_chat.c:1400 chat_start
      *   硬性必填，实测 2026-09-27 "MCP engine not initialized" 直接拒启），
-     *   不是可选项。v1 裁决"不做 MCP 点歌"的正确姿势 = 建**空引擎**（零工具，
-     *   服务器无物可调），owns=true 交给 chat_deinit 统一释放
-     *   （destroy_owned_resources 在 deinit 内部调用，无双删风险）。 */
+     *   不是可选项。§44 曾建空引擎（零工具）；§55 起挂**灯控工具**
+     *   （ai_light：开/关/调色/亮度，服务器 tools/list 自动发现）。
+     *   owns=true 交给 chat_deinit 统一释放（destroy_owned_resources 在
+     *   deinit 内部调用，无双删风险；工具随引擎一起析构）。 */
     esp_mcp_t *mcp = NULL;
     esp_err_t ret = esp_mcp_create(&mcp);
     if (ret != ESP_OK || mcp == NULL) {
@@ -277,6 +309,26 @@ static esp_err_t chat_setup(void)
     }
     cfg.mcp_engine = mcp;
     cfg.owns_mcp_engine = true;
+    ret = ai_light_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_light_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ai_speaker_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_speaker_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ai_camera_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_camera_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ai_device_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_device_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     return esp_xiaozhi_chat_init(&cfg, &s_chat);
 }
 
@@ -661,6 +713,13 @@ void xiaozhi_service_init(void)
     MEM_FAIL_FAST(s_cmd_q, TAG, "xQueueCreate(4, xz_cmd_t)", 4 * sizeof(xz_cmd_t));
     BaseType_t ok = xTaskCreate(xz_task, "xz_task", 4096, NULL, 5, &s_task);
     MEM_FAIL_FAST(ok == pdPASS, TAG, "xTaskCreate(xz_task, 4096)", 4096);
+    /* §58 A1：相机 explain 客户端 + 结果上桥（explain 任务上下文 → 本服务
+     * 的 XZ_EVT_TEXT 通道 → AI 浮窗对话记录）。失败不拦启动（无相机也能对话） */
+    if (ai_camera_init() == ESP_OK) {
+        ai_camera_set_result_cb(on_ai_camera_result);
+    } else {
+        ESP_LOGW(TAG, "ai_camera_init failed (vision tools disabled)");
+    }
     ESP_LOGI(TAG, "xiaozhi_service ready (mic_layout=%s ch=%d, no wake word)",
              XZ_MIC_LAYOUT, XZ_BOARD_CHANNELS);
 }
@@ -708,6 +767,28 @@ esp_err_t xiaozhi_service_ptt_start(void)
 void xiaozhi_service_ptt_stop(void)
 {
     s_ptt_want = false;
+}
+
+/* ---- §56 音量：对话态作用于借出的 spk 句柄（非会话期为 no-op——
+ *      播放态由 audio_service SET_VOLUME 通道负责，见 ai_speaker）---- */
+esp_err_t xiaozhi_service_set_volume(int vol)
+{
+    if (s_spk == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return (esp_codec_dev_set_out_vol(s_spk, vol) == ESP_CODEC_DEV_OK)
+               ? ESP_OK : ESP_FAIL;
+}
+
+/* ---- §58 A1 Vision：透出 MCP initialize 响应缓存的 explain 端点。
+ *      非会话期 s_chat 为 0 → INVALID_STATE（工具只在会话中被调用） ---- */
+esp_err_t xiaozhi_service_get_vision_endpoint(char *url, size_t url_size,
+                                              char *token, size_t token_size)
+{
+    if (s_chat == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return esp_xiaozhi_chat_get_vision_endpoint(s_chat, url, url_size, token, token_size);
 }
 
 void xiaozhi_service_set_evt_cb(xiaozhi_evt_cb_t cb)

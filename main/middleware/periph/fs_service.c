@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_littlefs.h"
+#include "esp_partition.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 #include "esp_jpeg_dec.h"
@@ -44,8 +45,18 @@ esp_err_t fs_service_mount(void)
 
     size_t total = 0, used = 0;
     esp_littlefs_info(conf.partition_label, &total, &used);
-    ESP_LOGI(TAG, "LittleFS mounted at %s, partition '%s', total=%uKB used=%uKB",
+
+    /* ★ 把"实际挂到的物理分区地址/容量"打进日志（不能只打 total）：
+     *   改过 partitions.csv 却只跑 app-flash（不含 0x8000 分区表）时，设备仍按**旧表**
+     *   把 label "storage" 解析到旧地址 ⇒ mount 落到错误偏移 ⇒ format_if_mount_failed
+     *   静默格式化 ⇒ 表现成"素材全丢"，极易误判为"littlefs 挂错地址/打包漏文件"。
+     *   本行的 @地址/size 与 partitions.csv 对不上 = 分区表没烧，一眼定案。 */
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, conf.partition_label);
+    ESP_LOGI(TAG, "LittleFS mounted at %s, partition '%s' @0x%06x size=%uKB, total=%uKB used=%uKB",
              FS_MNT_PATH, conf.partition_label,
+             (unsigned)(part ? part->address : 0),
+             (unsigned)(part ? part->size / 1024 : 0),
              (unsigned)(total / 1024), (unsigned)(used / 1024));
     return ESP_OK;
 }

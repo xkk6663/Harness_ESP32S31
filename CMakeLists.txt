@@ -12,16 +12,15 @@ project(display_audio_photo)
 # 仅在素材(xwkkk.jpg/wav/icons/models)变更、换片/擦除后首次烧录时，才单独写一次：
 #
 #   idf.py storage-flash            （推荐：自动按分区表偏移/大小生成并烧录）
-#   esptool --chip esp32s31 -p COM9 write-flash build/storage.bin 0xC20000
+#   esptool --chip esp32s31 -p COM9 write-flash build/storage.bin 0x720000
 #
-# ★★ 偏移必须是 0xC20000，**照抄 partitions.csv 里 storage 这一行**（§28 改造后）：
-#      storage,  data, littlefs, 0xC20000, 0x3E0000
+# ★★ 偏移必须以 partitions.csv 为唯一真源（本分支 S5 v1.2，2026-09-28）：
+#      storage,  data, littlefs, 0x720000, 0x8E0000
 #   ★ 历史坑（别重蹈）：本注释曾长期写着 0x620000，而那时 0x620000 落在
 #     **ota_1 分区内部** ⇒ 按旧注释烧会**覆盖掉另一份固件**，且当场没有任何报错，
 #     只在下次 OTA 回滚时才炸。
-#   ★★ §28（2026-09-25）再改一次：OTA 槽扩到 0x600000 ⇒ storage 偏移 0xA20000 → **0xC20000**，
-#      大小 0x5E0000 → **0x3E0000**。而新的 **ota_1 恰好就是 0x620000** ——
-#      谁要是按"旧笔记里的 0x620000"烧 storage.bin，这次就会**直接覆盖 ota_1 的固件**。
+#   ★★ 本分支历史：S5 v1.1 = 0xA20000/0x5E0000 → §60 三档异族模型素材 ~8.14MB
+#      超盘（LFS_ERR_NOSPC）⇒ v1.2 删 model 空置分区，storage 扩到 0x720000/0x8E0000。
 #      改分区表后务必回来同步这一行，并且**永远以 partitions.csv 为唯一真源**。
 #   ★ 模型文件就在 littlefs_content/models/ 下，加完文件必须重新 build 才有新 storage.bin。
 littlefs_create_partition_image(storage littlefs_content)

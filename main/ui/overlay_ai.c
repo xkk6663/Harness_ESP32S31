@@ -27,6 +27,7 @@
 #include "freertos/queue.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 
@@ -35,6 +36,7 @@
 #include "ui_theme.h"
 #include "ui_binfont.h"
 #include "middleware/ai/xiaozhi_service.h"
+#include "middleware/ai/ai_camera.h"
 #include "middleware/periph/button_service.h"
 
 LV_FONT_DECLARE(lv_font_cn_20);   /* 中文正文（bin 字体，桌面挂件同款） */
@@ -64,12 +66,21 @@ static lv_obj_t   *s_ptt_btn;        /* 按住说话（manual 模式 PTT） */
 static lv_obj_t   *s_ptt_label;
 static lv_obj_t   *s_status;
 static lv_obj_t   *s_act_label;      /* 激活码提示行（默认隐藏） */
+static lv_obj_t   *s_emo_badge;      /* §58 A2 情绪徽章（彩色胶囊，默认隐藏） */
+static lv_obj_t   *s_emo_label;
 static lv_obj_t   *s_log_cont;       /* 滚动容器 */
 static lv_obj_t   *s_log;            /* 对话文本 label */
 static lv_timer_t *s_timer;
 static QueueHandle_t s_evt_q;
 static char         s_log_buf[AI_LOG_MAX];
 static bool         s_prev_chatting;
+
+/* ---- §59b 拍照预览卡（MCP 摄像头工具触发，3s 自动消失） ---- */
+static lv_obj_t      *s_pv_box;      /* 右上角浮层卡片 */
+static lv_obj_t      *s_pv_img;      /* 缩略图 */
+static lv_timer_t    *s_pv_timer;    /* 3s one-shot（repeat_count=1 到期自删） */
+static uint8_t       *s_pv_show;     /* 显示中帧（UI 持有，隐藏时 free） */
+static lv_image_dsc_t s_pv_dsc;
 
 /* ---- 可见性与按键请求（按键回调只写这些标志） ---- */
 static volatile bool s_visible;        /* 浮窗在屏上（show/hide 维护） */
@@ -94,6 +105,49 @@ static void on_xz_evt(const xiaozhi_evt_t *evt)
         snprintf(msg.text, sizeof(msg.text), "%s", evt->text);
     }
     xQueueSend(s_evt_q, &msg, 0);     /* 满了就丢（UI 连点保护） */
+}
+
+/* ============================================================
+ * 情绪映射（§58 A2）：bin 字体无 emoji 字形 ⇒ 视觉化 = 主题色胶囊
+ * + ASCII 颜文字（LLM 情绪标签 → 颜色/脸）
+ * ============================================================ */
+
+typedef struct {
+    const char *name;
+    uint32_t    color;     /* 徽章底色（RGB888） */
+    const char *face;      /* ASCII 颜文字 */
+} emo_map_t;
+
+static const emo_map_t s_emo_map[] = {
+    { "neutral",     0x94A3B8, ":-|" },
+    { "happy",       0x22C55E, ":-D" },
+    { "laughing",    0xFACC15, "xD"  },
+    { "funny",       0xFACC15, "xD"  },
+    { "delighted",   0x4ADE80, "XD"  },
+    { "sad",         0x3B82F6, ":-(" },
+    { "crying",      0x38BDF8, "T_T" },
+    { "angry",       0xEF4444, ">:-(" },
+    { "loving",      0xEC4899, "<3"  },
+    { "embarrassed", 0xF97316, ":$"  },
+    { "surprised",   0xFB923C, ":-O" },
+    { "shocked",     0xF87171, "O_O" },
+    { "thinking",    0xA78BFA, ":-?" },
+    { "winking",     0x2DD4BF, ";-)" },
+    { "cool",        0x67E8F9, "8-)" },
+    { "sleepy",      0x64748B, "zzZ" },
+    { "zany",        0xE879F9, "%-)" },
+};
+
+#define EMO_MAP_N (sizeof(s_emo_map) / sizeof(s_emo_map[0]))
+
+static const emo_map_t *emo_lookup(const char *name)
+{
+    for (unsigned i = 0; i < EMO_MAP_N; i++) {
+        if (name && strcmp(s_emo_map[i].name, name) == 0) {
+            return &s_emo_map[i];
+        }
+    }
+    return &s_emo_map[0];   /* 未知情绪 → neutral 灰 */
 }
 
 /* ============================================================
@@ -138,10 +192,76 @@ static void evt_drain(void)
                 log_append("ERR: ", m.text);
             }
             break;
+        case XZ_EVT_EMOJI: {
+            /* §58 A2：LLM 情绪 → 徽章（彩色胶囊+颜文字）+ 对话记录行。
+             * line 要装下 face(≤5) + " (" + text(≤127) + ")" ⇒ 160 起步 */
+            if (m.text[0]) {
+                const emo_map_t *e = emo_lookup(m.text);
+                char line[160];
+                snprintf(line, sizeof(line), "%s (%s)", e->face, m.text);
+                if (s_emo_badge) {
+                    lv_obj_set_style_bg_color(s_emo_badge, lv_color_hex(e->color), 0);
+                    lv_obj_set_hidden(s_emo_badge, false);
+                }
+                if (s_emo_label) {
+                    lv_label_set_text(s_emo_label, line);
+                }
+                log_append("EMOJI: ", line);
+            }
+            break;
+        }
         default:
             break;    /* STATE/TTS_STATE 由轮询与状态行表达，不进记录 */
         }
     }
+}
+
+/* ============================================================
+ * §59b 拍照预览卡（ai_camera 单槽 → 50ms 轮询取走 → 3s 后消失）
+ * ============================================================ */
+
+static void preview_hide_now(void)
+{
+    lv_obj_set_hidden(s_pv_box, true);
+    if (s_pv_show) {
+        heap_caps_free(s_pv_show);   /* 所有权在 UI（take 时移交） */
+        s_pv_show = NULL;
+    }
+}
+
+static void preview_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_pv_timer = NULL;               /* repeat_count=1 到期自删 */
+    preview_hide_now();
+}
+
+static void preview_poll(void)
+{
+    uint8_t *buf = NULL;
+    int w = 0, h = 0;
+    if (!ai_camera_preview_take(&buf, &w, &h)) {
+        return;
+    }
+    if (s_pv_show) {
+        heap_caps_free(s_pv_show);   /* 新帧顶掉显示中的旧帧 */
+    }
+    s_pv_show = buf;
+    lv_memset(&s_pv_dsc, 0, sizeof(s_pv_dsc));
+    s_pv_dsc.header.w = (uint32_t)w;
+    s_pv_dsc.header.h = (uint32_t)h;
+    s_pv_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_pv_dsc.data = buf;
+    s_pv_dsc.data_size = (uint32_t)w * (uint32_t)h * 2u;
+    lv_image_set_src(s_pv_img, &s_pv_dsc);
+    lv_obj_set_hidden(s_pv_box, false);
+    lv_obj_move_foreground(s_pv_box);   /* 兜底：确保浮在日志容器之上 */
+    if (s_pv_timer) {
+        lv_timer_del(s_pv_timer);
+    }
+    s_pv_timer = lv_timer_create(preview_timer_cb, 3000, NULL);
+    lv_timer_set_repeat_count(s_pv_timer, 1);
+    ESP_LOGI(TAG, "camera preview shown %dx%d", w, h);
 }
 
 /* ============================================================
@@ -257,6 +377,7 @@ static void ai_timer_cb(lv_timer_t *t)
     (void)t;
     evt_drain();
     key_req_drain();
+    preview_poll();
 
     /* PTT 视觉态 = 屏幕按钮 OR 硬件 MODE 键 */
     bool ptt_vis = (s_hw_ptt_ui || s_touch_ptt_ui);
@@ -402,6 +523,11 @@ void overlay_ai_init(void)
 {
     lv_obj_t *top = lv_layer_top();
     lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+    /* ★ S6b：层（layer）默认带可滚动标志，而 AI 窗隐藏时停在 y=+480，
+     * 把层内容区撑到 ~960px —— 壁纸"上拉关闭"手势自己滚不动时经
+     * 滚动链传导到层上，整层上滚 ⇒ AI 窗跟着被"顺带拉出来"（实测 BUG）。
+     * 层必须禁滚动：浮窗定位全部由各自手势/动画自管。 */
+    lv_obj_set_scrollable(top, false);
 
     /* 全屏浮窗容器（不透明背景 = 挡住 tab 栏与触摸穿透） */
     s_win = lv_obj_create(top);
@@ -418,6 +544,23 @@ void overlay_ai_init(void)
     lv_label_set_text_static(title, LV_SYMBOL_AUDIO "  AI");
     lv_obj_set_style_text_color(title, COL_CYAN, 0);
     lv_obj_set_style_text_font(title, UI_FONT, 0);
+
+    /* §58 A2 情绪徽章（标题右侧，EMOJI 事件才显示）：
+     * 亮色底 + 深色字（F47 附：固定文字色设在 label 上是安全的） */
+    s_emo_badge = lv_obj_create(s_win);
+    lv_obj_set_size(s_emo_badge, 150, 26);
+    lv_obj_align(s_emo_badge, LV_ALIGN_TOP_LEFT, 64, 2);
+    lv_obj_set_style_radius(s_emo_badge, 13, 0);
+    lv_obj_set_style_bg_color(s_emo_badge, COL_SUBTEXT, 0);
+    lv_obj_set_style_border_width(s_emo_badge, 0, 0);
+    lv_obj_set_style_pad_all(s_emo_badge, 0, 0);
+    lv_obj_set_scrollable(s_emo_badge, false);
+    lv_obj_set_hidden(s_emo_badge, true);
+    s_emo_label = lv_label_create(s_emo_badge);
+    lv_label_set_text_static(s_emo_label, ":-|");
+    lv_obj_set_style_text_color(s_emo_label, COL_DARK, 0);
+    lv_obj_set_style_text_font(s_emo_label, UI_FONT, 0);
+    lv_obj_center(s_emo_label);
 
     lv_obj_t *xbtn = lv_btn_create(s_win);
     lv_obj_set_size(xbtn, 72, 36);
@@ -518,6 +661,25 @@ void overlay_ai_init(void)
     lv_obj_set_style_text_font(clr_lb, UI_FONT, 0);
     lv_obj_center(clr_lb);
 
+    /* §59b 拍照预览卡：★必须最后创建——LVGL 后创建者在上层，若排在
+     * s_log_cont（不透明卡底、几乎全屏宽）之前会被整块盖住（实机踩过：
+     * "预览没看见"）。浮层语义 + 显示时 move_foreground 双保险。 */
+    s_pv_box = lv_obj_create(s_win);
+    lv_obj_set_size(s_pv_box, 216, 126);
+    lv_obj_align(s_pv_box, LV_ALIGN_TOP_RIGHT, -4, 40);
+    lv_obj_set_style_bg_color(s_pv_box, COL_DARK, 0);
+    lv_obj_set_style_border_color(s_pv_box, COL_CYAN, 0);
+    lv_obj_set_style_border_width(s_pv_box, 1, 0);
+    lv_obj_set_style_radius(s_pv_box, 8, 0);
+    lv_obj_set_style_pad_all(s_pv_box, 3, 0);
+    lv_obj_set_scrollable(s_pv_box, false);
+    lv_obj_set_hidden(s_pv_box, true);
+
+    s_pv_img = lv_image_create(s_pv_box);
+    lv_obj_set_size(s_pv_img, 208, 118);
+    lv_image_set_inner_align(s_pv_img, LV_IMAGE_ALIGN_CONTAIN);
+    lv_obj_center(s_pv_img);
+
     /* 事件队列 + 轮询 + 硬件按键注册（全仓唯一注册者，覆盖式） */
     s_evt_q = xQueueCreate(AI_EVT_Q_DEPTH, sizeof(ai_evt_msg_t));
     s_timer = lv_timer_create(ai_timer_cb, 50, NULL);
@@ -544,6 +706,14 @@ void overlay_ai_deinit(void)
         lv_timer_del(s_timer);
         s_timer = NULL;
     }
+    if (s_pv_timer) {
+        lv_timer_del(s_pv_timer);
+        s_pv_timer = NULL;
+    }
+    if (s_pv_show) {
+        heap_caps_free(s_pv_show);
+        s_pv_show = NULL;
+    }
     if (s_evt_q) {
         vQueueDelete(s_evt_q);
         s_evt_q = NULL;
@@ -563,4 +733,6 @@ void overlay_ai_deinit(void)
     s_act_label = NULL;
     s_log_cont = NULL;
     s_log = NULL;
+    s_pv_box = NULL;
+    s_pv_img = NULL;
 }

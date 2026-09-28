@@ -1,0 +1,21 @@
+menu "models: hand_gesture_cls"
+    choice
+        prompt "default model"
+        default HAND_GESTURE_CLS_MOBILENETV2_0_5_S8_V1
+        help
+            default hand_gesture_cls model
+        config HAND_GESTURE_CLS_MOBILENETV2_0_5_S8_V1
+            bool "hand_gesture_cls_mobilenetv2_0_5_s8_v1"
+    endchoice
+
+    config DEFAULT_HAND_GESTURE_CLS_MODEL
+        int
+        default 0 if HAND_GESTURE_CLS_MOBILENETV2_0_5_S8_V1
+
+    config HAND_GESTURE_CLS_MODEL_SDCARD_DIR
+        string "hand_gesture_cls model sdcard dir"
+        default "models"
+        help
+            Directory of models relative to sdcard mount point.
+            ★ 上游默认值只写了 s3/p4（不含 S31），本工程必须 "models"。
+endmenu

@@ -4133,6 +4133,24 @@ CONFIG_XIAOZHI_AUDIO_TASK_ALLOC_STATIC=y
 # end of Xiaozhi Assistant
 
 #
+# models: hand_detect
+#
+CONFIG_ESPDET_PICO_224_224_HAND=y
+# default:
+CONFIG_DEFAULT_HAND_DETECT_MODEL=0
+CONFIG_HAND_DETECT_MODEL_SDCARD_DIR="models"
+# end of models: hand_detect
+
+#
+# models: hand_gesture_cls
+#
+CONFIG_HAND_GESTURE_CLS_MOBILENETV2_0_5_S8_V1=y
+# default:
+CONFIG_DEFAULT_HAND_GESTURE_CLS_MODEL=0
+CONFIG_HAND_GESTURE_CLS_MODEL_SDCARD_DIR="models"
+# end of models: hand_gesture_cls
+
+#
 # IoT Button
 #
 # default:

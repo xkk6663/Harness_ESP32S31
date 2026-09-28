@@ -100,6 +100,9 @@ void wifi_manager_connect(const char *ssid, const char *pass);
 bool wifi_manager_is_connected(void);
 void wifi_manager_get_ip(char *buf, int len);
 
+/** 当前 STA 正在连/已连上的 SSID（连接时就记录；空串 = 尚未发起过连接） */
+const char *wifi_manager_get_sta_ssid(void);
+
 /** Wi-Fi master switch: on=start wifi, off=stop wifi completely (radio off). */
 void wifi_manager_set_enabled(bool on);
 bool wifi_manager_is_enabled(void);

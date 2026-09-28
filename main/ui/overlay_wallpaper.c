@@ -314,6 +314,32 @@ static void clock_widget_create(lv_obj_t *parent)
 }
 
 /** Tick: refresh time / date / weather / WiFi status */
+
+/* 左上角 WiFi 区：已连接 → 绿色 + SSID（截 12 字节防压到中间标题）+ IP；
+ * 未连接 → 红色 "WiFi" + "--"。两个 tick 分支（时间无效/有效）共用。 */
+static void wifi_status_refresh(void)
+{
+    if (wifi_manager_is_connected()) {
+        char ip[16] = {0};
+        wifi_manager_get_ip(ip, sizeof(ip));
+        const char *ssid = wifi_manager_get_sta_ssid();
+        char txt[40];
+        if (ssid[0]) {
+            snprintf(txt, sizeof(txt), "%.12s%s",
+                     ssid, strlen(ssid) > 12 ? ".." : "");
+        } else {
+            snprintf(txt, sizeof(txt), "WiFi");
+        }
+        lv_obj_set_style_text_color(s_wifi_label, COL_GREEN, 0);
+        lv_label_set_text(s_wifi_label, txt);
+        lv_label_set_text(s_ip_label, ip);
+    } else {
+        lv_obj_set_style_text_color(s_wifi_label, COL_RED, 0);
+        lv_label_set_text(s_wifi_label, "WiFi");
+        lv_label_set_text(s_ip_label, "--");
+    }
+}
+
 static void clock_tick(lv_timer_t *t)
 {
     (void)t;
@@ -328,17 +354,7 @@ static void clock_tick(lv_timer_t *t)
     bool valid = net_time_service_time_valid();
     if (!valid) {
         if ((s_wifi_counter++ % 5) == 0) {
-            if (wifi_manager_is_connected()) {
-                char ip[16] = {0};
-                wifi_manager_get_ip(ip, sizeof(ip));
-                lv_label_set_text(s_wifi_label, "WiFi");
-                lv_obj_set_style_text_color(s_wifi_label, COL_GREEN, 0);
-                lv_label_set_text(s_ip_label, ip);
-            } else {
-                lv_label_set_text(s_wifi_label, "WiFi");
-                lv_obj_set_style_text_color(s_wifi_label, COL_RED, 0);
-                lv_label_set_text(s_ip_label, "--");
-            }
+            wifi_status_refresh();
         }
         return;
     }
@@ -369,15 +385,7 @@ static void clock_tick(lv_timer_t *t)
 
     /* refresh WiFi every 5s */
     if ((s_wifi_counter++ % 5) == 0) {
-        if (wifi_manager_is_connected()) {
-            char ip[16] = {0};
-            wifi_manager_get_ip(ip, sizeof(ip));
-            lv_obj_set_style_text_color(s_wifi_label, COL_GREEN, 0);
-            lv_label_set_text(s_ip_label, ip);
-        } else {
-            lv_obj_set_style_text_color(s_wifi_label, COL_RED, 0);
-            lv_label_set_text(s_ip_label, "--");
-        }
+        wifi_status_refresh();
     }
 
     /* weather */

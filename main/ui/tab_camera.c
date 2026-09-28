@@ -25,7 +25,9 @@ static lv_obj_t *s_btn_face_label;
 static lv_obj_t *s_btn_model;        /* ★ S1 新增：档位切换（页内按钮循环切档） */
 static lv_obj_t *s_btn_model_label;
 static lv_obj_t *s_bbox;
-static lv_obj_t *s_face_bbox;
+static lv_obj_t *s_face_bbox;        /* 检测结果框（FACE 脸 / HAND 手）复用 */
+static lv_obj_t *s_gest_label;       /* ★ §60：手势名标签（HAND 档显示） */
+/* ★ §62：原 POSE 档的 17 个关节点对象（s_kp[17]）已随该档一并删除。 */
 static lv_obj_t *s_status;
 static lv_obj_t *s_screen;
 static lv_timer_t *s_timer;
@@ -123,16 +125,16 @@ static void refresh(lv_timer_t *t)
         lv_color_t  col;
         if (st == FACE_FAIL)         { want = "FAIL";    col = lv_color_hex(0xFF0000); }
         else if (st == FACE_LOADING) { want = "LOAD";    col = lv_color_hex(0xFFFF00); }
-        else if (face_en)            { want = "FACE ON"; col = lv_color_hex(0x00FF00); }
-        else                         { want = "FACE";    col = COL_CYAN; }
+        else if (face_en)            { want = "DET ON";  col = lv_color_hex(0x00FF00); }
+        else                         { want = "DET";     col = COL_CYAN; }
         const char *cur = lv_label_get_text(s_btn_face_label);
         if (cur == NULL || strcmp(cur, want) != 0) {
             lv_label_set_text_static(s_btn_face_label, want);
             lv_obj_set_style_bg_color(s_btn_face, col, 0);
-            if (st == FACE_FAIL)         lv_label_set_text_static(s_status, "Face build FAIL");
+            if (st == FACE_FAIL)         lv_label_set_text_static(s_status, "Model build FAIL");
             else if (st == FACE_LOADING) lv_label_set_text_static(s_status, "Model working...");
-            else if (face_en)            lv_label_set_text_static(s_status, "Face ready");
-            else                         lv_label_set_text_static(s_status, "Face off");
+            else if (face_en)            lv_label_set_text_static(s_status, "Model ready");
+            else                         lv_label_set_text_static(s_status, "Detect off");
         }
     }
     /* ---- MODEL 按钮：显示**目标**档位 ----
@@ -151,6 +153,11 @@ static void refresh(lv_timer_t *t)
      *   （set_text_static 幂等、无堆分配，每 50 ms 调一次没有代价）。 */
     if (s_media_taken) {
         lv_label_set_text_static(s_status, "Cam busy: VIDEO recording");
+    }
+
+    /* ★ §60：模型不在 RUNNING / 检测关 ⇒ 覆盖层收掉（切档/关断不残留旧结果） */
+    if (st != FACE_RUNNING || !face_en) {
+        if (s_gest_label) lv_obj_set_hidden(s_gest_label, true);
     }
 
     if (s_frame_new && s_last_frame && s_canvas) {
@@ -197,21 +204,32 @@ static void refresh(lv_timer_t *t)
             s_frame_skip++;
             if (s_frame_skip >= 3) {  /* run detection every 3 frames */
                 s_frame_skip = 0;
-                face_box_t fb[FACE_SERVICE_MAX_FACES];
-                int n = face_service_detect(s_canvas_buf, CAM_W, CAM_H, fb, FACE_SERVICE_MAX_FACES);
-                if (n > 0) {
-                    /* draw largest face */
-                    int idx = 0;
-                    int max_area = 0;
-                    for (int i = 0; i < n; i++) {
-                        int a = fb[i].w * fb[i].h;
-                        if (a > max_area) { max_area = a; idx = i; }
-                    }
-                    lv_obj_set_pos(s_face_bbox, fb[idx].x, fb[idx].y);
-                    lv_obj_set_size(s_face_bbox, fb[idx].w, fb[idx].h);
+                vision_result_t vr[VISION_MAX_RESULTS];
+                int n = face_service_detect(s_canvas_buf, CAM_W, CAM_H, vr, VISION_MAX_RESULTS);
+                /* 画"最大"的那个结果（与旧人脸逻辑同款选择） */
+                int idx = -1;
+                int max_area = 0;
+                for (int i = 0; i < n; i++) {
+                    int a = vr[i].w * vr[i].h;
+                    if (a > max_area) { max_area = a; idx = i; }
+                }
+                if (idx >= 0) {
+                    lv_obj_set_pos(s_face_bbox, vr[idx].x, vr[idx].y);
+                    lv_obj_set_size(s_face_bbox, vr[idx].w, vr[idx].h);
                     lv_obj_set_hidden(s_face_bbox, false);
+                    /* ★ HAND：手势名 + 置信度 */
+                    if (s_gest_label) {
+                        if (vr[idx].label[0]) {
+                            lv_label_set_text_fmt(s_gest_label, "%s %d%%",
+                                                  vr[idx].label, (int)(vr[idx].score * 100));
+                            lv_obj_set_hidden(s_gest_label, false);
+                        } else {
+                            lv_obj_set_hidden(s_gest_label, true);
+                        }
+                    }
                 } else {
                     lv_obj_set_hidden(s_face_bbox, true);
+                    if (s_gest_label) lv_obj_set_hidden(s_gest_label, true);
                 }
             }
         }
@@ -255,6 +273,7 @@ static void face_btn_cb(lv_event_t *e)
     if (face_service_enabled()) {
         face_service_stop();        /* ★ 只关检测：模型常驻、不卸载（D6） */
         if (s_face_bbox) lv_obj_set_hidden(s_face_bbox, true);
+        if (s_gest_label) lv_obj_set_hidden(s_gest_label, true);
     } else {
         /* ★★ 只有"模型还没就绪"才需要相机在跑 —— 因为构建只能由 cam_task 的
          *    face_service_poll() 驱动。相机没跑就没人消费这个请求，状态会一直卡在
@@ -385,6 +404,19 @@ void tab_camera_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_radius(s_face_bbox, 0, 0);
     lv_obj_set_hidden(s_face_bbox, true);
 
+    /* ★ §60 手势名标签（HAND 档；画布顶部居中小字，深底亮字） */
+    s_gest_label = lv_label_create(s_canvas);
+    lv_label_set_text_static(s_gest_label, "");
+    lv_obj_align(s_gest_label, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_set_style_bg_color(s_gest_label, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_gest_label, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(s_gest_label, 2, 0);
+    lv_obj_set_style_text_color(s_gest_label, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_text_font(s_gest_label, UI_FONT, 0);
+    lv_obj_set_hidden(s_gest_label, true);
+
+    /* ★ §62：原"POSE 17 关节点"的 17 个 5x5 青色小方块创建循环已随该档删除。 */
+
     s_status = lv_label_create(screen);
     lv_label_set_text_static(s_status, "Stopped");
     lv_obj_set_style_text_color(s_status, COL_TEXT, 0);
@@ -474,6 +506,7 @@ void tab_camera_destroy(void)
      *    页面销毁后它们仍指向已释放的 LVGL 对象 —— refresh() 里一旦用到就是 UAF）。 */
     s_btn_face = NULL; s_btn_face_label = NULL; s_face_bbox = NULL;
     s_btn_model = NULL; s_btn_model_label = NULL;
+    s_gest_label = NULL;
     s_last_frame = NULL; s_frame_new = false;
     s_hsv_on = false; s_fullscreen = false; s_face_on = false;
     s_media_taken = false;      /* ★ S2-0：下次建页时必须从"未占用"重新开始 */

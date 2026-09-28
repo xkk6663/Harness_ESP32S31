@@ -465,14 +465,14 @@ dependencies:
     - esp32s31
     version: 2.2.0
   espressif/esp_video_codec:
-    component_hash: e717c04f9dc491a3fefd655500d7009a107391127e6903c4005bfec0bbd3c29c
+    component_hash: 4a531eadff5a79a646838cb262472c58af5231a8c161223da5bbfdf95b5b0dcc
     dependencies:
     - name: espressif/esp_h264
       registry_url: https://components.espressif.com
       require: private
       rules:
       - if: target in [esp32p4, esp32s3, esp32s31]
-      version: ^1.3.0
+      version: ^1.4.0
     - name: espressif/esp_new_jpeg
       registry_url: https://components.espressif.com
       require: private
@@ -485,7 +485,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.5.7
+    version: 0.5.6
   espressif/esp_video_render:
     component_hash: 68f398eb82318d2a71da33a276375a15c033af21313c7947b940f2aa332c59e5
     dependencies:
@@ -562,12 +562,12 @@ dependencies:
       type: service
     version: 1.0.1~1
   espressif/gmf_core:
-    component_hash: 025de674bdfaec7b9d98019f904e91d59318a6ed4e47baef134c136b98a7a745
+    component_hash: 03aaff3dec4d2431b752f2ca6eb5f8e831f12e748007bf3d063a6dfdeba3bf7f
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.0.2
+    version: 1.0.1
   espressif/gmf_fft:
     component_hash: b59451ef2f96d22b80c27a162515b21f1b85954dda434c0b092172164028779d
     dependencies: []
@@ -591,7 +591,7 @@ dependencies:
       type: service
     version: 1.0.0
   espressif/gmf_video:
-    component_hash: df5450cb8f6eeea78e2ebdefe8825e73fcd2681a08ae04b41a501c7a26a8ef0d
+    component_hash: 38cf27c1809f8da5cfe61db1c07d8af8557e5cc2a2a62b3d72ab3a4c85eb7b89
     dependencies:
     - name: espressif/esp_image_effects
       registry_url: https://components.espressif.com
@@ -608,7 +608,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.0.3
+    version: 1.0.2
   espressif/human_face_detect:
     component_hash: b6f898ba69e0355641db0f2974f5810fb26c265ab3e1b1a03a37469976ad4591
     dependencies:
@@ -799,7 +799,7 @@ dependencies:
       type: service
     version: 0.7.0
   lvgl/lvgl:
-    component_hash: 7d82410747bbfb319531449749e940f440f8414f041f9eaba13f0d1dd7f58cdd
+    component_hash: d5e723db3a3feca71e34e333a6598b7624e3822577d374e1d44f0e18374952e1
     dependencies:
     - name: espressif/freetype
       registry_url: https://components.espressif.com
@@ -828,7 +828,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 9.6.0~1
+    version: 9.6.0
 direct_dependencies:
 - espressif/cjson
 - espressif/cmake_utilities
