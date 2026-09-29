@@ -14,12 +14,20 @@ idf_component_register(SRCS
                         "middleware/periph/sdcard_service.c"
                         "middleware/periph/led_service.c"
                         "middleware/periph/button_service.c"
+                        ## ---- S8-1：人脸库（特征索引落盘；不依赖 esp-dl）----
+                        "middleware/face_db/face_db.c"
                         "middleware/camera/camera_service.c"
                         "middleware/camera/ov3660_fmt.c"
                         "middleware/camera/capture_service.c"
                         "middleware/camera/viewfinder.c"
-                        "middleware/camera/color_hsv.c"
+                        ## ---- S8-1：人脸框质量门槛（UI 引导 + S8-2 录入/打卡共用同一份判据）----
+                        "middleware/camera/face_quality.c"
                         "middleware/camera/face_service.cpp"
+                        "middleware/camera/face_recog_service.cpp"
+                        ## ---- S8-2：JPEG 软编码（打卡照片 + 人脸底片共用一个常驻编码器）----
+                        "middleware/camera/jpeg_util.c"
+                        ## ---- S8-2b/S8-3：打卡落盘（RC 校验 + 冷却 + 流水 CSV + 清空）----
+                        "middleware/camera/punch_service.c"
                         "middleware/media/avi_mjpeg_muxer.c"
                         "middleware/media/avi_mjpeg_demuxer.c"
                         "middleware/media/file_mgr_service.c"
@@ -42,6 +50,8 @@ idf_component_register(SRCS
                         "ui/page_bluetooth.c"
                         "ui/page_rgb.c"
                         "ui/page_system.c"
+                        ## ---- S8-1：人脸库管理页（SYS 页入口，页栈子页）----
+                        "ui/page_face.c"
                         "ui/overlay_wp_particles.c"
                         "ui/fonts/lv_font_digital_96.c"
                         "ui/fonts/lv_font_cn_20.c"
@@ -54,6 +64,7 @@ idf_component_register(SRCS
                                     "middleware/ai"
                                     "middleware/net"
                                     "middleware/periph"
+                                    "middleware/face_db"
                                     "middleware/camera"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
                                     esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1

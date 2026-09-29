@@ -11,8 +11,10 @@
 
 #include "capture_service.h"
 #include "camera_service.h"
+#include "face_recog_service.h"      /* face_recog_state/ready：回答"MFN 是不是在跟媒体档抢" */
 #include "sdcard_service.h"
 #include "net_time_service.h"
+#include "mem_diag.h"                /* mem_diag_snap()：起流前后的 PSRAM 现场 */
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -172,6 +174,29 @@ static int make_photo_path(char *out, size_t out_len)
 }
 
 /* ---------------------------------------------------------------------------
+ *  诊断：把"这次拍照开始时 heap 长什么样 + 谁占着大块"打一行（S8 偶发失败，§67）
+ *
+ *  ★ 为什么必须打：拍照偶发失败的真因是"媒体档要 921,600 x (缓冲数+1) B 的
+ *    **连续** PSRAM，而识别引擎常驻后 largest 在 2,686,976 附近抖动" ⇒ 判据是
+ *    largest，而当时的日志里**只有 free**（见 mem_diag.h 的口径自相矛盾那段）。
+ *  ★ 三个时点各一行，各自回答一个**不同**的问题 —— 少一个就有一条路说不清：
+ *      pre    没接管预览时   → 预览流当时占着多少？能否靠"停预览"腾出来？
+ *      stream 停完预览、起流前 → 驱动将要面对的真实 heap（与 camera_service 自己的
+ *                              [streammem] 预检互为佐证：两个独立测量点对得上才算数）
+ *      post   事务收尾、预览已归还 → 大块**放回来了没有**（失败是泄漏还是别的原因）
+ *  ★ 只打日志、不做任何判定 —— 拍照是用户触发的短事务，这里绝不能因为"看着不够"
+ *    就拒绝（那会把本来拍得成的场景挡掉，本工程一贯口径：先让它试，失败必须留痕）。
+ * ------------------------------------------------------------------------- */
+static void cap_mem_snap(const char *where)
+{
+    char who[96];
+    snprintf(who, sizeof(who), "engine=%d ready=%d owner=%d",
+             (int)face_recog_state(), (int)face_recog_ready(),
+             (int)camera_service_owner());
+    mem_diag_snap(TAG, where, who);
+}
+
+/* ---------------------------------------------------------------------------
  *  事务（一次性任务里跑，所以允许阻塞）
  * ------------------------------------------------------------------------- */
 static void capture_task(void *arg)
@@ -187,6 +212,11 @@ static void capture_task(void *arg)
     bool             started = false;
     esp_err_t        stop_err = ESP_OK;
     char             path[CAPTURE_PATH_MAX] = {0};
+
+    /* ---- ⓪ 现场快照（诊断，见 cap_mem_snap 注释）----
+     * ★ 放在**所有硬件动作之前**：这是"用户按下快门那一刻"的 heap，
+     *   也就是"到底还剩不剩得下 dl 模型"的原始起点。 */
+    cap_mem_snap("capmem pre");
 
     /* ---- ① 前置检查：SD 卡 ----
      * ★ 先查卡、再建目录、**最后才开流**。顺序反了就会出现"相机已经被拧到 JPEG 档、
@@ -228,7 +258,12 @@ static void capture_task(void *arg)
         }
     }
 
-    /* ---- ④ 起流（JPEG 1280x720，归属 MEDIA ⇒ CAM 页会看到"被占用"）---- */
+    /* ---- ④ 起流（JPEG 1280x720，归属 MEDIA ⇒ CAM 页会看到"被占用"）----
+     * ★ 起流前再快照一次：此刻预览已经拆干净、媒体缓冲还没分配 ⇒
+     *   这一行就是"驱动将要面对的 heap"，与 camera_service 里的 [streammem]
+     *   预检读数应当一致（两个独立点对得上，才能排除"埋点位置搞错了"）。 */
+    cap_mem_snap("capmem stream");
+
     ctx.skip = CAP_WARMUP_SKIP;
     res.err = camera_service_start_fmt_owner(cap_frame_cb, &ctx,
                                              CAM_FMT_JPEG, CAM_MEDIA_W, CAM_MEDIA_H,
@@ -304,6 +339,12 @@ finish:
             ESP_LOGW(TAG, "restore preview failed: %s", esp_err_to_name(re));
         }
     }
+
+    /* ---- ⓪-b 收尾快照：确认大块放回来了 ----
+     * ★ 与上面的 "capmem pre" 对齐看：两者如果差着一大截，说明**这次事务漏了大块**
+     *   （泄漏 / 归还失败），那下一次拍照就不是"偶发"而是"必然"了 —— 这条判据
+     *   一次烧录就能把"偶发"和"泄漏累积"分开。 */
+    cap_mem_snap("capmem post");
 
     res.frames_seen = ctx.seen;
     res.elapsed_ms  = (uint32_t)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS);

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拍照/录像 720p 起流失败排查 · PSRAM 连续块（2026-09-28）</title>
+<style>
+  :root{
+    --ink:#1f2328; --ink2:#57606a; --ink3:#8b949e;
+    --line:#d8dee4; --line2:#eaeef2;
+    --bg:#ffffff; --bg2:#f6f8fa;
+    --red:#b42318; --green:#1a7f37; --blue:#0969da; --amber:#9a6700;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg2);color:var(--ink);
+       font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 64px;}
+  h1{font-size:21px;font-weight:600;margin:0 0 6px;}
+  .sub{color:var(--ink2);font-size:13px;margin:0 0 22px;}
+  h2{font-size:16px;font-weight:600;margin:30px 0 10px;padding-bottom:6px;
+     border-bottom:1px solid var(--line);}
+  h3{font-size:14px;font-weight:600;margin:20px 0 8px;}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:12px 0;}
+  .warn{border-left:4px solid var(--red);background:#fff5f5;}
+  .note{border-left:4px solid var(--blue);background:#f0f7ff;}
+  .ok{border-left:4px solid var(--green);background:#f2fbf4;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:var(--bg2);font-weight:600;white-space:nowrap;}
+  code,kbd{font-family:var(--mono);font-size:12.5px;background:var(--bg2);
+           border:1px solid var(--line2);border-radius:4px;padding:1px 5px;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#0d1117;color:#e6edf3;
+      border-radius:8px;padding:12px 14px;overflow-x:auto;margin:10px 0;line-height:1.55;}
+  pre .c{color:#8b949e}
+  pre .g{color:#7ee787}
+  pre .y{color:#e3b341}
+  pre .r{color:#ff7b72}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;
+        border:1px solid var(--line);background:var(--bg2);color:var(--ink2);
+        font-family:var(--mono);white-space:nowrap;}
+  .tag{font-family:var(--mono);font-size:12px;font-weight:600;}
+  .t-cam{color:#9a6700}.t-cap{color:#cf222e}.t-dvp{color:#8250df}.t-vfd{color:#1a7f37}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+  @media print{
+    body{background:#fff} .wrap{max-width:none;padding:0}
+    h2{break-after:avoid} table{break-inside:auto} tr{break-inside:avoid}
+    pre{background:#f6f8fa;color:#1f2328;border:1px solid #d8dee4}
+    pre .c{color:#57606a}pre .g{color:#1a7f37}pre .y{color:#9a6700}pre .r{color:#b42318}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>拍照/录像 720p 起流失败 · 根因与修复</h1>
+<p class="sub">2026-09-28 · 分支「端侧人脸识别」· 工程 <code>display_audio_photo</code> ·
+用户报告："偶尔会出现拍照存 SD 失败的 BUG"</p>
+
+<div class="card warn">
+<b>一句话结论</b>：不是"偶发 bug"，是 <b>PSRAM 预算问题</b>。
+拍照/录像/取景器都走 <code>1280×720 JPEG</code>，起一次流要从 PSRAM 拿
+<b>3 块各 921,600 B、且必须连成一片</b> = <b>2,764,800 B（2.64 MB）</b>。
+而实测「加载 FACE 检测模型之后」的 PSRAM 最大连续块只剩 <b>2,686,976 B（2.56 MB）</b>
+—— 差 77,824 B，拿不到。<br>
+<code>largest</code> 在 2.7 MB 附近上下抖动 ⇒ 有时够（成功）、有时不够（失败）= "偶尔"。
+</div>
+
+<h2>1 失败现场</h2>
+<div class="cols">
+<div>
+<h3>拍照（CAPTURE）</h3>
+<pre><span class="c">I (108111) CAM: sensor switch: 240x240(fmt=2)</span>
+<span class="c">             -&gt; DVP_8bit_20Minput_JPEG_1280x720_12fps (1280x720)</span>
+<span class="r">E (108275) dvp_cam: esp_cam_new_dvp_ctlr(867):</span>
+<span class="r">                      no mem for DVP backup buffer</span>
+<span class="r">E (108281) dvp_video: failed to create DVP</span>
+<span class="r">E (108285) esp_video: video-&gt;ops-&gt;start=101</span>
+<span class="r">E (108289) CAM: STREAMON fail</span>
+<span class="r">E (108292) CAPTURE: start JPEG stream failed: ESP_FAIL</span>
+<span class="c">I (108296) CAPTURE: capture done: err=ESP_FAIL, 502 ms</span></pre>
+</div>
+<div>
+<h3>取景器（VIDEO 页，同一个病）</h3>
+<pre><span class="c">I (37130) CAM: [mem] v4l2 streamon (pre) ...</span>
+<span class="r">E (37437) dvp_cam: esp_cam_new_dvp_ctlr(867):</span>
+<span class="r">                      no mem for DVP backup buffer</span>
+<span class="c">I (41649) VFD: disabled (decoded=76 dropped=150)</span></pre>
+<p style="font-size:13px;color:var(--ink2);margin:6px 0 0">
+两条路都走 <code>CAM_MEDIA_W/H = 1280×720</code> JPEG ⇒ 同一个根因。
+"拍照失败"只是它最容易被看见的那一面。</p>
+</div>
+</div>
+
+<h2>2 根因：三块连续块，拼不出来</h2>
+<table>
+<tr><th style="width:34px">#</th><th>块</th><th>谁分配</th><th>单块字节</th><th>源码位置</th></tr>
+<tr><td>①</td><td>V4L2 mmap 缓冲 ×2</td><td><span class="tag t-dvp">esp_video</span><code>esp_video_buffer_create()</code></td><td><code>921,600</code></td><td><code>esp_video_buffer.c:47</code></td></tr>
+<tr><td>②</td><td>DVP backup buffer ×1</td><td><span class="tag t-dvp">ESP-IDF</span> DVP 驱动</td><td><code>921,600</code></td><td><code>esp_cam_ctlr_dvp_cam.c:262-278 / :866</code></td></tr>
+<tr><td colspan="3" style="text-align:right"><b>合计（<code>BUF_CNT=2</code>）</b></td><td colspan="2"><b>2,764,800 B</b>（2.64 MB），且必须是<b>一段连续</b>空间</td></tr>
+</table>
+<p>单块尺寸真源：<code>esp_video.c:84</code> 里 JPEG 的 bpp = <b>8</b> ⇒
+<code>w*h*bpp/8 = 1280×720 = 921,600</code>。backup buffer 用的是同一个数
+（<code>get_frame_size()</code> 对 JPEG 直接给 <code>h_res*v_res</code>）。</p>
+
+<div class="card note">
+<h3 style="margin-top:0">★ 先把 caps / DMA 这条猜测彻底排除</h3>
+<p>backup buffer 请求的是 <code>MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA</code>，看着像"要一块 DMA 能用的
+PSRAM"，很容易怀疑 S31 上不存在这种内存。**但 IDF 在查 heap 之前就把 DMA 位摘掉了**：</p>
+<pre><span class="c">/* components/esp_hw_support/heap_align_hw.c:101-108 */</span>
+<span class="c">// Workaround: the heap allocator doesn't have regions marked</span>
+<span class="c">// `MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM` so we need to request those</span>
+<span class="c">// without the DMA flag.</span>
+<span class="y">if</span> (caps &amp; MALLOC_CAP_SPIRAM) {
+    caps &amp;= ~MALLOC_CAP_DMA;
+}</pre>
+<p style="margin-bottom:0">（真因：S31 的内存类型表里 SPIRAM 一栏确实没有 DMA ——
+<code>heap/port/esp32s31/memory_layout.c:52</code>。）<br>
+⇒ 这个分配<b>实际就是</b> <code>MALLOC_CAP_SPIRAM</code> 分配 ⇒
+<b>只可能是"PSRAM 里找不出这么长一段空地"</b>，与 caps、DMA、SD 卡、sensor 全都无关。
+这也是"<code>PSRAM free</code> 还剩几 MB 却分配失败"的唯一解释。</p>
+</div>
+
+<h2>3 为什么是"偶尔"—— largest 在阈值附近抖动</h2>
+<table>
+<tr><th>时刻</th><th>PSRAM free</th><th>PSRAM largest</th><th>媒体档需 2,764,800</th></tr>
+<tr><td>开机后（FACE 检测模型未加载）</td><td>3,881,484</td><td><b>3,866,624</b></td><td style="color:var(--green)">✅ 够</td></tr>
+<tr><td>加载 FACE 检测模型后</td><td>2,793,740</td><td><b>2,686,976</b></td><td style="color:var(--red)">❌ 不够（差 77,824）</td></tr>
+</table>
+<p style="color:var(--ink2);font-size:13px">（数字取自 §66 那次上机日志里 VISION 的 <code>[resident] load #1</code> 行。）</p>
+<p>FACE 模型开/关、MSR+MNP 的 esp-dl arena、LVGL 重建、音频管线建立……每一项都在 2.7 MB
+附近推动这个数 ⇒ <b>有时够、有时不够</b>。</p>
+
+<h3>PSRAM 开机常驻账单（为什么这块本来就薄）</h3>
+<table>
+<tr><th>常驻项</th><th>字节</th><th>说明</th></tr>
+<tr><td>取景器 <code>s_dec_out</code></td><td>1,843,200</td><td>720p RGB565 全尺寸解码出图</td></tr>
+<tr><td>取景器 <code>s_stage</code></td><td>921,600</td><td>JPEG 码流中转</td></tr>
+<tr><td>取景器 <code>s_disp[2]</code></td><td>230,400</td><td>320×180 抽点后显示双缓冲</td></tr>
+<tr><td><code>file_mgr</code> 显示双缓冲</td><td>921,600</td><td>2 × 460,800</td></tr>
+<tr><td>面板帧缓冲 / LVGL / 音频 / esp-dl 检测模型 …</td><td>余下</td><td>—</td></tr>
+<tr style="background:#fff5f5"><td><b>媒体档还要</b></td><td><b>2,764,800 连续</b></td><td><b>← 本页要治的病</b></td></tr>
+</table>
+
+<h2>4 本轮改动（2 个文件）</h2>
+
+<h3>4.1 <code>main/middleware/mem_diag.h</code> —— 补 <code>PSRAM largest</code></h3>
+<p>该文件自己写着判读口径"只看 <code>largest_free_block</code>，不看 <code>free_size</code>"，
+但 PSRAM 那一栏<b>只打了 free</b>。代价已出现两次（§61 POSE、§67 本次）——两次都只能靠
+组件自己打的日志反推。</p>
+<pre><span class="r">-  "want=%u B | INT free=%u largest=%u | DMA free=%u | PSRAM free=%u"</span>
+<span class="g">+  "want=%u B | INT free=%u largest=%u | DMA free=%u | PSRAM free=%u largest=%u"</span></pre>
+<p style="font-size:13px;color:var(--ink2)"><code>MEM_DIAG_FMT</code> 与 <code>MEM_DIAG_ARGS</code>
+是配对宏，两边同时改；引用它的 12 个文件全部复验。</p>
+
+<h3>4.2 <code>main/middleware/camera/camera_service.c</code> —— 预检 + 缓冲数可调</h3>
+<ul>
+<li>新增 <code>MEDIA_BUF_CNT</code>（<code>#ifndef</code> 包住，可 <code>-D</code> 覆盖）：
+<b>媒体档单独一份缓冲数，默认 = 1</b>。预览档仍用 <code>BUF_CNT=2</code>。
+  <table style="margin-top:8px">
+  <tr><th></th><th>连续块需求</th><th>vs 实测 worst case（2,686,976）</th></tr>
+  <tr><td><code>MEDIA_BUF_CNT=2</code></td><td>2,764,800（2.64 MB）</td><td style="color:var(--red)">不够</td></tr>
+  <tr><td><code>MEDIA_BUF_CNT=1</code></td><td><b>1,843,200（1.76 MB）</b></td><td style="color:var(--green)">富余 843,776</td></tr>
+  </table>
+  另加 <code>_Static_assert(MEDIA_BUF_CNT &lt;= BUF_CNT)</code> 钉住 <code>s_buf[]</code> 数组尺寸。</li>
+<li><code>REQBUFS</code> / <code>mmap</code> 循环改用 <code>nbuf = cam_stream_buf_cnt(fmt)</code>（原来写死 <code>BUF_CNT</code>）。</li>
+<li>新增 <code>cam_stream_mem_check()</code>：在 <code>camera_service_start_fmt_owner()</code> 里、
+<b>任何硬件动作之前</b>（<code>ov3660_fmt_lookup</code> 之后）打一行诊断。
+位置刻意选在"上一次的流已拆干净、本次缓冲还没分配"⇒ 这一行就是驱动将要面对的真实 heap。</li>
+<li><code>STREAMON</code> 失败分支不再只打 <code>STREAMON fail</code>，改为把
+<code>largest vs need</code> 与"大概率是碎片"一起打出来。</li>
+</ul>
+
+<h2>5 ★ 代价与回退（务必读）</h2>
+<div class="card warn">
+<p style="margin-top:0"><code>MEDIA_BUF_CNT=1</code> 意味着：
+<b>帧回调执行期间来的帧会落到驱动 backup buffer 上被丢弃</b>
+（<code>cap_frame_cb</code> / <code>rec_frame_cb</code> 里是 <code>fwrite</code> /
+<code>avi_muxer_add_jpeg</code> <b>同步写盘</b>）。</p>
+<table>
+<tr><th>路径</th><th>影响</th></tr>
+<tr><td>CAM 页预览（240×240 RGB565）</td><td style="color:var(--green)">不受影响（走另一份计数 <code>BUF_CNT=2</code>）</td></tr>
+<tr><td>VIDEO 页取景器</td><td style="color:var(--green)">无影响：本来就按 <code>VF_MIN_INTERVAL_US=150 ms</code> 限速主动丢帧</td></tr>
+<tr><td>拍照</td><td style="color:var(--green)">无影响：只要 1 张可用帧（预热帧本来就丢）</td></tr>
+<tr><td><b>录像</b></td><td style="color:var(--amber)"><b>可能掉帧</b>：帧率 ≈ <code>1 / (写盘耗时 + 1~2 个帧周期)</code>。
+标称 12 fps（83 ms/帧），若 100 KB JPEG 写盘 50 ms ⇒ 实际约 <b>5~7.5 fps</b></td></tr>
+</table>
+<p><b>怎么当场判定</b>：VIDEO 页已有的两个指标就够 ——
+<code>fps</code>（<code>s_stats.fps_x100</code>）与 <code>VFD: ... dropped=N</code>。</p>
+<p style="margin-bottom:0"><b>回退 / 后续路线</b>（代价从低到高）：<br>
+1. <b>只给录像恢复 2 个缓冲</b>：把缓冲数做成 <code>camera_service_start_fmt_owner()</code> 的参数，
+<code>capture_service</code> 传 1、<code>record_video_service</code> 传 2 ⇒ 录像保住 12 fps，
+但录像仍暴露在本 bug 下。<br>
+2. <b>让 muxer 不再同步写盘</b>：帧回调只把 JPEG 拷进 PSRAM 队列，由独立任务写 SD
+（<code>rec_local_service</code> 那套模式）⇒ 对录像零代价，<b>这是真解</b>。</p>
+</div>
+<div class="card warn">
+<b>⚠ 明确不做（会 panic）</b>：不要同时"关掉 DVP backup buffer"。
+<code>esp_cam_ctlr_dvp_cam.c:179-181</code> 在拿不到任何缓冲且 <code>bk_buffer_dis</code> 时走
+<code>assert(false &amp;&amp; "no new buffer, and no driver internal buffer")</code>
+⇒ 把"SD 卡卡一下丢帧"升级成"直接 panic"。
+</div>
+
+<h2>6 上机验证判据</h2>
+<pre><span class="g">CAM: [streammem] JPEG 1280x720 need=1843200 B contiguous
+     (1 x 921600 B + 1 backup) | PSRAM free=.. largest=..</span></pre>
+<ul>
+<li><b>这一行必须每次拍照/录像/进取景器都出现</b>（不出现 = 预检没接线）。</li>
+<li><code>largest &gt;= 1843200</code> ⇒ 起流应成功：<code>CAPTURE: capture -&gt; /sdcard/...</code>
++ <code>capture done: err=ESP_OK</code>。</li>
+<li>若 <code>largest &lt; 1843200</code> ⇒ 会跟一行
+<code>[streammem] NOT ENOUGH CONTIGUOUS PSRAM:</code> + 空闲块分布
+⇒ 把那段贴回来，能直接判是碎片还是总量。</li>
+<li>录像同时看 <code>fps</code> 与 <code>VFD dropped</code>，按上面第 5 节决定要不要走回退路线。</li>
+</ul>
+
+<h2>7 这一轮<b>没做</b>的事（写明白，免得以为是修好了）</h2>
+<ul>
+<li><b>没有</b>改 <code>engine_mem_ok()</code> 的阈值。§66 那次 MFN 失败
+（<code>Failed to alloc 820.75KB PSRAM, largest 720.00KB</code>）现在能算清楚了：
+加载时 PSRAM 里同时要有 <b>1,295,200 B 的模型文件缓冲 + 820.75 KB 的 arena</b>
+（<code>fbs_loader.cpp</code> SDCARD 模式整块读；<code>root_alloc()</code> 再要一块），
+而现有预检只要求 <code>largest ≥ 最大单文件 + 64 KB</code> ⇒ <b>阈值偏松，没拦住</b>。
+属于 S8 那条线，等下一次上机的 <code>PSRAM largest</code> 实测值再定阈值。</li>
+<li><b>没有</b>改取景器 / 文件预览的常驻缓冲策略（"开机一次性拿齐、永不释放"仍是正确策略）。</li>
+</ul>
+
+<hr>
+<p style="font-size:12.5px;color:var(--ink3)">
+静态校验：<code>camera_service.c</code>（默认 <code>=1</code> 与 <code>-DMEDIA_BUF_CNT=2</code> 两个方向）
++ 引用 <code>mem_diag.h</code> 的全部 11 个文件 <b>11/11 全绿</b>。<br>
+文档：<code>docs/项目规划/改动记录.md</code> §67 · <code>docs/开发文档/内存优化可执行方案.md</code> §13。<br>
+编译烧录由你自己做（<code>idf.py build</code> → <code>flash -a</code>）。本次<b>没有动分区表、没有加模型文件</b>
+⇒ <b>不需要</b> <code>idf.py storage-flash</code>。
+</p>
+
+</div>
+</body>
+</html>

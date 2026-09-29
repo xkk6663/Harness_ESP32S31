@@ -43,8 +43,14 @@
 
 #define TAG "FMGR"
 
-/* ---- 常驻缓冲（init 一次拿齐，永不 free）---- */
-static uint16_t *s_pv[2] = {NULL, NULL};            /* 预览/播放双显示缓冲 640x360 */
+/* ---- 预览/播放双显示缓冲 640x360（2 x 460,800 = 921,600 B PSRAM）----
+ * ★ 2026-09-28：viewfinder 的 2.93 MB 已改为按需（acquire/release），但**本缓冲仍是
+ *   开机常驻**（file_mgr_init 分配，全文件无 free 路径）。它是"下一轮按需化"的候选。
+ *   本轮不动它的两个理由：
+ *     ① 它只有 0.92 MB，而 viewfinder 释放出的 2.93 MB 已足够让 dl 模型跑起来；
+ *     ② 释放它必须连带处理 s_pv_canvas 的**零拷贝**指针（tab_files 的画布连占位缓冲
+ *        都没设过），改动面与 UAF 风险都明显高于本轮目标。 */
+static uint16_t *s_pv[2] = {NULL, NULL};
 
 /* ---- 服务对象 ---- */
 static QueueHandle_t s_cmd_q = NULL;
@@ -98,14 +104,48 @@ static bool guards_ok(bool need_idle_media)
     return true;
 }
 
-/** 720p -> 640x360，step 2 稀疏抽点：只读 360/720 行（跳过的行不产生 PSRAM 事务） */
-static void sub_step2(const uint16_t *src, uint16_t *dst)
+/**
+ * ★ 2026-09-28（§73.11 修正）：任意尺寸 → ≤640x360 **等比**缩放 + 居中 letterbox。
+ *  成因一（旧 step2）：720p 专用行寻址，尺寸一变输出错位。
+ *  成因二（本函数第一版）：直接把源**拉伸**到 FM_W×FM_H —— 240x240 的方形
+ *  打卡照被压成 640x360 的扁矩形（用户报"打卡照片预览是扁的"）。
+ *
+ *  ★ 新纪律（用户明确要求）：**照片预览统统保留原比例，绝不改变照片比例**。
+ *    做法：scale = min(FM_W/sw, FM_H/sh)，缩放结果居中放入目标缓冲，
+ *    剩余边缘填黑（letterbox）。宽高比与源严格一致 —— 拉伸只来自显示端
+ *    的画布尺寸，与数据无关。
+ *  ★ 720p（1280x720 → 640x360）恰好等比 0.5，无黑边，行为与旧版完全一致。
+ *  ★ 行寻址用 **stride**（补齐时 > 可见宽），列范围用可见宽（补齐列不进画面）。
+ */
+static void sub_scale_any(const uint16_t *src, uint32_t sw, uint32_t sh,
+                          uint32_t stride, uint16_t *dst)
 {
+    if (sw == 0 || sh == 0 || stride < sw) return;      /* 守卫：坏尺寸宁可不出图 */
+
+    /* 等比：交叉相乘避免浮点。源相对更宽 ⇒ 宽度受限，否则高度受限。 */
+    uint32_t cw, ch;                                    /* 内容区（目标内的实图矩形） */
+    if ((uint64_t)sw * FM_H >= (uint64_t)sh * FM_W) {
+        cw = FM_W;
+        ch = (uint32_t)((uint64_t)FM_W * sh / sw);
+    } else {
+        ch = FM_H;
+        cw = (uint32_t)((uint64_t)FM_H * sw / sh);
+    }
+    uint32_t offx = (FM_W - cw) / 2u;
+    uint32_t offy = (FM_H - ch) / 2u;
+
     for (uint32_t y = 0; y < FM_H; y++) {
-        const uint16_t *s = src + (uint32_t)(y * 2u) * VF_SRC_W;
-        uint16_t       *d = dst + y * FM_W;
+        uint16_t *d = dst + y * FM_W;
+        if (y < offy || y >= offy + ch) {
+            for (uint32_t x = 0; x < FM_W; x++) d[x] = 0x0000;   /* 上下黑边 */
+            continue;
+        }
+        uint32_t sy = (uint32_t)((uint64_t)(y - offy) * sh / ch);
+        const uint16_t *s = src + sy * stride;
         for (uint32_t x = 0; x < FM_W; x++) {
-            d[x] = s[x * 2u];
+            if (x < offx || x >= offx + cw) { d[x] = 0x0000; continue; }   /* 左右黑边 */
+            uint32_t sx = (uint32_t)((uint64_t)(x - offx) * sw / cw);
+            d[x] = s[sx];
         }
     }
 }
@@ -115,15 +155,18 @@ static void sub_step2(const uint16_t *src, uint16_t *dst)
  * @param stage 调用方从 viewfinder 借的 staging（本次 decode 的输入）
  * @param len   JPEG 字节数
  * @return ESP_OK；其余见 viewfinder_decode_jpeg_mem
+ * ★ 2026-09-28：宽高/步长来自解码实测 —— 预览照片（240x240 打卡照）与
+ *   播放录像帧（720p）走同一条路，不再假设 720p。
  */
 static esp_err_t decode_frame_publish(const uint8_t *stage, size_t len)
 {
     esp_err_t err = ESP_OK;
-    const uint16_t *full = viewfinder_decode_jpeg_mem(stage, len, &err);
+    uint16_t dw = 0, dh = 0, stride = 0;
+    const uint16_t *full = viewfinder_decode_jpeg_mem(stage, len, &dw, &dh, &stride, &err);
     if (full == NULL) return err;
 
     uint32_t idx = s_pv_idx;
-    sub_step2(full, s_pv[idx]);
+    sub_scale_any(full, dw, dh, stride, s_pv[idx]);
     s_pv_idx = idx ^ 1u;
     s_pv_seq++;
     return ESP_OK;
@@ -208,7 +251,17 @@ static void do_preview(const char *path)
     esp_err_t err = ESP_OK;
 
     if (!guards_ok(true))                  { err = ESP_ERR_INVALID_STATE; goto out; }
-    if (stage == NULL)                     { err = ESP_ERR_NO_MEM;        goto out; }
+    if (stage == NULL) {
+        /* ★★ 2026-09-28 按需化：staging 为 NULL 的唯一成因是**调用方没有在 post 命令
+         *    之前 `viewfinder_acquire()`**（那一步由 tab_files 的 open_path() 在 LVGL
+         *    线程负责）。必须明确报出来 —— 否则 UI 只显示一句 "Preview failed"，
+         *    排查时看不出根因（viewfinder_borrow_stage 是纯 getter，不触发惰性 init，
+         *    一旦漏了 acquire 就会永久失败且毫无线索）。 */
+        ESP_LOGE(TAG, "preview: viewfinder staging NULL - caller must call "
+                      "viewfinder_acquire() (in LVGL thread) BEFORE posting FMC_PREVIEW");
+        err = ESP_ERR_NO_MEM;
+        goto out;
+    }
 
     f = fopen(path, "rb");
     if (f == NULL) { err = ESP_ERR_NOT_FOUND; goto out; }
@@ -242,7 +295,13 @@ static void do_play(const char *path)
     int stop_reason = 0;                    /* 0=播完 1=停止 2=出错 */
 
     if (!guards_ok(true)) { emit(FME_PLAY_DONE, 2, 0); return; }
-    if (stage == NULL)    { emit(FME_PLAY_DONE, 2, 0); return; }
+    if (stage == NULL) {
+        /* 同 do_preview：根因是"调用方忘了 acquire"，不是真的内存不足 —— 明确报出来。 */
+        ESP_LOGE(TAG, "play: viewfinder staging NULL - caller must call "
+                      "viewfinder_acquire() (in LVGL thread) BEFORE posting FMC_PLAY");
+        emit(FME_PLAY_DONE, 2, 0);
+        return;
+    }
 
     dm = avi_demux_open(path);
     if (dm == NULL) {
@@ -393,6 +452,12 @@ void file_mgr_set_evt_cb(file_mgr_evt_cb_t cb, void *user)
 {
     s_cb = cb;
     s_cb_user = user;
+}
+
+void file_mgr_get_evt_cb(file_mgr_evt_cb_t *cb, void **user)
+{
+    if (cb)   *cb   = s_cb;
+    if (user) *user = s_cb_user;
 }
 
 esp_err_t file_mgr_post_cmd(const file_mgr_cmd_t *cmd)

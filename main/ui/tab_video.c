@@ -69,10 +69,18 @@
 #define INFO_W          600
 #define INFO_X          ((776 - INFO_W) / 2)    /* 88 */
 #define INFO_Y          272
-#define BTNROW_W        596         /* 4 个按钮 ×140 + 3×12 = 596 */
+#define BTNROW_W        292         /* ★ §73.12：Q + PREVIEW 两个按钮 ×140 + 12（拍照/录像已移到画面右侧竖排） */
 #define BTNROW_H        60
-#define BTNROW_X        ((776 - BTNROW_W) / 2)  /* 90 */
+#define BTNROW_X        ((776 - BTNROW_W) / 2)  /* 242 */
 #define BTNROW_Y        316
+/* ★ §73.12：拍照/录像两颗圆形按钮 —— 移到取景画面**右侧竖排**（相机 App 布局）。
+ *  画布右边缘 x=548（VF_X+320），右侧余量 548..776 共 228 px；按钮 72 圆，
+ *  x = 590（右区水平居中 548+(228-72)/2=626 太靠边，取 590 视觉更均衡）。
+ *  竖排：两颗 + 20 间距 = 164，画布高 180 ⇒ 顶起 y=68 上下各留 8。 */
+#define SIDE_BTN_SIZE   72
+#define SIDE_X          590
+#define SIDE_CAP_Y      68
+#define SIDE_REC_Y      (SIDE_CAP_Y + SIDE_BTN_SIZE + 20)   /* 160 */
 #define STATUS_HOLD_TICKS  40       /* 按键提示保持 40×50ms = 2s，不被状态机冲掉 */
 
 /* ---------------------------------------------------------------------------
@@ -200,15 +208,18 @@ static void refresh(lv_timer_t *t)
      *   设到子 label 的 text_color 上会因为"子对象不继承 state"而永远不生效）。
      *   label 固定 COL_DARK：红底/青底上深字才看得清。 */
     if (s_rec_label) {
-        const char *want = recording ? "STOP REC" : "REC";
+        /* ★ §73.12：按钮已是 72 圆 —— 文案用短词（"STOP REC" 太长会被圆边裁掉）。
+         *  录制中 = 红色（录制语义），空闲 = 绿色；按下的青色由 LV_STATE_PRESSED
+         *  样式自动叠加（见 build 注释），这里不用管。 */
+        const char *want = recording ? "STOP" : "REC";
+        lv_obj_set_style_bg_color(s_rec_btn, recording ? COL_RED : COL_GREEN, 0);
         const char *cur  = lv_label_get_text(s_rec_label);
         if (cur == NULL || strcmp(cur, want) != 0) {
             lv_label_set_text_static(s_rec_label, want);
-            lv_obj_set_style_bg_color(s_rec_btn, recording ? COL_RED : COL_CYAN, 0);
         }
     }
     if (s_cap_label) {
-        const char *want = capturing ? "..." : "CAPTURE";
+        const char *want = capturing ? "..." : LV_SYMBOL_IMAGE;
         const char *cur  = lv_label_get_text(s_cap_label);
         if (cur == NULL || strcmp(cur, want) != 0) {
             lv_label_set_text_static(s_cap_label, want);
@@ -293,6 +304,7 @@ static void refresh(lv_timer_t *t)
 /* ---------------------------------------------------------------------------
  *  事件回调：只发动作、不写文案（文案由 refresh 统一负责）
  * ------------------------------------------------------------------------- */
+/* ★ §73.12：拍照 = **按下即拍**（LV_EVENT_PRESSED，不再等抬起） */
 static void cap_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -309,27 +321,35 @@ static void cap_btn_cb(lv_event_t *e)
     s_status_hold = STATUS_HOLD_TICKS;  /* 提示保持 2s，别被状态机一拍冲掉 */
 }
 
-static void rec_btn_cb(lv_event_t *e)
+/* ★ §73.12：录像 = **按住录、松手停**（PRESSED 起录，RELEASED/PRESS_LOST 收）。
+ *  ⚠ PRESS_LOST 必须处理：手指滑出按钮松开时 RELEASED 不会发 ——
+ *    漏了它就是"松手了还在录"，只能进页面再按一次才能救。 */
+static void rec_btn_pressed_cb(lv_event_t *e)
 {
     (void)e;
-    if (record_video_service_is_recording()) {
-        esp_err_t err = record_video_service_stop();
-        if (err == ESP_OK) {
-            lv_label_set_text_static(s_status, "SAVING - do NOT remove the card");
-        } else {
-            lv_label_set_text_static(s_status, "Stop refused");
-        }
+    if (record_video_service_is_recording()) return;    /* 双保险：已录则忽略 */
+    esp_err_t err = record_video_service_start();
+    if (err == ESP_OK) {
+        lv_label_set_text_static(s_status, "RECORDING (release to stop)");
+    } else if (err == ESP_ERR_NO_MEM) {
+        lv_label_set_text_static(s_status, "REC FAILED (internal RAM tight)");
     } else {
-        esp_err_t err = record_video_service_start();
-        if (err == ESP_OK) {
-            lv_label_set_text_static(s_status, "RECORDING");
-        } else if (err == ESP_ERR_NO_MEM) {
-            lv_label_set_text_static(s_status, "REC FAILED (internal RAM tight)");
-        } else {
-            lv_label_set_text_static(s_status, "REC refused (mount SD card first)");
-        }
+        lv_label_set_text_static(s_status, "REC refused (mount SD card first)");
     }
-    s_status_hold = STATUS_HOLD_TICKS;  /* 提示保持 2s，别被状态机一拍冲掉 */
+    s_status_hold = STATUS_HOLD_TICKS;
+}
+
+static void rec_btn_released_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!record_video_service_is_recording()) return;   /* 起录被拒过：无东西可停 */
+    esp_err_t err = record_video_service_stop();
+    if (err == ESP_OK) {
+        lv_label_set_text_static(s_status, "SAVING - do NOT remove the card");
+    } else {
+        lv_label_set_text_static(s_status, "Stop refused");
+    }
+    s_status_hold = STATUS_HOLD_TICKS;
 }
 
 static void q_btn_cb(lv_event_t *e)
@@ -433,16 +453,63 @@ static void vf_stream_stop(void)
     }
 }
 
-/* 开取景器 = 挂观察者 + 起流。返回 false 表示 viewfinder 自身起不来。 */
+/* ★★ 关取景 = ①让画布松开 viewfinder 的缓冲 ②停收帧 ③把 ~2.93 MB 还给系统。
+ *
+ *  为什么顺序不能颠倒（2026-09-28 按需化引入）：
+ *    `lv_canvas_set_buffer()` 是**零拷贝**（只把指针写进 canvas 内嵌 draw_buf），
+ *    vf_feed() 已经把 s_canvas 指到了 viewfinder 的 s_disp[]。先 release 的话，
+ *    s_disp 被 free 而画布仍指着它 ⇒ 下一拍重绘就是 UAF。所以必须**先换回自持缓冲**。
+ *
+ *  ★ 保留画面：release 前把"最后一帧"拷进 s_canvas_own（自持、常驻），
+ *    这样既释放了 viewfinder 的双缓冲，画面也不会变黑 —— 用户仍看得见最后一帧。
+ *
+ *  ★ 必须 LVGL 线程调用（canvas 归它独占）；幂等。 */
+static void vf_release_all(void)
+{
+    if (s_canvas != NULL && s_canvas_own != NULL) {
+        const uint16_t *last = viewfinder_last_frame();
+        if (last != NULL) {
+            memcpy(s_canvas_own, last, VF_W * VF_H * 2);    /* 两块都是 320x180 RGB565 */
+        }
+        lv_canvas_set_buffer(s_canvas, s_canvas_own, VF_W, VF_H, LV_COLOR_FORMAT_RGB565);
+        lv_obj_invalidate(s_canvas);
+    }
+    viewfinder_disable();               /* 先停任务（幂等）——release 内部也会再调一次 */
+    viewfinder_release();               /* 释放 s_dec_out / s_stage / s_disp[] */
+}
+
+/* 开取景器 = 起流 → 申请缓冲 → 挂观察者。返回 false 表示取景器自身起不来。
+ *
+ * ★★ §73.16（2026-09-29 晚）时序反转：**先起流，后 acquire 三件套**。
+ *   旧顺序（acquire → enable → 起流）的现场后果（§73.15 日志）：
+ *   三件套先占 2.93 MB（dec_out 还要 1.84 MB 连续大块）→ 起流侧 3 块
+ *   （REQBUFS 2 块 + STREAMON 阶段的 DVP backup）在碎洞里切不出 →
+ *   起流自动腾地把三件套又放掉 → 重新起流 → 再 acquire —— 绕一圈，
+ *   用户看到进页面黑屏 ~2 秒。
+ *   新顺序：起流在内存最宽裕时拿到 backup；三件套晚 ~1 个采样周期（150 ms）
+ *   attach。acquire 万一失败也只是画面停在自持缓冲的最后一帧 + VFD 渐进
+ *   重试（§73.3 幂等），**失败形态从"黑屏"降级为"卡"**。
+ *   线程：本函数跑在 LVGL 线程（按钮回调 / tab 激活），满足 acquire 要求。 */
 static bool vf_start(void)
 {
-    esp_err_t err = viewfinder_enable();
+    vf_stream_ensure();                  /* ★ 先起流（失败时 §73.15 自动腾地重试） */
+
+    esp_err_t err = viewfinder_acquire();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "viewfinder_acquire failed: %s "
+                      "(stream stays on; retry by toggling PREVIEW)", esp_err_to_name(err));
+        s_vf_err = true;
+        return false;
+    }
+    err = viewfinder_enable();
     s_vf_err = (err != ESP_OK);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "viewfinder_enable failed: %s", esp_err_to_name(err));
+        /* ★ 这里**不** release：release 必须与"画布换回自持缓冲"成对做，
+         *   而此刻画布状态不确定（可能已指过 s_disp）。留给 vf_release_all()
+         *   （PREVIEW 关闭 / 离开页面时必经过），保证释放永远在安全时机发生。 */
         return false;
     }
-    vf_stream_ensure();
     return true;
 }
 
@@ -453,7 +520,9 @@ static void preview_btn_cb(lv_event_t *e)
     if (s_preview_on) {
         s_preview_on = false;
         vf_stream_stop();
-        viewfinder_disable();       /* 摘观察者 + 停解码（画布停最后一帧） */
+        /* ★ 2026-09-28：disable → release（把 ~2.93 MB 还给系统）。
+         *   画布会换成自持缓冲，但**内容仍是最后一帧**（vf_release_all 里拷过去的）。 */
+        vf_release_all();
     } else {
         s_preview_on = true;
         vf_start();
@@ -475,8 +544,9 @@ void tab_video_set_active(bool active)
             vf_start();
         }
     } else {
-        /* ① 先停取景器（摘观察者 + 停解码任务）。 */
-        viewfinder_disable();
+        /* ① 先关取景器（换回自持画布 → 停解码任务 → 释放 ~2.93 MB PSRAM）。
+         *    ★ 2026-09-28 按需化：这一句就是"离开 VIDEO 页把内存让出去"的落点。 */
+        vf_release_all();
         /* ② 再停自己拥有的流。 */
         vf_stream_stop();
     }
@@ -510,16 +580,27 @@ void tab_video_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_text_font(s_status, UI_FONT, 0);
 
     /* ---- 取景画布 320x180 RGB565 ----
-     * ★ 首帧前先给一块自己的黑屏占位缓冲（PSRAM，115 KB，常驻）——
-     *   绝不能让 canvas 指向未初始化内存。首帧到来后数据源换成 viewfinder 的
-     *   双缓冲（见 vf_feed），这块占位缓冲就闲置了（115 KB 不值得为它加释放逻辑）。 */
-    s_canvas_own = heap_caps_aligned_alloc(64, VF_W * VF_H * 2,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+     * ★ 首帧前先给一块自己的黑屏占位缓冲（PSRAM，115,200 B，常驻）——
+     *   绝不能让 canvas 指向未初始化内存。首帧到来后数据源换成 viewfinder 的双缓冲
+     *   （见 vf_feed）；关闭预览时 vf_release_all() 会把最后一帧拷回它、再让画布指回它。
+     *
+     * ★★ 2026-09-28 修一个既有泄漏：原代码**无条件**分配本缓冲，而
+     *   tab_video_destroy() **故意不释放**它（注释写的是"重复 build/destroy 不重复分配"，
+     *   但代码并没有判空复用 —— 注释与实现矛盾）。而 page_main 的 create/destroy 是成对
+     *   回调 ⇒ 每次重新进主页面都会再吃 115,200 B PSRAM，永不归还。
+     *   修法：非 NULL 则复用（保持"常驻"语义，但真正做到不重复分配）。 */
     if (s_canvas_own == NULL) {
-        MEM_ERR_DIAG(TAG, "vf placeholder buf alloc FAILED", VF_W * VF_H * 2);
+        s_canvas_own = heap_caps_aligned_alloc(64, VF_W * VF_H * 2,
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
+        if (s_canvas_own == NULL) {
+            MEM_ERR_DIAG(TAG, "vf placeholder buf alloc FAILED", VF_W * VF_H * 2);
+        } else {
+            memset(s_canvas_own, 0, VF_W * VF_H * 2);
+        }
+    }
+    if (s_canvas_own == NULL) {
         s_canvas = NULL;
     } else {
-        memset(s_canvas_own, 0, VF_W * VF_H * 2);
         s_canvas = lv_canvas_create(screen);
         lv_canvas_set_buffer(s_canvas, s_canvas_own, VF_W, VF_H, LV_COLOR_FORMAT_RGB565);
         lv_obj_set_pos(s_canvas, VF_X, VF_Y);
@@ -549,7 +630,7 @@ void tab_video_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_text_font(s_hint, UI_FONT, 0);
     lv_obj_set_hidden(s_hint, true);
 
-    /* ---- 按钮行：4 个 ×140 + 3×12 = 596 ---- */
+    /* ---- 按钮行：Q + PREVIEW 两个 ×140 + 12 = 292（§73.12 后只剩这两个） ---- */
     s_btn_row = lv_obj_create(screen);
     lv_obj_set_pos(s_btn_row, BTNROW_X, BTNROW_Y);
     lv_obj_set_size(s_btn_row, BTNROW_W, BTNROW_H);
@@ -561,22 +642,35 @@ void tab_video_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_flex_align(s_btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(s_btn_row, 12, 0);
 
-    s_cap_btn = lv_btn_create(s_btn_row);
-    lv_obj_set_size(s_cap_btn, 140, 60);
-    lv_obj_set_style_radius(s_cap_btn, 30, 0);
+    /* ★★ §73.12：拍照 / 录像两颗**圆形**按钮 —— 移到取景画面右侧竖排。
+     *  · 拍照：按下即拍（LV_EVENT_PRESSED）；
+     *  · 录像：**按住录、松手停**（PRESSED 起录 / RELEASED+PRESS_LOST 收）；
+     *  · 按下颜色翻转：基础色走默认 state，按下色走 LV_STATE_PRESSED ——
+     *    这是 LVGL 的状态样式通道，无需 refresh 参与，按下的一瞬自动生效。 */
+    s_cap_btn = lv_btn_create(screen);
+    lv_obj_set_size(s_cap_btn, SIDE_BTN_SIZE, SIDE_BTN_SIZE);
+    lv_obj_set_pos(s_cap_btn, SIDE_X, SIDE_CAP_Y);
+    lv_obj_set_style_radius(s_cap_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_cap_btn, COL_CYAN, 0);
-    lv_obj_add_event_cb(s_cap_btn, cap_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_color(s_cap_btn, COL_RED, LV_STATE_PRESSED);    /* 按下翻转 */
+    lv_obj_set_style_shadow_width(s_cap_btn, 0, 0);
+    lv_obj_add_event_cb(s_cap_btn, cap_btn_cb, LV_EVENT_PRESSED, NULL);
     s_cap_label = lv_label_create(s_cap_btn);
-    lv_label_set_text_static(s_cap_label, "CAPTURE");
+    lv_label_set_text_static(s_cap_label, LV_SYMBOL_IMAGE);
     lv_obj_set_style_text_color(s_cap_label, COL_DARK, 0);
     lv_obj_set_style_text_font(s_cap_label, UI_FONT, 0);
     lv_obj_center(s_cap_label);
 
-    s_rec_btn = lv_btn_create(s_btn_row);
-    lv_obj_set_size(s_rec_btn, 140, 60);
-    lv_obj_set_style_radius(s_rec_btn, 30, 0);
-    lv_obj_set_style_bg_color(s_rec_btn, COL_CYAN, 0);
-    lv_obj_add_event_cb(s_rec_btn, rec_btn_cb, LV_EVENT_CLICKED, NULL);
+    s_rec_btn = lv_btn_create(screen);
+    lv_obj_set_size(s_rec_btn, SIDE_BTN_SIZE, SIDE_BTN_SIZE);
+    lv_obj_set_pos(s_rec_btn, SIDE_X, SIDE_REC_Y);
+    lv_obj_set_style_radius(s_rec_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_rec_btn, COL_GREEN, 0);
+    lv_obj_set_style_bg_color(s_rec_btn, COL_CYAN, LV_STATE_PRESSED);   /* 按下翻转 */
+    lv_obj_set_style_shadow_width(s_rec_btn, 0, 0);
+    lv_obj_add_event_cb(s_rec_btn, rec_btn_pressed_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_rec_btn, rec_btn_released_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_rec_btn, rec_btn_released_cb, LV_EVENT_PRESS_LOST, NULL);
     s_rec_label = lv_label_create(s_rec_btn);
     lv_label_set_text_static(s_rec_label, "REC");
     lv_obj_set_style_text_color(s_rec_label, COL_DARK, 0);
@@ -609,7 +703,11 @@ void tab_video_build(lv_obj_t *screen, lv_group_t *group)
 
     s_timer = lv_timer_create(refresh, 50, NULL);
     /* ★ 初值必须是 false：tabview 起始页是 CALL，本页从未活跃。
-     *   （不要在这里调 viewfinder_enable —— 那会让不开 VIDEO 页也占着相机。） */
+     *   （不要在这里调 viewfinder_enable —— 那会让不开 VIDEO 页也占着相机。）
+     * ★★ 2026-09-28 按需化之后：取景器的 ~2.93 MB PSRAM **只在本页真要预览时才有**
+     *   （preview_btn_cb / tab_video_set_active 里 viewfinder_acquire()），离开页面即
+     *   viewfinder_release() 归还。⇒ 现在"没进过 VIDEO 页"确实 = "取景器不占 PSRAM"。
+     *   （历史注释"开机无条件 init、永不释放"已随本次改造作废。） */
     s_active = false;
     s_zoomed = false;
     s_vf_err = false;
@@ -631,7 +729,8 @@ void tab_video_destroy(void)
         s_timer = NULL;
     }
     s_canvas = NULL;
-    /* s_canvas_own 故意不释放：常驻占位缓冲，重复 build/destroy 不重复分配。 */
+    /* s_canvas_own 故意不释放：常驻占位缓冲（115,200 B），由 build 侧**判空复用**——
+     * 见 tab_video_build 里 2026-09-28 的注释（修掉了"每次 build 都重复分配"的泄漏）。 */
     s_cap_btn = NULL; s_cap_label = NULL;
     s_rec_btn = NULL; s_rec_label = NULL;
     s_q_btn = NULL;   s_q_label = NULL;

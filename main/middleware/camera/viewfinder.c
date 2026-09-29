@@ -34,6 +34,7 @@
 #include "freertos/semphr.h"
 
 #include "middleware/camera/camera_service.h"
+#include "middleware/mem_diag.h"       /* ★ 按需化的 acquire/release 各打一条现场快照 */
 
 #include <string.h>
 
@@ -77,14 +78,18 @@ _Static_assert(SRC_W == 1280u && SRC_H == 720u, "viewfinder source size drift");
 #define VF_TASK_CORE     1        /* 与 cam_task 同核：cam_task(5) > vf(4) ⇒ 永远抢得过 */
 
 /* ---------------------------------------------------------------------------
- *  常驻缓冲（viewfinder_init 一次拿齐，之后永不 free）
+ *  数据缓冲（2026-09-28 起：acquire 分配 / release 释放，不再开机常驻）
  * ------------------------------------------------------------------------- */
 static uint8_t *s_dec_out   = NULL;     /* 硬件解码出图（RGB565 全尺寸） */
 static size_t   s_dec_out_sz = 0;
 static uint8_t *s_stage     = NULL;     /* JPEG 码流中转 */
 static uint16_t *s_disp[2]  = {NULL, NULL};   /* 显示缓冲（320x180 RGB565） */
 
+/* 解码引擎：进程内**只建一次**、常驻复用（见 viewfinder_acquire 的说明）。
+ * ★ 它只占内部 RAM 的小结构（DMA 链表描述符 / 事件队列 / codec handle），
+ *   数据缓冲全在上面那些 s_* 里 ⇒ 引擎常驻不违背"按需"的目标（目标是 PSRAM）。 */
 static jpeg_decoder_handle_t s_dec = NULL;
+static bool s_engine_up = false;        /* s_dec 是否已建（防 acquire 循环重复 new） */
 
 /* ---- 状态（均为单写者或多写者但只翻转 bool 的模式，volatile 即可）---- */
 static volatile bool s_inited  = false;
@@ -223,12 +228,32 @@ static void vf_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* ---------------------------------------------------------------------------
- *  对外 API
- * ------------------------------------------------------------------------- */
-esp_err_t viewfinder_init(void)
+/* 纯缓冲释放（不含停任务 / 不含状态复位）。幂等。
+ * ★ acquire 的失败路径与 viewfinder_release() **共用**它 ——
+ *   这是"按需分配"必须补上的一环：acquire 中途失败时，已分配的那几块
+ *   必须当场回收，否则下次 acquire（s_inited 仍为 false）会再分配一遍 ⇒ 泄漏。
+ * ★ s_dec_out 的释放合法性：本工程未开 CONFIG_SPIRAM_ENC_EXEMPT ⇒
+ *   JPEG_SPIRAM_ALLOC_CAPS = MALLOC_CAP_SPIRAM（esp_driver_jpeg/jpeg_private.h:41-45）
+ *   ⇒ jpeg_alloc_decoder_mem() 内部就是 heap_caps_aligned_calloc，配对 heap_caps_free。
+ *   （IDF 未提供 jpeg_free_decoder_mem，官方就是这么用的。） */
+static void free_buffers(void)
 {
-    if (s_inited) return ESP_OK;
+    if (s_dec_out != NULL) { heap_caps_free(s_dec_out); s_dec_out = NULL; }
+    s_dec_out_sz = 0;
+    if (s_stage != NULL) { heap_caps_free(s_stage); s_stage = NULL; }
+    for (int i = 0; i < 2; i++) {
+        if (s_disp[i] != NULL) { heap_caps_free(s_disp[i]); s_disp[i] = NULL; }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ *  对外 API —— 生命周期（acquire / release，2026-09-28 按需化）
+ * ------------------------------------------------------------------------- */
+esp_err_t viewfinder_acquire(void)
+{
+    if (s_inited) return ESP_OK;        /* 幂等：缓冲已在 */
+
+    mem_diag_snap(TAG, "vfmem acquire", "viewfinder buffers");
 
     /* ---- ① 出图缓冲：必须用 jpeg_alloc_decoder_mem（它做 cache/2D-DMA 对齐，
      *        并保证落在**未加密 PSRAM** —— jpeg_decoder_process 入口会硬校验，
@@ -240,6 +265,7 @@ esp_err_t viewfinder_init(void)
     if (s_dec_out == NULL) {
         ESP_LOGE(TAG, "alloc %u B decode outbuf FAILED (PSRAM tight?)",
                  (unsigned)DEC_OUT_BYTES);
+        free_buffers();                 /* 幂等：此刻只可能没有任何残留，但保持一致 */
         return ESP_ERR_NO_MEM;
     }
 
@@ -254,30 +280,102 @@ esp_err_t viewfinder_init(void)
     if (s_stage == NULL || s_disp[0] == NULL || s_disp[1] == NULL) {
         ESP_LOGE(TAG, "alloc staging/disp FAILED (staging=%p disp=%p,%p)",
                  s_stage, s_disp[0], s_disp[1]);
+        free_buffers();                 /* ★ 必须：回收已分配的那几块，否则下次 acquire 泄漏 */
         return ESP_ERR_NO_MEM;
     }
     memset(s_stage, 0, STAGE_BYTES);
     memset(s_disp[0], 0, VF_W * VF_H * 2);
     memset(s_disp[1], 0, VF_W * VF_H * 2);
 
-    /* ---- ③ 解码引擎：一次创建、常驻复用（不要每帧 open/close）----
-     *    timeout_ms 必须大于最坏解码耗时；硬件解码 720p 通常 < 30 ms，给 200 稳妥。 */
-    jpeg_decode_engine_cfg_t ecfg = {
-        .intr_priority = 0,
-        .timeout_ms    = 200,
-        .flags         = { .allow_pd = 0 },
-    };
-    esp_err_t err = jpeg_new_decoder_engine(&ecfg, &s_dec);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "jpeg_new_decoder_engine failed: %s", esp_err_to_name(err));
-        return err;
+    /* ---- ③ 解码引擎：进程内**只建一次**、常驻复用（不要每帧 open/close）----
+     *    timeout_ms 必须大于最坏解码耗时；硬件解码 720p 通常 < 30 ms，给 200 稳妥。
+     *  ★ 为什么引擎不跟着 release 销毁：它只占内部 RAM 的小结构（rxlink/txlink DMA
+     *    描述符、header_info、evt_queue、codec handle、dma2d pool），而"按需"要省的是
+     *    PSRAM（2.93 MB）。acquire/release 的频率是"用户进/出页面"级，与其反复
+     *    create/delete codec handle，不如让它常驻。
+     *    若将来确实要连引擎一起回收：IDF v6.1 有配对 API `jpeg_del_decoder_engine()`
+     *    （include/driver/jpeg_decode.h:128；实现 jpeg_decode.c:403 完整 free 上述全部
+     *     资源 + jpeg_release_codec_handle），把 s_engine_up 复位即可。
+     *  ★ s_engine_up 防的是"release → 再 acquire"循环里重复 new 造成泄漏。 */
+    if (!s_engine_up) {
+        jpeg_decode_engine_cfg_t ecfg = {
+            .intr_priority = 0,
+            .timeout_ms    = 200,
+            .flags         = { .allow_pd = 0 },
+        };
+        esp_err_t err = jpeg_new_decoder_engine(&ecfg, &s_dec);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "jpeg_new_decoder_engine failed: %s", esp_err_to_name(err));
+            free_buffers();
+            return err;
+        }
+        s_engine_up = true;
     }
 
     s_inited = true;
-    ESP_LOGI(TAG, "init ok: dec_out=%u B stage=%u B disp=%u B x2 (total ~%u KB PSRAM)",
+    ESP_LOGI(TAG, "acquire ok: dec_out=%u B stage=%u B disp=%u B x2 (total ~%u KB PSRAM)",
              (unsigned)s_dec_out_sz, (unsigned)STAGE_BYTES, (unsigned)(VF_W * VF_H * 2),
              (unsigned)((s_dec_out_sz + STAGE_BYTES + 2 * VF_W * VF_H * 2) / 1024u));
+
+    /* ★★ 2026-09-28 按需化：这笔账现在是**可收回**的。
+     *   - 旧行为：main.c 开机无条件 init，且全文件无一处 free ⇒ ~2.93 MB 常驻到关机；
+     *   - 新行为：本函数只经 viewfinder_acquire() 进入，配对 viewfinder_release()
+     *     释放 ⇒ 离开 VIDEO / FILES 页后，这块 PSRAM 回归系统。
+     *   ⚠ 调用方义务（违反即 UAF）：release 之前必须让所有 lv_canvas 松开指向
+     *     s_disp[] / s_dec_out 的指针 —— lv_canvas_set_buffer() 是零拷贝，只存指针。
+     *   ⇒ 上机核对：离开页面后 PSRAM free 应回升 ~2.93 MB
+     *     （会看到 `VFD: vfmem acquire` / `VFD: vfmem released` 两条现场快照）。 */
+    ESP_LOGW(TAG, "acquired %u KB PSRAM (dec_out %u B contiguous + stage %u B + disp x2 %u B) "
+                  "- RELEASABLE: call viewfinder_release() before leaving the page",
+             (unsigned)((s_dec_out_sz + STAGE_BYTES + 2 * VF_W * VF_H * 2) / 1024u),
+             (unsigned)s_dec_out_sz, (unsigned)STAGE_BYTES,
+             (unsigned)(2 * VF_W * VF_H * 2));
     return ESP_OK;
+}
+
+/* 兼容别名：历史调用方与"兜底懒初始化"路径（enable / decode_jpeg_mem）都用它。 */
+esp_err_t viewfinder_init(void)
+{
+    return viewfinder_acquire();
+}
+
+/* ---------------------------------------------------------------------------
+ *  归还：停收帧 + 释放三块 PSRAM 数据缓冲（LVGL 线程专用，幂等）
+ * ------------------------------------------------------------------------- */
+void viewfinder_release(void)
+{
+    /* ① 先停收帧（幂等）。必须先停 —— vf_task 正在写 s_disp / 读 s_stage 时释放 = UAF。 */
+    viewfinder_disable();
+
+    if (!s_inited) return;              /* 幂等：本来就没占 */
+
+    /* ② 任务必须已退出。disable() 内部最多等 100 ms；超时说明它还在跑 ——
+     *    这时**拒绝释放**（宁可留着这点内存，也不能在任务还在写缓冲时 free）。 */
+    if (s_task != NULL) {
+        ESP_LOGW(TAG, "release SKIPPED: vf task still alive after disable - "
+                      "buffers NOT freed (would be use-after-free)");
+        return;
+    }
+
+    /* ③ 先记账（free 之后 s_dec_out_sz 会被清零） */
+    const uint32_t freed_kb =
+        (uint32_t)((s_dec_out_sz + STAGE_BYTES + 2u * VF_W * VF_H * 2u) / 1024u);
+
+    free_buffers();
+
+    /* ④ 复位发布状态。s_seq 不复位的话，下次 acquire 后 viewfinder_take() 会把
+     *    "上一轮的序号"当成新帧（UI 侧 s_seen_seq 语义错乱，可能一直不刷新）。 */
+    s_latest_idx  = 0;
+    s_seq         = 0;
+    s_seen_seq    = 0;
+    s_stage_ready = false;
+    s_stage_size  = 0;
+
+    s_inited = false;                   /* ★ 引擎 s_dec / s_engine_up 保持不动（常驻） */
+
+    ESP_LOGI(TAG, "released ~%u KB PSRAM (engine kept; decoded=%u dropped=%u)",
+             (unsigned)freed_kb, (unsigned)s_decoded, (unsigned)s_dropped);
+    mem_diag_snap(TAG, "vfmem released", "viewfinder buffers freed");
 }
 
 esp_err_t viewfinder_enable(void)
@@ -285,7 +383,10 @@ esp_err_t viewfinder_enable(void)
     if (s_enabled) return ESP_OK;
 
     if (!s_inited) {
-        esp_err_t err = viewfinder_init();      /* 兜底：main.c 没调 init 也能用 */
+        /* 兜底：调用方忘了先 acquire 时也能用。
+         * ★ 别在运行期依赖这条 —— 那等于在碎片最严重的时刻临时要 1.8 MB 连续 PSRAM。
+         *   正确做法：LVGL 线程先 viewfinder_acquire() 成功，再 enable。 */
+        esp_err_t err = viewfinder_acquire();
         if (err != ESP_OK) return err;
     }
     if (s_task != NULL) {
@@ -339,7 +440,9 @@ void viewfinder_disable(void)
     if (s_task != NULL) {
         ESP_LOGW(TAG, "vf task still alive after %d ms (will self-exit)", waited);
     }
-    ESP_LOGI(TAG, "disabled (decoded=%u dropped=%u)", (unsigned)s_decoded, (unsigned)s_dropped);
+    ESP_LOGI(TAG, "disabled (decoded=%u dropped=%u; buffers NOT touched here - "
+                  "call viewfinder_release() to return the ~2.93 MB)",
+             (unsigned)s_decoded, (unsigned)s_dropped);
 }
 
 bool viewfinder_is_enabled(void) { return s_enabled; }
@@ -358,6 +461,12 @@ bool viewfinder_take(viewfinder_frame_t *out)
     return true;
 }
 
+const uint16_t *viewfinder_last_frame(void)
+{
+    if (!s_inited || s_seq == 0) return NULL;   /* 没 acquire / 还没发布过帧 */
+    return (const uint16_t *)s_disp[s_latest_idx];
+}
+
 uint32_t viewfinder_decoded_count(void)  { return s_decoded; }
 uint32_t viewfinder_dropped_count(void)  { return s_dropped; }
 uint32_t viewfinder_last_decode_us(void) { return s_last_us; }
@@ -371,7 +480,10 @@ uint8_t *viewfinder_borrow_stage(size_t *cap)
     return s_stage;         /* 未 init 时为 NULL，调用方自检 */
 }
 
-const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len, esp_err_t *err)
+const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len,
+                                           uint16_t *out_w, uint16_t *out_h,
+                                           uint16_t *out_stride,
+                                           esp_err_t *err)
 {
     jpeg_decode_cfg_t cfg = {
         /* ★ 字节序必须 BGR（= 不 scramble），证据见文件头，不要改成 RGB。 */
@@ -381,8 +493,12 @@ const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len, esp_e
     };
     uint32_t out_size = 0;
     esp_err_t e = ESP_OK;
+    jpeg_decode_picture_info_t info;        /* 两个块都要用 ⇒ 函数作用域 */
 
     if (err) *err = ESP_OK;
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (out_stride) *out_stride = 0;
 
     if (!s_inited) {
         e = viewfinder_init();              /* 兜底懒初始化（同 enable 路径） */
@@ -392,12 +508,47 @@ const uint16_t *viewfinder_decode_jpeg_mem(const uint8_t *jpg, size_t len, esp_e
     if (e == ESP_OK && (jpg == NULL || len == 0)) e = ESP_ERR_INVALID_ARG;
 
     if (e == ESP_OK) {
-        e = jpeg_decoder_process(s_dec, &cfg, jpg, len, s_dec_out, s_dec_out_sz, &out_size);
-        /* 与 vf_task 同一条对账铁律：720p 无补齐，尺寸一变宁可失败也不画面错乱 */
-        if (e == ESP_OK && out_size != DEC_OUT_BYTES) {
-            ESP_LOGE(TAG, "decoded %u != expected %u (1280x720 RGB565)",
-                     (unsigned)out_size, (unsigned)DEC_OUT_BYTES);
+        /* ★ 2026-09-28（§73）：先解析头拿真实宽高 —— 打卡照片是 240x240，
+         *   旧版"out_size 必须等于 1280*720*2"的硬对账把它们全拒了。 */
+        e = jpeg_decoder_get_info(jpg, (uint32_t)len, &info);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "decode: parse info failed: %s", esp_err_to_name(e));
+        } else if (info.width == 0 || info.height == 0 ||
+                   info.width > 4096 || info.height > 4096) {
+            ESP_LOGE(TAG, "decode: bogus dims %ux%u", (unsigned)info.width, (unsigned)info.height);
             e = ESP_ERR_INVALID_SIZE;
+        } else if ((uint32_t)info.width * info.height * 2u > s_dec_out_sz) {
+            /* 超出共享出图缓冲：如实说，调用方还能拿尺寸给用户看 */
+            ESP_LOGE(TAG, "decode: %ux%u needs %u B > out buf %u B",
+                     (unsigned)info.width, (unsigned)info.height,
+                     (unsigned)(info.width * info.height * 2u), (unsigned)s_dec_out_sz);
+            e = ESP_ERR_INVALID_SIZE;
+        }
+    }
+
+    if (e == ESP_OK) {
+        e = jpeg_decoder_process(s_dec, &cfg, jpg, len, s_dec_out, s_dec_out_sz, &out_size);
+        if (e == ESP_OK) {
+            /* ★ 对账放宽：接受"可见尺寸"或"16 像素补齐尺寸"两种出图大小
+             *  （YUV420/422 的 JPEG 引擎会补齐，见 jpeg_decode.h 的 note）。
+             *   硬上限仍是 s_dec_out_sz —— 出图比缓冲还大宁可失败也不越界。 */
+            uint32_t vis  = (uint32_t)info.width  * info.height  * 2u;
+            uint32_t pw   = ((uint32_t)info.width  + 15u) & ~15u;
+            uint32_t ph   = ((uint32_t)info.height + 15u) & ~15u;
+            uint32_t pad  = pw * ph * 2u;
+            if (out_size != vis && out_size != pad) {
+                ESP_LOGE(TAG, "decoded %u B != expect vis=%u / pad=%u (dims %ux%u)",
+                         (unsigned)out_size, (unsigned)vis, (unsigned)pad,
+                         (unsigned)info.width, (unsigned)info.height);
+                e = ESP_ERR_INVALID_SIZE;
+            } else {
+                if (out_w) *out_w = (uint16_t)info.width;
+                if (out_h) *out_h = (uint16_t)info.height;
+                /* ★ 步长：补齐发生时行里多出 (pw - w) 列，逐行寻址必须用 pw。
+                 *   本工程自己的文件（240x240 打卡照 / 720p 录像帧）宽都是 16 的
+                 *   倍数，永远走 stride == width 的快路；这一步只为外来 JPEG 兜底。 */
+                if (out_stride) *out_stride = (uint16_t)((out_size == pad) ? pw : info.width);
+            }
         }
     }
 

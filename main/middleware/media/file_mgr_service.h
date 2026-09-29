@@ -97,6 +97,18 @@ esp_err_t file_mgr_init(void);
 
 void file_mgr_set_evt_cb(file_mgr_evt_cb_t cb, void *user);
 
+/**
+ * @brief 读出当前的回调注册（cb/user 可为 NULL 表示不关心）。
+ *
+ * ★ S8-4 新增：本服务只有**一个**回调槽（`s_cb`/`s_cb_user`），而
+ *   `ui/page_face.c` 的"打卡记录"页需要在**不改动** tab_files 的前提下，
+ *   临时接住一次 `FME_PREVIEW_DONE`（预览打卡照片）。
+ *   有了这个 getter，借调方才能"存 → 换 → 用 → 还原"；
+ *   否则它只能靠猜（必错），或干脆不还原 —— 后者会让 FILES 页在
+ *   从 FACE 页返回后彻底收不到任何事件（表现为"点了没反应"）。
+ */
+void file_mgr_get_evt_cb(file_mgr_evt_cb_t *cb, void **user);
+
 /** 投递命令（拷贝语义；队列满返回 ESP_ERR_INVALID_STATE，UI 提示稍后再试）。 */
 esp_err_t file_mgr_post_cmd(const file_mgr_cmd_t *cmd);
 

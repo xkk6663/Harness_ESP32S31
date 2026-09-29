@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PSRAM 按需分配 · 上机验收速查（2026-09-28 深夜）</title>
+<style>
+  :root{
+    --ink:#1f2328; --ink2:#57606a; --ink3:#8b949e;
+    --line:#d8dee4; --line2:#eaeef2;
+    --bg:#ffffff; --bg2:#f6f8fa;
+    --red:#b42318; --green:#1a7f37; --blue:#0969da; --amber:#9a6700;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg2);color:var(--ink);
+       font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 64px;}
+  h1{font-size:21px;font-weight:600;margin:0 0 6px;}
+  .sub{color:var(--ink2);font-size:13px;margin:0 0 22px;}
+  h2{font-size:16px;font-weight:600;margin:30px 0 10px;padding-bottom:6px;
+     border-bottom:1px solid var(--line);}
+  h3{font-size:14px;font-weight:600;margin:20px 0 8px;}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:12px 0;}
+  .warn{border-left:4px solid var(--red);background:#fff5f5;}
+  .note{border-left:4px solid var(--blue);background:#f0f7ff;}
+  .ok{border-left:4px solid var(--green);background:#f2fbf4;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:var(--bg2);font-weight:600;white-space:nowrap;}
+  code,kbd{font-family:var(--mono);font-size:12.5px;background:var(--bg2);
+           border:1px solid var(--line2);border-radius:4px;padding:1px 5px;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#0d1117;color:#e6edf3;
+      border-radius:8px;padding:12px 14px;overflow-x:auto;margin:10px 0;line-height:1.55;}
+  pre .c{color:#8b949e}
+  pre .g{color:#7ee787}
+  pre .y{color:#e3b341}
+  pre .r{color:#ff7b72}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;
+        border:1px solid var(--line);background:var(--bg2);color:var(--ink2);
+        font-family:var(--mono);white-space:nowrap;}
+  .tag{font-family:var(--mono);font-size:12px;font-weight:600;white-space:nowrap;}
+  .t-vf{color:#8250df}.t-cap{color:#cf222e}.t-rec{color:#0969da}.t-recog{color:#1a7f37}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+  @media print{
+    body{background:#fff} .wrap{max-width:none;padding:0}
+    h2{break-after:avoid} table{break-inside:auto} tr{break-inside:avoid}
+    pre{background:#f6f8fa;color:#1f2328;border:1px solid #d8dee4}
+    pre .c{color:#57606a}pre .g{color:#1a7f37}pre .y{color:#9a6700}pre .r{color:#b42318}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>PSRAM 按需分配 · 上机验收速查</h1>
+<p class="sub">2026-09-28 深夜 · 分支「端侧人脸识别」· 工程 <code>display_audio_photo</code> ·
+本轮把<b>取景器 2.93 MB 从"开机常驻"改成"按需申请 / 用完归还"</b>（用户拍板）</p>
+
+<div class="card ok">
+<b>一句话结论</b>：<b>已经改完了 —— 取景器那 2.93 MB 不再常驻。</b><br>
+新增 <code>viewfinder_acquire()</code> / <code>viewfinder_release()</code>：
+进 VIDEO 页点 PREVIEW、或进 FILES 页预览/播放时才申请，离开就归还。<br>
+⇒ <b>开机后（从未进这两个页面）取景器占 PSRAM = 0</b>；让出来的 2,995,200 B
+<b>大于</b> MFN 加载峰值 2,115,950 B。
+</div>
+
+<h2>1 这次到底改了什么</h2>
+
+<table>
+<tr><th>API</th><th>做什么</th><th>谁调</th></tr>
+<tr>
+  <td><code>viewfinder_acquire()</code></td>
+  <td>分配三块 PSRAM 缓冲（出图 1,843,200 + staging 921,600 + 显示双缓冲 230,400）<br>
+      首次还会建硬件解码引擎</td>
+  <td>VIDEO 页 <code>vf_start()</code>；FILES 页 <code>open_path()</code> 的 PREVIEW / PLAY 分支</td>
+</tr>
+<tr>
+  <td><code>viewfinder_release()</code></td>
+  <td>先 <code>disable()</code>（停收帧），再释放三块缓冲</td>
+  <td>关 PREVIEW / 切走 tab / 页面销毁</td>
+</tr>
+<tr>
+  <td><code>viewfinder_last_frame()</code> <span class="pill">新</span></td>
+  <td>给"释放前把最后一帧拷进自持占位缓冲"用</td>
+  <td><code>tab_video.c</code> 的 <code>vf_release_all()</code></td>
+</tr>
+</table>
+
+<h3>内存账的变化</h3>
+<table>
+<tr><th>状态</th><th>取景器占用 PSRAM</th></tr>
+<tr><td>开机后（从未进 VIDEO / FILES 页）</td><td><b>0</b>（旧版：2,995,200 B，常驻到关机）</td></tr>
+<tr><td>进 VIDEO 页 + PREVIEW ON</td><td>+2,995,200 B</td></tr>
+<tr><td>关闭 PREVIEW / 离开 VIDEO 页</td><td>归 0</td></tr>
+<tr><td>FILES 页预览或播放</td><td>+2,995,200 B（借<b>同一套</b>缓冲）</td></tr>
+<tr><td>离开 FILES 页</td><td>归 0</td></tr>
+</table>
+
+<h2>2 两个关键设计（决定了它安全）</h2>
+
+<h3>① <code>acquire</code>（拿缓冲）与 <code>enable</code>（开始收帧）是<b>两件事</b></h3>
+<p>FILES 页从头到尾<b>没 enable 过</b>，却能用同一个单例解码器 —— 它只需要"缓冲在手"，
+不需要"收帧"。把这两件事解耦，才能做到精准按需。</p>
+
+<h3>② 释放前必须先让画布"松手"（零拷贝的坑）</h3>
+<div class="card warn">
+<code>lv_canvas_set_buffer()</code> 是<b>零拷贝</b> —— 只把指针写进 canvas 内嵌 draw_buf。
+<code>vf_feed()</code> 已经把取景画布指到了 <code>s_disp[]</code> ⇒
+<b>先 release 再换画布 = 画布指向已释放内存（UAF）</b>。<br>
+所以 <code>vf_release_all()</code> 的顺序是：<br>
+<code>memcpy(自持缓冲 ← 最后一帧)</code> → <code>lv_canvas_set_buffer(画布 → 自持缓冲)</code>
+→ <code>disable()</code> → <code>release()</code>。<br>
+顺带好处：关预览后画面<b>仍停在最后一帧</b>，不会突然变黑。
+</div>
+
+<h3>③ 三道 UAF 关</h3>
+<table>
+<tr><th>关</th><th>位置</th><th>做什么</th></tr>
+<tr><td>①</td><td><code>tab_video.c vf_release_all()</code></td><td>先让画布换回自持缓冲，再 release</td></tr>
+<tr><td>②</td><td><code>tab_files.c</code> <code>enter_browse_mode()</code> / <code>destroy()</code></td>
+    <td>判 <code>!file_mgr_is_playing()</code> —— files 任务可能还在用 stage
+        （<code>set_active(false)</code> 先 post STOP 就立刻调本函数，而 STOP 是异步的）</td></tr>
+<tr><td>③</td><td><code>viewfinder.c viewfinder_release()</code></td>
+    <td>若解码任务 100 ms 内没退出，<b>拒绝释放</b>并告警 —— 宁可不省，也不 UAF</td></tr>
+</table>
+
+<h2>3 上机要读的三条日志</h2>
+
+<pre>
+<span class="c"># ① 开机：这一步不该再有取景器预分配（旧版这里会掉 ~2,925 KB）</span>
+I (..) MEM: [after camera_service_init]                       PSRAM free=…
+I (..) MEM: [after viewfinder_init (on-demand now, no alloc)]  PSRAM free=…   <span class="g">← diff ≈ 0</span>
+
+<span class="c"># ② 进 VIDEO 页点 PREVIEW（或 FILES 页预览/播放）</span>
+I VFD: [vfmem acquire] INT free=.. largest=.. | PSRAM free=.. largest=.. | viewfinder buffers
+W VFD: acquired 2925 KB PSRAM (dec_out 1843200 B contiguous + stage 921600 B + disp x2 230400 B)
+       - RELEASABLE: call viewfinder_release() before leaving the page
+
+<span class="c"># ③ 关闭 PREVIEW / 切走 tab</span>
+I VFD: [vfmem released] INT free=.. largest=.. | PSRAM free=.. largest=.. | viewfinder buffers freed
+</pre>
+
+<div class="card note">
+<b>判读</b>：② 与 ③ 的 <code>PSRAM free</code> 之差应 ≈ <b>2,925 KB</b>。<br>
+若 ③ 缺失 ⇒ 搜 <code>release SKIPPED: vf task still alive</code>
+（说明 <code>disable()</code> 的 100 ms 等待窗口不够）。<br>
+再看 dl 模型：<code>[recogmem pre]</code> 的 <code>PSRAM largest</code> 应比旧版高约 2.93 MB
+（旧版加载 FACE 检测模型后是 <b>2,686,976</b> ⇒ 现在应 ≈ <b>5.6 MB</b>）
+⇒ 应超过 MFN 峰值 2,115,950，<b>模型应当能起</b>。
+</div>
+
+<h2>4 本轮改动与静态校验</h2>
+<table>
+<tr><th>文件</th><th>改了什么</th></tr>
+<tr><td><code>middleware/camera/viewfinder.h</code></td>
+    <td>新增 <code>acquire</code> / <code>release</code> / <code>last_frame</code> + 三条契约注释；
+        <code>borrow_stage</code> / <code>disable</code> / <code>init</code> 的过时描述全改</td></tr>
+<tr><td><code>middleware/camera/viewfinder.c</code></td>
+    <td>实现三个新函数；<code>free_buffers()</code> 供 acquire 失败路径与 release 共用（防部分分配泄漏）；
+        <code>s_engine_up</code> 防引擎重复创建；<code>init</code> 退化为别名</td></tr>
+<tr><td><code>middleware/media/file_mgr_service.c</code></td>
+    <td><code>stage == NULL</code> 分支改为打<b>根因日志</b>（"caller must call viewfinder_acquire()..."）</td></tr>
+<tr><td><code>ui/tab_video.c</code></td>
+    <td>新增 <code>vf_release_all()</code>；<code>vf_start()</code> 先 acquire；关闭/切走走 release；
+        <b>顺带修掉 <code>s_canvas_own</code> 每次 build 重复分配（115,200 B）的既有泄漏</b></td></tr>
+<tr><td><code>ui/tab_files.c</code></td>
+    <td>PREVIEW / PLAY 分支先 acquire；<code>enter_browse_mode()</code> / <code>destroy()</code> 带守卫 release</td></tr>
+<tr><td><code>app/main.c</code></td>
+    <td>删掉开机 <code>viewfinder_init()</code>；<code>MEM_STAGE</code> 改为占位行（diff=0）</td></tr>
+</table>
+
+<p>静态校验 <b>7/7 OK</b>（含 <code>page_main.c</code>）。
+仅 <code>tab_files.c</code> 有 2 条 <code>lv_list_*</code> 的
+<code>-Wdeprecated-declarations</code>，<b>是既有的</b>，与本次无关。</p>
+
+<h2>5 本轮<b>没做</b>的事（写明白，免得以为是修好了）</h2>
+<ul>
+<li><b><code>file_mgr</code> 的 <code>s_pv[2]</code>（921,600 B）仍开机常驻</b> ——
+    "下一轮按需化"的候选。不一起做：释放它要连带处理 <code>s_pv_canvas</code> 的零拷贝指针，
+    而该画布<b>连占位缓冲都没设过</b>。</li>
+<li><b>不动 <code>MEDIA_BUF_CNT</code>（仍 1）、不动 MFN 的 <code>MODEL_LOCATION_IN_SDCARD</code></b>
+    —— 那是 P0-A（峰值线的后续）。本轮做完后它<b>优先级下降</b>。</li>
+<li><b>不涉及分区表 / 模型</b> ⇒ 本次上机<b>不需要</b>
+    <code>idf.py storage-flash</code>，<code>idf.py build</code> → <code>flash</code> 即可。</li>
+<li><b>约 7.4 MB 未归因 PSRAM</b>（见《内存优化可执行方案》§14.2 更正块）—— 等开机
+    <code>[mem]</code> 分步账单逐项归因。</li>
+</ul>
+
+<hr>
+<p class="sub">详细实现记录：<code>docs/项目规划/改动记录.md</code> <b>§69</b> ·
+方案：<code>docs/开发文档/内存优化可执行方案.md</code> <b>§16</b> ·
+本轮之前的诊断发现：同目录 <code>PSRAM连续块排查_2026-09-28.html</code></p>
+
+</div>
+</body>
+</html>

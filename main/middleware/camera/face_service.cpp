@@ -13,6 +13,7 @@
  *   先卸后建（D8）、失败回退上一档（D9）、D3 内存埋点全部保留。
  */
 #include "face_service.h"
+#include "camera_service.h"        /* ★ §73.9：unload_sync 要问"相机是否在跑" */
 #include "human_face_detect.hpp"
 #include "hand_detect.hpp"
 #include "hand_gesture_recognition.hpp"
@@ -84,6 +85,10 @@ static int  s_last_good_id = -1;   /* 最近一次**成功**的档位（回退�
 static int  s_pending_id   = -1;   /* LVGL 线程投递的切换请求目标 */
 static bool s_model_req    = false;
 static bool s_enabled      = false; /* 检测开关：与"模型是否就绪"解耦（D6 常驻） */
+/* ★★★ 2026-09-28（解耦）：**彻底卸载**的投递标志。
+ *   只能在 cam_task 的 face_service_poll() 里消费 —— `s_scratch` 正被
+ *   face_service_detect() 使用（同在 cam_task），在 LVGL 线程直接 free 就是 UAF。 */
+static volatile bool s_unload_req = false;
 
 
 #define SCRATCH_BYTES (240 * 240 * 3)
@@ -211,6 +216,23 @@ static bool model_mem_ok(int id)
     size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     size_t int_largest   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
+    /* ★★ 2026-09-28：**不管过不过都留一行**（诊断阶段的核心埋点）。
+     *   原来只在拒绝分支打日志 ⇒ "过了预检"这件事在日志里**完全不可见**，
+     *   要等 esp-dl 报 `Failed to alloc ... largest available block size ...`
+     *   才知道它其实很勉强 —— 而那时已经无法回看"当时余量还剩多少"。
+     *   margin 是关键数：largest 减掉硬线后的余额，**负数即拒绝**。
+     *   ⚠ 这条线只覆盖"最大单文件"那一块；SDCARD 模式下真峰值还含 arena
+     *     （识别引擎侧已按 RECOG_PEAK_ARENA_EST 报峰值线；检测模型这边暂无 arena
+     *     的实测估算值 ⇒ 这里以 margin 直观呈现余量，真要判峰值看拒绝分支的分布 dump）。 */
+    ESP_LOGI(TAG, "[modelmem] \"%s\" largest=%uKB free=%uKB | need contig=%uKB total=%uKB | "
+                  "margin=%dKB | INT largest=%uKB",
+             s_models[id].label,
+             (unsigned)(psram_largest / 1024), (unsigned)(psram_free / 1024),
+             (unsigned)((max_one + MODEL_ALLOC_SLACK) / 1024),
+             (unsigned)((sum + MODEL_TOTAL_SLACK) / 1024),
+             (int)(((int64_t)psram_largest - (int64_t)(max_one + MODEL_ALLOC_SLACK)) / 1024),
+             (unsigned)(int_largest / 1024));
+
     if (psram_largest >= max_one + MODEL_ALLOC_SLACK &&
         psram_free    >= sum     + MODEL_TOTAL_SLACK) {
         return true;
@@ -225,10 +247,12 @@ static bool model_mem_ok(int id)
              (unsigned)(psram_free / 1024),
              (unsigned)(int_largest / 1024));
 
-    /* 一次性碎片取证（只在拒绝时打，正常路径零开销）：PSRAM 空闲块分布 ——
-     * 拿它才能判断"释放某块素材能否腾出连续区"（P1-C）还是"必须走零拷贝"（P1-A）。 */
-    heap_caps_print_heap_info(MALLOC_CAP_SPIRAM);
-    heap_caps_dump(MALLOC_CAP_SPIRAM);
+    /* 一次性碎片取证（只在拒绝时打，正常路径零开销）：PSRAM 块分布 ——
+     * 拿它才能判断"释放某块素材能否腾出连续区"（P1-C）还是"必须走零拷贝"（P1-A）。
+     * ★ 2026-09-28：原来用 heap_caps_dump()，它会**持堆锁**逐块打印上千行
+     *   ⇒ 实测触发 `Interrupt wdt timeout on CPU0` 崩机。改用 mem_diag_dump_top()
+     *   （锁内只收集、锁外打印 12 行），并额外给出"最大的已占用块 + 地址"。 */
+    mem_diag_dump_top(TAG, "model refuse");
     return false;
 }
 
@@ -359,8 +383,58 @@ static void do_build(int id)
     face_mem_report("load", ++s_load_seq, &mem0, &mem1);
 }
 
+/**
+ * ★★ §73.9：把 §72 的 poll 卸载分支抽成共用函数。
+ *
+ * @param inline_safe true = 调用方已保证此刻**没有 detect 在途**（相机没在跑，
+ *                    帧处理块进不来，scratch 无人写）⇒ 可以就地执行；
+ *                    false = 只翻请求标志，等 poll（cam_task 拍）来消费。
+ *
+ * 帧处理块跑在 LVGL 线程的 refresh() 里（tab_camera.c），它只有在相机出帧时
+ * 才会进入 —— 所以"相机不在跑"就等价于"scratch 无人写"。camera_service 起流
+ * 前的腾地路径（此时相机必然是停的）因此可以安全地走 inline。
+ */
+static void face_do_unload(bool inline_safe)
+{
+    if (!inline_safe) {
+        s_unload_req = true;            /* 等 face_service_poll() 消费 */
+        return;
+    }
+    s_unload_req   = false;
+    s_enabled      = false;
+    s_load_request = false;
+    s_model_req    = false;
+    s_pending_id   = -1;
+    if (s_detector || s_gcls) {
+        face_mem_t mu0 = face_mem_now();
+        unload_all();
+        face_mem_t mu1 = face_mem_now();
+        face_mem_report("unload-all", ++s_unload_seq, &mu0, &mu1);
+    }
+    if (s_scratch) {
+        heap_caps_free(s_scratch);
+        s_scratch = nullptr;
+    }
+    s_cur_id = -1;
+    s_state  = FACE_IDLE;
+    ESP_LOGI(TAG, "detect OFF + model UNLOADED (PSRAM returned, scratch freed)");
+}
+
 void face_service_poll(void)
 {
+    /* ★★★ 2026-09-28（解耦）：**彻底卸载**请求优先于一切（包括切换请求）。
+     *   语义（用户要求"录入完之后要彻底释放和结束人脸检测"）：
+     *     · 停检测（enabled=false）；
+     *     · 卸模型（unload_all：FACE 一段 / HAND 两段）；
+     *     · **连 scratch 一起释放**（172,800 B，旧代码只在新分配时 malloc、
+     *       永不 free —— 那是 D6"常驻"策略的遗留）；
+     *     · s_cur_id 归 -1：此刻**确实**没有可用模型（别让 UI 以为还在 RUNNING）。
+     *   保留 s_last_good_id：下一次 set_enabled(true) 仍能回到上次成功的档位。 */
+    if (s_unload_req) {
+        face_do_unload(true);           /* poll 消费 = cam_task 上下文 = 安全 */
+        return;                         /* 本拍不再处理加载/切换请求 */
+    }
+
     /* ★ 切换请求优先：它自己就包含"确保目标档位可用"的完整流程。 */
     if (s_model_req) {
         int id = s_pending_id;
@@ -465,6 +539,13 @@ int face_service_model_count(void)
     return FACE_MODEL_COUNT;
 }
 
+int face_service_loaded_models(void)
+{
+    /* ★ §73.14：真实"已加载"份数。s_detector 为 FACE/HAND 两档共用的检测模型，
+     *   s_gcls 只在 HAND 档存在；两者独立分配、独立释放（见 do_unload）。 */
+    return (s_detector ? 1 : 0) + (s_gcls ? 1 : 0);
+}
+
 const char *face_service_model_label(int id)
 {
     return (id >= 0 && id < FACE_MODEL_COUNT) ? s_models[id].label : "?";
@@ -496,7 +577,13 @@ esp_err_t face_service_set_enabled(bool on)
     if (!on) return face_service_stop();
     s_enabled = true;
     if (s_state != FACE_RUNNING || !s_detector) {
-        /* 模型还没就绪 ⇒ 顺带请求构建（档位 = target_model_id()）。 */
+        /* 模型还没就绪 ⇒ 顺带请求构建（档位 = target_model_id()）。
+         * ★ 卸载请求还没被消费时不要叠加载：那样"先卸后建"的顺序就乱了，
+         *   而且卸载分支会把这个请求一起清掉（用户 intent 反复横跳时以最后一次为准）。 */
+        if (s_unload_req) {
+            ESP_LOGW(TAG, "set_enabled(true) ignored: an UNLOAD is still pending");
+            return ESP_ERR_INVALID_STATE;
+        }
         if (s_state != FACE_LOADING) {
             s_state = FACE_LOADING;
             s_load_req_us = esp_timer_get_time();
@@ -508,6 +595,31 @@ esp_err_t face_service_set_enabled(bool on)
         ESP_LOGI(TAG, "detect ON (model \"%s\" already resident)",
                  s_models[s_cur_id].label);
     }
+    return ESP_OK;
+}
+
+/* ★★★ 2026-09-28（解耦）新增：投递"彻底卸载"。实现见 face_service_poll() 开头。
+ *   这里只置标志 —— 真正的 unload_all() + scratch 释放必须在 cam_task 做，
+ *   理由（scratch 正被 detect() 使用）写在 poll 里那段注释。 */
+esp_err_t face_service_unload(void)
+{
+    s_unload_req = true;
+    ESP_LOGI(TAG, "model unload requested (will run in cam_task)");
+    return ESP_OK;
+}
+
+esp_err_t face_service_unload_sync(void)
+{
+    /* ★ §73.9：相机不在跑 = 帧处理块进不来 = scratch 无人写 = 可以就地卸。
+     *   这是给 camera_service 起流前"腾地"用的 —— 那一刻 cam_task 不存在，
+     *   异步请求（face_service_unload）会**永远没人消费**（poll 只在
+     *   cam_task 里跑），模型就一直占着 1 MB+ 直到下次开相机。 */
+    if (camera_service_is_running()) {
+        s_unload_req = true;
+        ESP_LOGW(TAG, "unload_sync: camera running -> deferred to cam_task poll");
+        return ESP_OK;
+    }
+    face_do_unload(true);
     return ESP_OK;
 }
 

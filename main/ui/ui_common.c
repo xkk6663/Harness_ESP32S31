@@ -13,6 +13,7 @@
 #include "ui_common.h"
 #include "ui_theme.h"
 #include "page_manager.h"
+#include <string.h>
 
 #define TITLE_BAR_H   48
 #define ROW_H         56
@@ -117,4 +118,18 @@ lv_obj_t *ui_common_placeholder(lv_obj_t *parent, const char *text)
     lv_obj_set_style_text_font(lab, UI_FONT, 0);
     lv_obj_center(lab);
     return card;
+}
+
+void ui_common_set_label_text_if_changed(lv_obj_t *label, const char *text)
+{
+    if (label == NULL || text == NULL) {
+        return;
+    }
+    /* lv_label_get_text() 在从未设置过文本时返回 NULL（不是空串），两个都要挡。 */
+    const char *cur = lv_label_get_text(label);
+    if (cur != NULL && strcmp(cur, text) == 0) {
+        return;
+    }
+    /* ★ 拷贝语义：text 可能是调用方的栈缓冲，绝不在这里用 set_text_static。 */
+    lv_label_set_text(label, text);
 }

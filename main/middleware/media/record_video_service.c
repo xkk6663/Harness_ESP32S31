@@ -12,8 +12,10 @@
 #include "record_video_service.h"
 #include "avi_mjpeg_muxer.h"
 #include "camera_service.h"
+#include "face_recog_service.h"      /* face_recog_state/ready：回答"MFN 是不是在跟媒体档抢" */
 #include "sdcard_service.h"
 #include "net_time_service.h"
+#include "mem_diag.h"                /* mem_diag_snap()：起流前后的 PSRAM 现场 */
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -187,6 +189,26 @@ static void publish_stats(uint64_t t0_us)
 }
 
 /* ---------------------------------------------------------------------------
+ *  诊断：录像各时点的 PSRAM 现场（与 capture_service 的 cap_mem_snap 同款）
+ *
+ *  ★ 为什么录像侧更该打：录像是**长事务**，媒体缓冲（(MEDIA_BUF_CNT+1) x 921,600 B
+ *    连续块）会被占住**几十秒到几分钟**。这段时间里识别引擎要么已经被卸掉
+ *    （那它想回来就得等），要么就是它先把大块占了导致本次起流失败 ——
+ *    两种情形的日志长得一样，只有把"当时 engine 是什么状态"一起打出来才分得开。
+ *  ★ pre 打在**接管预览之前**（此时能看出预览流占了多少）；
+ *    stream 打在**驱动将要拿缓冲之前**（与 camera_service 的 [streammem] 互为佐证）；
+ *    post 打在**收尾之后**（确认几十分钟的长事务有没有漏大块 —— 泄漏与否只有这里看得出）。
+ * ------------------------------------------------------------------------- */
+static void rec_mem_snap(const char *where)
+{
+    char who[96];
+    snprintf(who, sizeof(who), "engine=%d ready=%d owner=%d",
+             (int)face_recog_state(), (int)face_recog_ready(),
+             (int)camera_service_owner());
+    mem_diag_snap(TAG, where, who);
+}
+
+/* ---------------------------------------------------------------------------
  *  服务任务（一次性）：开容器 → 起流 → 守着 → 停流 → 收尾
  * ------------------------------------------------------------------------- */
 static void rec_task(void *arg)
@@ -205,6 +227,9 @@ static void rec_task(void *arg)
     uint64_t    t0        = (uint64_t)esp_timer_get_time();
 
     memset(&s_stats, 0, sizeof(s_stats));
+
+    /* ---- ⓪ 现场快照（诊断，见 rec_mem_snap 注释）---- */
+    rec_mem_snap("recmem pre");
 
     /* ---- ① 前置检查 ---- */
     if (!sdcard_service_is_mounted()) {
@@ -244,6 +269,10 @@ static void rec_task(void *arg)
 
     /* ---- ③ 起流（JPEG 1280x720，归属 MEDIA）---- */
     if (err == ESP_OK) {
+        /* ★ 驱动将要在这一刻拿 (MEDIA_BUF_CNT+1) x 921,600 B 连续块 ⇒ 先把现场记下来。
+         *   （与 camera_service 的 [streammem] 预检是**两个独立测量点**，读数一致才可信。） */
+        rec_mem_snap("recmem stream");
+
         err = camera_service_start_fmt_owner(rec_frame_cb, s_muxer,
                                              CAM_FMT_JPEG, CAM_MEDIA_W, CAM_MEDIA_H,
                                              CAM_OWNER_MEDIA);
@@ -345,6 +374,12 @@ static void rec_task(void *arg)
             ESP_LOGW(TAG, "restore preview failed: %s", esp_err_to_name(re));
         }
     }
+
+    /* ---- ⓪-b 收尾快照（诊断）----
+     * ★ 与 "recmem pre" 对齐：长事务结束后大块必须原样回来。若 post 明显低于 pre，
+     *   说明媒体缓冲/muxer 有泄漏 —— 那"偶发起流失败"就会随录像次数**单调变严重**，
+     *   这是两种完全不同的病，靠这一行分开。 */
+    rec_mem_snap("recmem post");
 
     /* ---- ⑧ 发布结果 ----
      * ★ 先写结果、后置 IDLE，读侧看到 IDLE 即可拿到完整结果。 */

@@ -17,10 +17,51 @@
 #include <sys/time.h>
 #include "linux/videodev2.h"
 #include "face_service.h"
+#include "face_recog_service.h"    /* ★ §73：住户报告要报识别引擎是否还占着模型 */
+#include "viewfinder.h"            /* ★ §73：住户报告要报共享解码缓冲 */
 #include "ov3660_fmt.h"            /* ★ S2-0：运行时格式档位（内含切格式的全部线索） */
 
 #define TAG "CAM"
 #define BUF_CNT 2
+
+/* ★★ 2026-09-28 新增：**媒体档（JPEG）单独一份缓冲数**。
+ *
+ * 为什么要能单独调：媒体档是 1280x720 JPEG，每个 V4L2 缓冲 = w*h*bpp/8 = 921,600 B
+ * （JPEG 的 bpp 是 8，见 esp_video.c:84 与 esp_video_config_buffer()）。
+ * ★★ §73.15（2026-09-29 晚，本注释第三次定稿）：总需求 = **(MEDIA_BUF_CNT + 1) 块**：
+ *      =2 → 2 块流缓冲（REQBUFS 阶段）+ 1 块 **DVP backup buffer**（STREAMON 阶段，
+ *           esp_cam_new_dvp_ctlr() 分配一块帧同尺寸的整帧备份，
+ *           IDF esp_driver_cam esp_cam_ctlr_dvp_cam.c:866-867）
+ *      =1 → 流 1 块 + backup 1 块 = 1,843,200 B
+ *   ★ 勘误史：§73.13 曾判 "+1 backup 是旧 BSP 概念、已作废"——**判错了**：
+ *     当时只 grep 了 managed_components 的两个组件，backup 分配在 IDF 本体的
+ *     esp_driver_cam 组件里，漏搜；当晚现场日志 `no mem for DVP backup buffer`
+ *     复现后才定案回滚（判据/重试/文案全部恢复 n+1）。教训：**驱动结论必须
+ *     搜遍 IDF 本体 + managed_components 两处**。
+ *   ★ 逐块分配没错（esp_video_buffer.c 逐块 aligned_alloc），所以各块**不需要
+ *     相邻**；判据按"能切出 n+1 块"（mem_diag_free_capacity）算。
+ *   ⚠ backup 分配晚于 REQBUFS ⇒ REQBUFS 成功 ≠ 起流成功 —— §73.15 已把
+ *     STREAMON ENOMEM 也纳入腾地重试（goto streambuf 重走一遍）。
+ * ★ **=1（2026-09-29 晚 用户拍板，第二次）**：实测 =2 的三块需求（2 流 + 1 backup）
+ *   在"三件套在场 / 洞碎"场景反复把起流逼炸（判据警告 → 腾地重试后画面仍卡住无流，
+ *   §73.16 现场日志），黑屏的代价远大于丢帧 ⇒ 回到 =1：
+ *      总需求 = 1 流 + 1 backup = **2 块 × 921,600 = 1,843,200 B**，free 4.25M 时随便切。
+ *   代价（用户已知并接受）：SD 卡写盘瞬间来的帧落到 backup 被丢弃 ⇒ 录像 fps 低于
+ *   标称 12、动作略发涩；取景预览不受影响（本来 1 帧就够）。
+ *   ⚠ 若录像流畅性将来要求回 =2：必须同时保证"起流时三件套不占洞"
+ *     （现 §73.16 时序已满足）+ 判据/腾地兜底在位，且接受贴边运行的偶发失败。
+ *
+ * ★ 用 `#ifndef` 包住（本工程惯例）：这样 `-DMEDIA_BUF_CNT=2` 也能编译，
+ *   离线探针才校验得到"调大"那一侧；否则 `-D` 会撞 'MEDIA_BUF_CNT' redefined [-Werror]。
+ */
+#ifndef MEDIA_BUF_CNT
+#define MEDIA_BUF_CNT 1
+#endif
+
+/* ★ §73.13：aligned_alloc(64, per) 实际要从洞里切走的字节数 > per（对齐浪费 +
+ *   heap 头），且测量与分配之间堆会波动。判据统一按 per + 本余量算洞容量，
+ *   宁可早一步腾地，不给"判据说 fit、驱动说 ENOMEM"留缝。 */
+#define CAM_ALLOC_SLACK 128u
 
 /* ★★ S2-0：尺寸不再是编译期常量。原来是 `#define CAM_W 240` / `CAM_H 240`，
  *   被 S_FMT 请求值、回调上报值、以及 tab_camera 的 canvas 共用；
@@ -51,6 +92,10 @@
 #define CAM_TASK_STACK         3584
 
 static int  s_fd = -1;
+/* ★★ 缓冲槽数组按 BUF_CNT 开（两个档位共用这块数组）。
+ *   MEDIA_BUF_CNT 只能**调小不能调大** —— 调大就会写越界且编译器不一定报错，
+ *   所以在这里用 _Static_assert 钉死。 */
+_Static_assert(MEDIA_BUF_CNT <= BUF_CNT, "MEDIA_BUF_CNT must not exceed BUF_CNT (s_buf[] size)");
 static void *s_buf[BUF_CNT] = {0};
 static size_t s_buf_len[BUF_CNT] = {0};   /* ★ mmap 的真实长度，munmap 必须用它 */
 /* s_running 被 LVGL 线程写（stop/start）、被 cam_task 读，标 volatile 以免 O2 下被折叠 */
@@ -253,6 +298,227 @@ static esp_err_t do_set_jpeg_quality(int fd, int quality)
     return ESP_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ *  起流前的 PSRAM **连续块**预检（★★ 2026-09-28，为"拍照偶尔存 SD 失败"而加）
+ * ---------------------------------------------------------------------------
+ * 【失败现场】全都是驱动内部打的，用户侧只有一句"拍照失败"：
+ *     E (108275) dvp_cam: esp_cam_new_dvp_ctlr(867): no mem for DVP backup buffer
+ *     E (108281) dvp_video: failed to create DVP
+ *     E (108289) CAM: STREAMON fail
+ *     I (108296) CAPTURE: capture done: err=ESP_FAIL, 502 ms
+ *
+ * 【"no mem" 把两种病混成了一句】本工程 §61 的老教训（POSD 加载失败）在这里复发：
+ *     (a) PSRAM 总量不够          —— 唯一解是省内存；
+ *     (b) 有量但**没有连续块**（碎片）—— 解是让出大块 / 减块数 / 改分配时机。
+ *   而 `MEM_DIAG_FMT` 这一轮之前**只打 PSRAM free、不打 largest** ⇒
+ *   "free 还有 4.2 MB 却失败"这句话无法当场判定是 (a) 还是 (b)。本轮已补 largest。
+ *
+ * 【媒体档到底要多少连续 PSRAM】同一个 w*h 要三份，全部从 `MALLOC_CAP_SPIRAM` 拿：
+ *   ① REQBUFS：BUF_CNT 个 mmap 缓冲，每块 = w*h*bpp/8
+ *      （JPEG bpp=8 ⇒ 1280x720 = 921,600 B；真源 esp_video.c:84 +
+ *        esp_video_config_buffer()：JPEG 且 sizeimage==0 时用 w*h*bpp/8）
+ *      —— 分配点 esp_video_buffer.c:47 `heap_caps_aligned_alloc(..., info->caps)`
+ *   ② STREAMON：IDF DVP 驱动的 backup buffer，尺寸同样 = w*h = 921,600 B
+ *      —— esp_cam_ctlr_dvp_cam.c:262-278 算尺寸、:866 分配
+ *   ⇒ need = (n + 1) x w x h（JPEG）。RGB565 则每块 x2（见 color depth 分支）。
+ *
+ * 【★★ 排除 caps 因素（重要，省掉一整类猜测）】
+ *   backup buffer 请求的是 `MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA`，看着像"要一块
+ *   能 DMA 的 PSRAM"，容易让人怀疑 S31 上这种内存不存在。但 IDF 在查 heap **之前**
+ *   就把 DMA 位摘掉了：
+ *     esp_hw_support/heap_align_hw.c:101-108
+ *       // Workaround: the heap allocator doesn't have regions marked
+ *       // `MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM` so we need to request those
+ *       // without the DMA flag.
+ *       if (caps & MALLOC_CAP_SPIRAM) { caps &= ~MALLOC_CAP_DMA; }
+ *   （S31 的 SPIRAM 内存类型表里确实没有 DMA：heap/port/esp32s31/memory_layout.c:52）
+ *   ⇒ 这个失败**只可能是"PSRAM 里找不出这么长的一段空地"**，与 caps / DMA 无关。
+ *   ⇒ 也解释了为什么"PSRAM free 有几 MB"和"分配失败"能同时成立。
+ * ------------------------------------------------------------------------- */
+
+/** 本次起流用的 V4L2 缓冲数（媒体档可单独调，见 MEDIA_BUF_CNT 注释）。 */
+static uint32_t cam_stream_buf_cnt(cam_fmt_t fmt)
+{
+    return (fmt == CAM_FMT_JPEG) ? (uint32_t)MEDIA_BUF_CNT : (uint32_t)BUF_CNT;
+}
+
+/** 单块缓冲字节数（== 驱动眼里的"最坏一帧"）。 */
+static size_t cam_stream_frame_bytes(cam_fmt_t fmt, uint32_t w, uint32_t h)
+{
+    size_t px = (size_t)w * (size_t)h;
+    return (fmt == CAM_FMT_JPEG) ? px        /* JPEG：bpp=8 ⇒ 1 B/px */
+                                 : px * 2u;  /* RGB565：16 bpp */
+}
+
+/** 本次起流要从 PSRAM 拿下的**连续**字节数：n 个 mmap 缓冲 + 1 个驱动 backup。 */
+static size_t cam_stream_psram_need(cam_fmt_t fmt, uint32_t w, uint32_t h)
+{
+    /* ★ §73.15：+1 backup **恢复** —— 它是真的！
+     *   实证：IDF esp_driver_cam `esp_cam_ctlr_dvp_cam.c:866-867`
+     *   （C:/esp/v6.1/esp-idf/components/esp_driver_cam/dvp/src/）：
+     *   `esp_cam_new_dvp_ctlr()` 在 STREAMON 路径创建 DVP 控制器时分配一块
+     *   **与帧同尺寸**（JPEG = h_res×v_res = 921,600 B）的 backup buffer，
+     *   失败即 `no mem for DVP backup buffer`（§73.15 现场日志复现）。
+     *   §73.13/§73.14 把它判为"旧 BSP 概念"是**错的** —— 错因：当时只 grep 了
+     *   managed_components 的两个组件，backup 分配在 IDF 本体组件里，漏搜。 */
+    return cam_stream_frame_bytes(fmt, w, h) * (size_t)(cam_stream_buf_cnt(fmt) + 1u);
+}
+
+/** 起流前把"要多少 / 有多少（含 largest）"打成一行。
+ *  ★ 每次起流都打：连续块是**当次现场**的属性，只打一次等于没有。
+ *
+ *  ★★★ 2026-09-28 修正判据 —— **原版的比较是错的**：
+ *     驱动的 n+1 次分配**彼此独立、不要求相邻**（n 个 V4L2 mmap 缓冲 + 1 个 DVP
+ *     backup buffer，各自做一次 `heap_caps_aligned_alloc`）⇒ 真正的硬约束是
+ *     "**每块** per 字节连续"，**不是**"total = per*(n+1) 字节连续"。
+ *     原版拿 `total` 去比 `largest` ⇒ 只要 largest 落在 (per, total) 区间就**误报**。
+ *     实测（2026-09-28 上机）：largest=1,835,008 vs total=1,843,200 —— 差 8,192 B
+ *     就喊 "NOT ENOUGH CONTIGUOUS PSRAM"，而**同一轮拍照其实成功了**（photo OK）。
+ *     ⚠ 误报的代价不只是噪音：它连带触发 heap dump，而那个 dump 持堆锁打上千行
+ *     ⇒ 直接 `Interrupt wdt timeout on CPU0` 崩机。所以判据必须按真实约束写。
+ *
+ *  ★ 不够时**只告警不拒绝**：本估算按驱动最坏尺寸算（JPEG 缓冲按 w*h 而非真实码流长），
+ *    保守值会偶发误报；真拒绝会把本来拍得成的场景挡掉。
+ *    让它继续试，失败由 STREAMON 分支给出确定的根因说明。 */
+static void cam_stream_mem_check(cam_fmt_t fmt, uint32_t w, uint32_t h)
+{
+    const size_t   per     = cam_stream_frame_bytes(fmt, w, h) + CAM_ALLOC_SLACK;
+                                                   /* 单块 = 一帧最坏尺寸 + aligned_alloc 开销余量（§73.13） */
+    const uint32_t n       = cam_stream_buf_cnt(fmt);  /* mmap 缓冲数 */
+    /* ★ §73.15：+1 = DVP backup buffer（esp_cam_ctlr_dvp_cam.c:866，STREAMON 时
+     *   esp_cam_new_dvp_ctlr() 分配一块帧同尺寸的整帧备份）—— 恢复，§73.13 判错。 */
+    const size_t   blocks  = (size_t)n + 1u;
+    const size_t   total   = cam_stream_frame_bytes(fmt, w, h) * blocks;
+    const size_t   free_sz = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    /* ★★ 判据的核心：**"能不能切出 blocks 个 per"**，而不是"largest ≥ total"。
+     *   `cap` = sum( floor(空闲块 / per) )，即乐观口径下能切出几块（见 mem_diag.h）。 */
+    size_t   largest = 0;
+    uint32_t n_ge    = 0;
+    const uint32_t cap = mem_diag_free_capacity(per, &largest, &n_ge);
+
+    ESP_LOGI(TAG, "[streammem] %s %ux%u need per-block=%u B x %u block(s) = %u B total"
+                  " | PSRAM free=%u largest=%u | fit: capacity=%u (n_ge=%u)",
+             (fmt == CAM_FMT_JPEG) ? "JPEG" : "RGB565", (unsigned)w, (unsigned)h,
+             (unsigned)per, (unsigned)blocks, (unsigned)total,
+             (unsigned)free_sz, (unsigned)largest, (unsigned)cap, (unsigned)n_ge);
+
+    /* 判据 A（硬约束）：连一块都放不下 ⇒ 本次一定失败。 */
+    if (largest < per) {
+        ESP_LOGW(TAG, "[streammem] largest=%u < per-block %u ⇒ 第一块缓冲就放不下，"
+                      "本次起流**会失败**（free=%u 够但 largest 不够 = 碎片）",
+                 (unsigned)largest, (unsigned)per, (unsigned)free_sz);
+        mem_diag_dump_top(TAG, "streammem");
+        return;
+    }
+    /* 判据 B（能否凑齐 blocks 块）：每块都放得下，但空闲区切不出这么多块 ⇒ 可能中途失败。 */
+    if (cap < blocks || free_sz < total) {
+        ESP_LOGW(TAG, "[streammem] 需要 %u 块 x %u B，但空闲区最多只能切出 %u 块"
+                      "（free=%u total_need=%u）⇒ 可能中途失败",
+                 (unsigned)blocks, (unsigned)per, (unsigned)cap,
+                 (unsigned)free_sz, (unsigned)total);
+        mem_diag_dump_top(TAG, "streammem");
+        return;
+    }
+    /* ★ 够 —— 安静走开。
+     *   注意 "largest < total" 是**正常且常见**的（碎片形态），只要 cap ≥ blocks 就没事：
+     *   各块彼此**不需要相邻**（esp_video_buffer.c 逐块 aligned_alloc）。
+     *   ⚠ §73.13 现场教训：判据 fit ≠ 驱动一定成功（测量与分配之间堆会波动、
+     *   aligned_alloc 的洞开销难精确建模）—— 所以失败兜底在 REQBUFS ENOMEM
+     *   的自动腾地重试，判据只做"提前腾地"的预告。 */
+}
+
+/**
+ * ★★ §73 新增：起流失败时把"**谁还占着大块 PSRAM**"报出来（住户报告）。
+ *
+ * 背景（用户报"CAM 页停了之后 VIDEO 起流 REQBUFS fail，重新上电就正常"）：
+ *   驱动侧证据链（managed_components/espressif__esp_video/src/esp_video.c）：
+ *     `REQBUFS → esp_video_setup_buffer() → 先 esp_video_release_stream_buffer()
+ *      （**旧缓冲一定被释放了**，不存在"CAM 没还"）→ esp_video_buffer_create()
+ *      失败 ⇒ "Failed to create buffer" ⇒ ESP_ERR_NO_MEM`。
+ *   所以 REQBUFS fail 的**唯一**含义是：此刻 PSRAM 里切不出一块
+ *   `单帧字节`（720p RGB565 = 1,843,200 B；JPEG 720p = 921,600 B）的连续区。
+ *   "重新上电正常"就是因为上电时下面这些住户都还没住进来。
+ *
+ * 报告只陈述事实不给结论 —— 谁该被请走由用户决定（det 模型可以按 FACE 按钮卸载；
+ * 识别引擎按 §72 会话结束自动卸载；取景器缓冲归持有它的页面）。
+ */
+static void cam_mem_residents_report(void)
+{
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    const size_t free_sz = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+    ESP_LOGE(TAG, "[residents] PSRAM free=%u largest=%u -- who is holding big blocks:",
+             (unsigned)free_sz, (unsigned)largest);
+
+    /* det 模型（espdet face / hand + scratch）：§72 起只在 FACE(det) 按钮按下时
+     * 加载、再按一次经 unload 归还 —— 它们是 CAM 会话之后最大的一笔常驻。
+     * ★ §73.9：起流预判放不下时 start() 会**自动**卸载它们（见 [reclaim] 日志），
+     *   这条报告保留是为了让"为什么刚才 FACE 按钮变 OFF 了"有据可查。
+     * ★ §73.14：改用 face_service_loaded_models()（真实已加载数）——
+     *   旧代码误用 model_count()（档位总数常量），导致这条**恒真误报**，
+     *   §73.13 现场日志里"det 模型 ×2 在场"就是它。 */
+    int det_models = face_service_loaded_models();
+    if (det_models > 0) {
+        ESP_LOGE(TAG, "[residents]  - face DET models loaded (%d model(s)): "
+                      "auto-unloaded on stream start if tight (FACE btn -> OFF)", det_models);
+    }
+    /* 识别引擎（MSR+MNP+MFN ~2.3 MB）：§72 语义下会话结束就该为 0；
+     * 若这里 >0 说明有一个打卡/录入会话没收干净 —— 那是 BUG，不是常态。 */
+    if (face_recog_ready()) {
+        ESP_LOGE(TAG, "[residents]  - face RECOG engine still loaded (~2.3 MB): "
+                      "a punch/enroll session did NOT release it (BUG?)");
+    }
+    /* 取景器共享缓冲（§73.13 实测口径：released ≈ 2,925 KB）：
+     * acquire 后只要不 release 就一直占着 —— 持有者只有 files/face/video 页。 */
+    if (viewfinder_is_enabled()) {
+        ESP_LOGE(TAG, "[residents]  - viewfinder buffers held (~2.9 MB): "
+                      "leave the page that acquired them");
+    }
+    if (det_models == 0 && !face_recog_ready() && !viewfinder_is_enabled()) {
+        ESP_LOGE(TAG, "[residents]  - none of the known big holders are resident "
+                      "-> pure fragmentation (reboot, or reduce MEDIA_BUF_CNT)");
+    }
+}
+
+/**
+ * ★★ §73.15：起流失败的**统一腾地**（幂等，可安全重复调用）。
+ *
+ * 前提：只在"相机没跑起来"（s_running == false）的起流失败路径里调用 ——
+ * 此刻帧处理块进不来，unload_sync / viewfinder_release 都可就地执行。
+ *
+ * 腾地对象与量级（§73.15 现场日志定案）：
+ *   - det 模型（FACE/HAND espdet + scratch，~1.25 MB）；
+ *   - 识别引擎（MSR+MNP+MFN ~2.3 MB，正常不该在场——会话泄漏才算 BUG）；
+ *   - viewfinder 三件套（~2.93 MB）—— §73.14 起纳入：恢复预览场景它就是最大
+ *     住户，先放掉换"起流成功"是稳赚的（起流成功后 VFD 重新渐进 acquire）。
+ *
+ * 返回是否真的释放了东西 —— 调用方据此决定要不要重试（什么都没腾出来，
+ * 重试注定还是 ENOMEM，省一次无用功）。
+ */
+static bool cam_reclaim_residents(void)
+{
+    bool did = false;
+    if (face_service_loaded_models() > 0) {
+        (void)face_service_unload_sync();
+        did = true;
+    }
+    if (face_recog_ready()) {
+        (void)face_recog_stop();
+        did = true;
+    }
+    if (viewfinder_is_enabled()) {
+        viewfinder_release();
+        did = true;
+    }
+    if (did) {
+        ESP_LOGW(TAG, "[reclaim] CAM residents unloaded (det/recog/viewfinder), "
+                      "PSRAM largest=%u now",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    }
+    return did;
+}
+
 esp_err_t camera_service_start_fmt_owner(camera_frame_cb_t cb, void *user,
                                          cam_fmt_t fmt, uint32_t w, uint32_t h,
                                          cam_owner_t owner)
@@ -270,6 +536,45 @@ esp_err_t camera_service_start_fmt_owner(camera_frame_cb_t cb, void *user,
         ESP_LOGE(TAG, "unsupported profile: %s %ux%u (add it in ov3660_fmt.c)",
                  fmt == CAM_FMT_JPEG ? "JPEG" : "RGB565", (unsigned)w, (unsigned)h);
         return ESP_ERR_INVALID_ARG;
+    }
+
+    /* ★★ 同样在任何硬件动作之前，把"这次要多少连续 PSRAM / 现在有多少"记下来。
+     *   ⚠ 位置关键：此刻上一次的流已经拆干净（上面 s_running == false），而本次的
+     *     缓冲还没分配 ⇒ 这一行就是驱动将要面对的真实 heap，测量值可直接当预判。 */
+    cam_stream_mem_check(fmt, w, h);
+
+    /* ★★ §73.9（2026-09-28 深夜日志定案）：起流前的**礼貌腾地**。
+     *
+     *   现场证据：det 开着进 VIDEO，REQBUFS 吃掉 2 块后 backup 那块放不下
+     *  （`no mem for DVP backup buffer` → STREAMON fail）。住户报告点名
+     *   det 模型 —— 只要它常驻，720p 的 3 块需求**数学上**就装不下，
+     *   用户必须手动回 CAM 页关 FACE 才能录，这是不可接受的体验。
+     *
+     *   策略：**预判放不下**（largest < 单块，或切不出 blocks 块）且有大块
+     *   住户时，先卸载再继续 —— det 模型（~1.25 MB）与识别引擎（~2.3 MB）
+     *   都是 CAM 页的功能，起流这一刻相机必然是停的 ⇒ unload_sync 可以
+     *   **就地**执行（异步版在相机停着时没人消费，见 face_service.h）。
+     *
+     *   ★ 副作用必须说清楚：det 开关被关 —— 用户回 CAM 页会看到 FACE 按钮
+     *     是 OFF（宁可按钮变灰，也不让 VIDEO 莫名起不来；这与"打卡/录入
+     *     结束即彻底释放"是同一条内存纪律）。
+     *   ★ 回退开关：不接受这个语义就删掉本段，行为回到"失败 + 住户报告"。 */
+    {
+        const size_t per    = cam_stream_frame_bytes(fmt, w, h) + CAM_ALLOC_SLACK;
+        /* §73.15：+1 backup 恢复（esp_cam_ctlr_dvp_cam.c:866，见 psram_need 注释） */
+        const size_t blocks = (size_t)cam_stream_buf_cnt(fmt) + 1u;
+        size_t   largest = 0;
+        uint32_t n_ge    = 0;
+        const uint32_t cap = mem_diag_free_capacity(per, &largest, &n_ge);
+        const bool   tight = (largest < per) || (cap < blocks);
+
+        if (tight && (face_service_loaded_models() > 0 || face_recog_ready() ||
+                      viewfinder_is_enabled())) {   /* §73.14/§73.15：腾地列表含 viewfinder */
+            ESP_LOGW(TAG, "[reclaim] largest=%u < need per=%u x %u block(s) -> "
+                          "unloading CAM-page residents first (FACE button will show OFF)",
+                     (unsigned)largest, (unsigned)per, (unsigned)blocks);
+            (void)cam_reclaim_residents();          /* §73.15：统一 helper（幂等） */
+        }
     }
 
     s_cb = cb; s_user = user;
@@ -343,7 +648,7 @@ esp_err_t camera_service_start_fmt_owner(camera_frame_cb_t cb, void *user,
      *
      *   ★ 组合方向与原代码**完全等价**：原代码 = 整行倒序(vflip) + 行内倒序(hflip) = 旋转 180°，
      *     所以这里 HFLIP+VFLIP 同开。翻转后的像素与原来自算的 s_canvas_buf 逐字节一致 ⇒
-     *     face_service_detect() / color_hsv_detect_red() 的坐标系不用动。
+     *     face_service_detect() 的坐标系不用动（§73.12 后 color_hsv 已下线）。
      *   ★ 时机：必须在 STREAMON 之前设；S_FMT 之后 DVP 尚未出流，此刻改寄存器最安全。
      *   ★ 用法照抄 esp_video 自带示例 examples/capture_stream/main/capture_stream_main.c:259-276。 */
     {
@@ -444,14 +749,53 @@ esp_err_t camera_service_start_fmt_owner(camera_frame_cb_t cb, void *user,
         }
     }
 
+    /* ★ 本次实际要几个缓冲：媒体档用 MEDIA_BUF_CNT（可单独调小以省连续 PSRAM），
+     *   预览档用 BUF_CNT。两者都必须 <= BUF_CNT —— s_buf[] 是按 BUF_CNT 开的
+     *   （下面加了 _Static_assert 钉住）。 */
+    const uint32_t nbuf = cam_stream_buf_cnt(fmt);
+
+    bool streamon_retried = false;      /* ★ §73.15：STREAMON ENOMEM 腾地重试，只试一次 */
+streambuf:                              /* ← 重试入口：重新 REQBUFS → mmap/QBUF → STREAMON */
     struct v4l2_requestbuffers req = {
-        .count = BUF_CNT,
+        .count = nbuf,
         .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
         .memory = V4L2_MEMORY_MMAP,
     };
-    if (ioctl(s_fd, VIDIOC_REQBUFS, &req) != 0) { ESP_LOGE(TAG, "REQBUFS fail"); goto err; }
+    if (ioctl(s_fd, VIDIOC_REQBUFS, &req) != 0) {
+        /* ★★ §73.13/§73.15：REQBUFS ENOMEM → 自动腾地重试一次。
+         *   腾地列表 = det 模型 + 识别引擎 + viewfinder 三件套
+         *   （cam_reclaim_residents，幂等；前提是此刻相机没跑起来 ⇒ 就地卸载安全）。
+         *   REQBUFS 可在同一 fd 上原地重发（驱动侧旧缓冲在失败路径已被释放）。 */
+        bool reclaimed = false;
+        if (errno == ENOMEM) {
+            reclaimed = cam_reclaim_residents() &&
+                        (ioctl(s_fd, VIDIOC_REQBUFS, &req) == 0);
+            if (reclaimed) {
+                ESP_LOGI(TAG, "REQBUFS retry OK after reclaim");
+            }
+        }
+        if (!reclaimed) {
+            /* ★★ §73 新增：REQBUFS fail 的根因翻译。
+             *   驱动日志 "esp_video: Failed to create buffer" 的唯一含义：
+             *   esp_video_buffer_create() 逐块 aligned_alloc 切不出
+             *   per-block 大小的连续 PSRAM（esp_video_setup_buffer() 在此
+             *   **之前**已经把旧流缓冲释放掉了 —— "CAM 没还"不成立）。
+             *   ★ §73.15 文案修正：REQBUFS 只占 nbuf 块；backup 是 **STREAMON 阶段**
+             *     esp_cam_new_dvp_ctlr() 分配的（esp_cam_ctlr_dvp_cam.c:866-867，
+             *     §73.13 判其"不存在"是 grep 漏了 IDF 本体组件，详见 psram_need 注释）。 */
+            const size_t per     = cam_stream_frame_bytes(fmt, w, h);
+            const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+            ESP_LOGE(TAG, "REQBUFS fail (errno=%d): driver allocates %u buffer(s) "
+                          "of %u B each (backup comes later at STREAMON); PSRAM largest=%u -> %s",
+                     errno, (unsigned)nbuf, (unsigned)per, (unsigned)largest,
+                     (largest < per) ? "LARGEST TOO SMALL (fragmentation / big holder resident)"
+                                     : "largest fits - read the driver log above");
+            cam_mem_residents_report();
+            goto err;
+        }
+    }
 
-    for (int i = 0; i < BUF_CNT; i++) {
+    for (uint32_t i = 0; i < nbuf; i++) {
         struct v4l2_buffer b = {.type=V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory=V4L2_MEMORY_MMAP, .index=i};
         if (ioctl(s_fd, VIDIOC_QUERYBUF, &b) != 0) goto err;
         s_buf[i] = mmap(NULL, b.length, PROT_READ|PROT_WRITE, MAP_SHARED, s_fd, b.m.offset);
@@ -461,7 +805,50 @@ esp_err_t camera_service_start_fmt_owner(camera_frame_cb_t cb, void *user,
     }
 
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(s_fd, VIDIOC_STREAMON, &type) != 0) { ESP_LOGE(TAG, "STREAMON fail"); goto err; }
+    if (ioctl(s_fd, VIDIOC_STREAMON, &type) != 0) {
+        /* ★★ §73.15（本轮现场日志定案）：STREAMON 阶段的 ENOMEM = **DVP backup
+         *   buffer 分配失败** —— `esp_cam_new_dvp_ctlr()`（esp_cam_ctlr_dvp_cam.c:866-867）
+         *   在此刻创建 DVP 控制器，要多切**一块帧同尺寸**（JPEG 720p = 921,600 B）的
+         *   backup。REQBUFS 的 nbuf 块已把洞吃光 ⇒ backup 切不出（现场 largest=917,504
+         *   < 921,600，差 4KB）。与 REQBUFS 一样：腾地（det/recog/viewfinder）后
+         *   **重走 REQBUFS→QBUF→STREAMON** 一次。
+         *   §73.13 的教训：判据/重试必须覆盖到 STREAMON —— 只兜 REQBUFS 救不了
+         *   "REQBUFS 成功、backup 失败"这一形态。 */
+        if (errno == ENOMEM && !streamon_retried && cam_reclaim_residents()) {
+            streamon_retried = true;
+            ESP_LOGW(TAG, "STREAMON ENOMEM (DVP backup?) -> reclaimed residents, "
+                          "retrying REQBUFS..STREAMON once (FACE button will show OFF)");
+            /* 先拆干净：munmap 已映射的缓冲 + REQBUFS(count=0) 释放驱动侧缓冲 */
+            for (uint32_t i = 0; i < nbuf; i++) {
+                if (s_buf[i]) { munmap(s_buf[i], s_buf_len[i]); s_buf[i] = NULL; s_buf_len[i] = 0; }
+            }
+            struct v4l2_requestbuffers req0 = req;
+            req0.count = 0;
+            ioctl(s_fd, VIDIOC_REQBUFS, &req0);
+            goto streambuf;
+        }
+        /* ★★ 2026-09-28：把驱动那句含糊的 "no mem" 翻译成可行动的根因。
+         *   现场原始日志见 cam_stream_mem_check() 的注释。这一段的价值是：
+         *   以后只要看到本行，就知道该往"省内存/减块数"走，而不是去查 caps、
+         *   去查 SD 卡、去查 sensor。 */
+        /* ★★ 2026-09-28 判据修正：真正的硬约束是"**单块** per 字节连续"，
+         *   不是 "total = per*(n+1) 字节连续"（n+1 次分配彼此独立、不需要相邻）。
+         *   原版拿 total 比 largest ⇒ largest 落在 (per, total) 时会把"够"误判成碎片。
+         *   ⚠ 这一段原本的文案（"PSRAM free 几 MB 却失败"）就是 §67 那条误导的源头之一。 */
+        const size_t per     = cam_stream_frame_bytes(fmt, w, h);
+        const size_t total   = cam_stream_psram_need(fmt, w, h);
+        const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+        ESP_LOGE(TAG, "STREAMON fail (errno=%d). If the driver log above says "
+                      "`no mem for DVP backup buffer` or `failed to create DVP`: "
+                      "PSRAM largest=%u B vs per-block需要=%u B (%u bufs + 1 backup, %u B total) -> %s",
+                 errno, (unsigned)largest, (unsigned)per,
+                 (unsigned)(cam_stream_buf_cnt(fmt) + 1u), (unsigned)total,
+                 (largest < per) ? "FRAGMENTATION: free 大概率够，但没有一块这么大的连续区 "
+                                   "（减 MEDIA_BUF_CNT 或先让出大块）"
+                                 : "largest 已够放单块 —— 去读上面驱动的原始日志");
+        cam_mem_residents_report();     /* ★ §73：把"谁占着大块"一并报出来 */
+        goto err;
+    }
 
     s_running = true;
     BaseType_t ok = xTaskCreatePinnedToCore(cam_task, "cam", CAM_TASK_STACK, NULL, 5, &s_task, 1);
@@ -538,6 +925,8 @@ esp_err_t camera_service_stop(void)
 /* ★ 把"任务还没退"也算作 running：UI 的 START/STOP 文案才会与真实状态一致
  * （stop() 超时返回时不能显示成"已停"）。 */
 bool camera_service_is_running(void) { return s_running || s_task != NULL; }
+
+bool camera_service_has_frame_cb(void) { return s_cb != NULL; }   /* §73.16：区分 CAM/VIDEO 预览 */
 
 /* ---- ★ S2-0 新增的薄封装 ---- */
 

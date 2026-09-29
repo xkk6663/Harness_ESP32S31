@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S8 人脸识别打卡 · 烧录现场验收速查表</title>
+<style>
+  :root{
+    --ink:#1f2328; --ink2:#57606a; --ink3:#8b949e;
+    --line:#d8dee4; --line2:#eaeef2;
+    --bg:#ffffff; --bg2:#f6f8fa;
+    --red:#b42318; --green:#1a7f37; --blue:#0969da; --amber:#9a6700;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg2);color:var(--ink);
+       font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 64px;}
+  h1{font-size:21px;font-weight:600;margin:0 0 6px;}
+  .sub{color:var(--ink2);font-size:13px;margin:0 0 22px;}
+  h2{font-size:16px;font-weight:600;margin:30px 0 10px;padding-bottom:6px;
+     border-bottom:1px solid var(--line);}
+  h3{font-size:14px;font-weight:600;margin:20px 0 8px;}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:12px 0;}
+  .warn{border-left:4px solid var(--red);background:#fff5f5;}
+  .note{border-left:4px solid var(--blue);background:#f0f7ff;}
+  .ok{border-left:4px solid var(--green);background:#f2fbf4;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:var(--bg2);font-weight:600;white-space:nowrap;}
+  td.no{width:34px;text-align:center;color:var(--ink2);}
+  code,kbd{font-family:var(--mono);font-size:12.5px;background:var(--bg2);
+           border:1px solid var(--line2);border-radius:4px;padding:1px 5px;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#0d1117;color:#e6edf3;
+      border-radius:8px;padding:12px 14px;overflow-x:auto;margin:10px 0;line-height:1.55;}
+  pre .c{color:#8b949e}
+  pre .g{color:#7ee787}
+  pre .y{color:#e3b341}
+  pre .r{color:#ff7b72}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;
+        border:1px solid var(--line);background:var(--bg2);color:var(--ink2);
+        font-family:var(--mono);white-space:nowrap;}
+  .tag{font-family:var(--mono);font-size:12px;font-weight:600;}
+  .t-recog{color:#0969da}.t-cam{color:#9a6700}.t-punch{color:#8250df}
+  .t-jpg{color:#1a7f37}.t-page{color:#cf222e}
+  .cols{display:flex;gap:14px;flex-wrap:wrap}
+  .cols>div{flex:1 1 300px}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+  @media print{
+    body{background:#fff} .wrap{max-width:none;padding:0}
+    h2{break-after:avoid} table{break-inside:auto} tr{break-inside:avoid}
+    pre{background:#f6f8fa;color:#1f2328;border:1px solid #d8dee4}
+    pre .c{color:#57606a}pre .g{color:#1a7f37}pre .y{color:#9a6700}pre .r{color:#b42318}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>S8 人脸识别打卡 · 烧录现场验收速查表</h1>
+<p class="sub">
+  工程 <code>C:\Users\xiao1\Desktop\esp32\display_audio_photo</code>　分支 <code>端侧人脸识别</code><br>
+  本页是 <code>docs/项目规划/S8_人脸识别打卡系统方案.md</code> §16.7 + §16.9.2 的现场浓缩版，边烧边对照用。
+</p>
+
+<div class="card ok">
+  <h3 style="margin-top:0">✅ 验收结论（2026-09-29）：本速查表所列验收项已全部通过</h3>
+  <p style="margin:6px 0">
+    S8-0~S8-4 全部上机验收通过，验收期暴露的问题已在 <code>改动记录.md</code> §73.1~§73.12 闭环
+    （二次录入分配洞、记录删除/对账、预览 NO_MEM、PSRAM 即用即释放审计 + D6 废除、letterbox 等比预览、
+    时间升降序、HSV 阉割、VIDEO 圆钮改版）。
+    最终结论见 <code>S8_人脸识别打卡系统方案.md</code> §18；本页保留为验收过程的历史操作参考。
+  </p>
+</div>
+
+<div class="card warn">
+  <h3 style="margin-top:0">第 0 步：烧录前置（漏了这一步，S8-2 起的验收全废）</h3>
+  <p style="margin:8px 0">
+    本轮往 <code>littlefs_content/models/</code> 新增了两个模型：
+    <span class="pill">human_face_detect_msr_s8_v1.espdl 61,248 B</span>
+    <span class="pill">human_face_detect_mnp_s8_v1.espdl 129,968 B</span><br>
+    但根 <code>CMakeLists.txt</code> 的 <code>littlefs_create_partition_image(storage littlefs_content)</code>
+    <b>没带 <code>FLASH_IN_PROJECT</code></b> ⇒ 日常 <code>idf.py flash</code> <b>只烧 app，不会带上新模型</b>。
+  </p>
+  <pre><span class="c"># 1) 全量烧 app（分区表没动，但保持习惯）</span>
+idf.py -p COM9 flash
+
+<span class="c"># 2) ★ 单独烧 storage（必需！偏移以 partitions.csv 为唯一真源）</span>
+idf.py -p COM9 storage-flash
+
+<span class="c"># 想手动确认烧的是哪一块：</span>
+cat build/storage-flash_args          <span class="c"># → 0x720000 storage.bin</span></pre>
+  <p class="muted" style="margin:6px 0 0;color:var(--ink2)">
+    分区真源：<code>storage, data, littlefs, 0x720000, 0x8E0000</code>（9,306,112 B）。
+    素材合计 6,510,996 B ⇒ 余 2.7 MB。<br>
+    不烧的后果：<code>engine_load()</code> 明确报 <code>model file missing/empty</code>，
+    日志里逐个列出缺哪三个文件，识别/录入不可用 —— <b>但不会 panic</b>（这是刻意的）。
+  </p>
+  <p style="margin:12px 0 4px"><b>怎么判断"模型真的烧进去了"</b>（别用 esptool 的写入字节数判断）：</p>
+  <p style="margin:0 0 8px;color:var(--ink2)">
+    <code>build/storage.bin</code> 的大小<b>恒等于分区大小</b>（9,306,112 B = 0x8E0000），
+    与里面装了多少东西无关 ⇒ 每次烧录的字节数都一样，看起来"占用没增加"是<b>正常的</b>。
+    要看的是 littlefs 的<b>内容</b>量：
+  </p>
+  <pre><span class="c"># ① 内容量（这个数才会变：加 MSR/MNP 前 6,319,780 → 现在 6,510,996）</span>
+find littlefs_content -type f -printf "%s\n" | awk '{s+=$1} END {print s}'
+
+<span class="c"># ② 真正的证据：模型**字节内容**在镜像里（不只是文件名）</span>
+python -c "
+img=open('build/storage.bin','rb').read()
+for p in ['human_face_detect_msr_s8_v1.espdl','human_face_detect_mnp_s8_v1.espdl','human_face_feat_mfn_s8_v1.espdl']:
+    d=open('littlefs_content/models/'+p,'rb').read()
+    print(p, 'YES @0x%06x'%img.find(d[:48]) if img.find(d[:48])>=0 else 'NO')
+"</pre>
+  <p style="margin:6px 0 0;color:var(--ink2)">
+    实测结果（2026-09-28）：MSR @<code>0x616000</code>、MNP @<code>0x5f6000</code>、
+    MFN @<code>0x625000</code> —— 三个都在。
+  </p>
+</div>
+
+<h2>【A】S8-1 人脸库 + 录入（ENROLL 真实采集）</h2>
+<table>
+  <tr><th class="no">#</th><th>做什么</th><th>应该看到什么</th></tr>
+  <tr><td class="no">1</td>
+      <td>把两个探针开关置 0 再烧：<br><code>FACE_RECOG_PROBE_ENABLE</code> / <code>FACE_DB_PROBE_ENABLE</code>；
+          <code>FDB_PROBE_SEED_DEMO</code> 保持 0</td>
+      <td>开机日志里不再出现 <code>S8-0 PROBE</code> / <code>S8-1 PROBE</code></td></tr>
+  <tr><td class="no">2</td><td><code>SYS → Face DB</code></td>
+      <td>顶栏 <code>N/10 persons dim=512 free=M</code> + 列表；
+          <b>重点看中文姓名有没有方块</b></td></tr>
+  <tr><td class="no">3</td><td><code>CAM → START → MODE</code> 进 ENROLL，输姓名</td>
+      <td>覆盖层 <code>1/3 → 2/3 → 3/3</code> → 自动回 USER 并提示
+          <code>Enrolled: 张三 (4/10)</code></td></tr>
+  <tr><td class="no">3a</td><td>三张脸差太多</td>
+      <td><code>Photos differ too much</code>，<b>不入库</b></td></tr>
+  <tr><td class="no">3b</td><td>重名 / 第 11 人 / 名字非法 / 25 s 采不满</td>
+      <td>各自明确拒绝或超时说明，<b>不让用户对着镜头干等</b></td></tr>
+  <tr><td class="no">4</td><td>断电重启</td><td>人数仍在（验双份世代号落盘）；库管理页里能删</td></tr>
+  <tr><td class="no">5</td><td>拔卡重启</td>
+      <td>人脸检测照常可用，仅"录入 / 库"不可用并明确提示</td></tr>
+</table>
+
+<h2>【B】S8-2 识别 + 打卡核心</h2>
+<table>
+  <tr><th class="no">#</th><th>做什么</th><th>应该看到什么</th></tr>
+  <tr><td class="no">6</td><td>认出的张三站到镜头前</td>
+      <td><code>/sdcard/attendance/01_张三/20260928_103045.jpg</code> 出现</td></tr>
+  <tr><td class="no">7</td><td>看 <code>index.csv</code></td>
+      <td>追加一行、列全对（<code>seq,name,person_id,date,time,epoch_s,photo,score</code>）；
+          PC 端 Excel 打开中文不乱码</td></tr>
+  <tr><td class="no">8</td><td><b>断网</b>打卡</td>
+      <td>文件名退化为 <code>IMG_0001.jpg</code>，<code>date</code>/<code>time</code> 列为 <code>--</code>、
+          <code>epoch_s</code>=0 —— <b>绝不出现 1970</b></td></tr>
+  <tr><td class="no">9</td><td><b>连站 5 分钟</b></td>
+      <td>只产生 <b>1</b> 条记录（60 s 冷却生效）</td></tr>
+  <tr><td class="no">10</td><td>状态栏文案</td>
+      <td><code>Punched: 张三</code> / <code>Already punched: 张三</code> /
+          <code>Punched: 访客</code>（陌生人不误报）</td></tr>
+  <tr><td class="no">11</td><td>记数</td>
+      <td>串口里 <code>recog task stack hwm=</code> 与单帧耗时（用于调 <code>RECOG_TASK_STACK</code>）</td></tr>
+</table>
+
+<h2>【C】S8-3 像素水印</h2>
+<table>
+  <tr><th class="no">#</th><th>做什么</th><th>应该看到什么</th></tr>
+  <tr><td class="no">12</td><td>打卡照片用 PC 打开</td>
+      <td>图上能看见姓名与 <code>2026-09-28 10:30:45</code>；中文不糊不乱码</td></tr>
+  <tr><td class="no">13</td><td>连打 20 次</td>
+      <td>PSRAM <b>无下降</b>（无泄漏）；记下软编单张耗时</td></tr>
+</table>
+
+<h2>【D】S8-4 打卡记录浏览</h2>
+<table>
+  <tr><th class="no">#</th><th>做什么</th><th>应该看到什么</th></tr>
+  <tr><td class="no">14</td><td><code>SYS → Face DB → RECORDS</code></td>
+      <td>记录列表 + 底部 <code>1/N</code> 页码；<code>BY DATE</code>/<code>BY PERSON</code> 切换后顺序正确</td></tr>
+  <tr><td class="no">15</td><td>攒到 100 条（或 PC 上直接往 <code>index.csv</code> 追加）</td>
+      <td><b>翻页不卡</b>（分页只建当前 20 行）</td></tr>
+  <tr><td class="no">16</td><td>点行尾眼睛按钮</td>
+      <td>全屏预览该照片，标题栏 <code>#12 张三 2026-09-28 10:30:45</code>；
+          取景器/录像占着共享缓冲时应提示 <code>Preview failed: ESP_ERR_INVALID_STATE</code>，
+          <b>不是白屏或卡死</b></td></tr>
+  <tr><td class="no">17</td><td>按 <code>CLEAR</code> 两下（第二步变红 <code>SURE?</code>）</td>
+      <td>记录清空、CSV 只留表头；<b>然后回 PERSONS 视图：人脸库必须完好无损</b>
+          ← 这条是 S8-4 的红线验收项</td></tr>
+</table>
+
+<h2>验收项 → 看哪一行日志</h2>
+<p class="sub" style="margin-top:-4px">
+  日志 TAG：<span class="tag t-recog">RECOG</span> 识别引擎　
+  <span class="tag t-cam">TAB_CAM</span> CAM 页决策层　
+  <span class="tag t-punch">PUNCH</span> 打卡落盘　
+  <span class="tag t-jpg">JPEG_UTIL</span> 软编　
+  <span class="tag t-page">PAGE_FACE</span> 库/记录页
+</p>
+<table>
+  <tr><th>要验的东西</th><th>看这一行</th><th>TAG</th></tr>
+  <tr><td>MSR/MNP + MFN 加载成功</td>
+      <td><code>recog engine ready in 1234 ms (msrmnp 210 ms + mfn 1010 ms) | feat_dim=512 | PSRAM free=..KB largest=..KB</code><br>
+          <span style="color:var(--ink2)">★ <b>这行是 S8-2 起的总闸</b>：没有它，识别/录入一步都走不动</span></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>加载任务起来了</td>
+      <td><code>starting recog load task (MSR+MNP+MFN, stack=10240)...</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>加载任务栈够不够</td>
+      <td><code>recog load task stack hwm=NNNN B (size=10240)</code>（用它决定 10240 要不要调）</td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>★ 引擎驱动没被调用</b><br>（2026-09-28 的 P0 就是它）</td>
+      <td><code>recog load never started within 8000 ms - face_recog_poll() not called?</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>★ 提交被拒</b>（引擎没就绪 / 正忙）</td>
+      <td><code>punch skipped (30s window): identify submit refused (ESP_ERR_INVALID_STATE) ready=0 engine=1</code><br>
+          <span style="color:var(--ink2)">state 取值：0=IDLE 1=LOADING 2=RUNNING 3=FAIL</span></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td><b>★ 录入在等引擎</b></td>
+      <td><code>punch skipped (30s window): enroll waiting on engine (state=1, ready=0)</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>关引擎时正在加载</td>
+      <td><code>stop deferred: the load task still running</code>（会下一拍重试）</td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>没烧 storage.bin</b></td>
+      <td><code>model file missing/empty -&gt; recog unavailable</code> + 三行 <code>MFN/MSR/MNP &lt;path&gt; : 0 B</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>内存不够（碎片）</td>
+      <td><code>refuse recog load: need contiguous NKB + MKB total, …</code>（附 heap dump）</td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>★ MSR/MNP 的 5 点稳不稳</b></td>
+      <td><code>recog stats: runs=200 | keypoint ANOMALY=0 (0.0%)</code>（每次任务收尾打）<br>
+          异常时另有 <code>keypoint ANOMALY code=N | kp=[…] | box=…</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>★ 录样的 5 点原始值</b></td>
+      <td><code>keypoints ok | kp=[x,y x,y x,y x,y x,y] | box=…</code>（EXTRACT 每张都打，一次录入 3 行）</td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>认出张三</td>
+      <td><code>identify: MATCH 张三 (score=0.812, box=12,20 180x180, kp=ok, 512 ms)</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>陌生人不误报</td>
+      <td>同一行里是 <code>identify: guest  (score=0.41, …, kp=ok, …)</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td>识别任务栈够不够</td><td><code>recog task stack hwm=NNNN B (size=8192)</code></td>
+      <td class="tag t-recog">RECOG</td></tr>
+  <tr><td><b>连站 5 分钟只 1 条</b></td>
+      <td><code>punch skipped (30s window): cooldown - 张三 (id=1, 60s window)</code>（<b>应只出现一次</b>）</td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>为什么没打卡（脸不合格）</td>
+      <td><code>punch skipped (30s window): quality - Move closer (det=41% box=…)</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>打卡被受理</td>
+      <td><code>punch accepted: 张三 | frame 240x240 | t=2026-09-28 10:30:45 | det=0.87</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>照片 + CSV 落盘成功</td>
+      <td><code>punch OK: /sdcard/attendance/01_张三/20260928_103045.jpg | 张三 (id=1 score=0.812) | 12345 B jpeg | time valid</code></td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td>落盘总耗时</td><td><code>punch done in 210 ms (err=ESP_OK)</code></td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td><b>软编单张耗时</b></td><td><code>enc 240x240 q=80 -&gt; 12345 B in 38 ms</code></td>
+      <td class="tag t-jpg">JPEG_UTIL</td></tr>
+  <tr><td>断网降级</td>
+      <td>上面那行里 <code>time INVALID (--)</code>，且文件名是 <code>IMG_0001.jpg</code></td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td>写盘失败不留半张</td><td><code>fwrite short: 8192/12345, errno=…</code>（随后 unlink）</td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td>照片存了但流水没写</td><td><code>photo saved but csv append failed: %s</code></td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td><b>★ 水印画布没建</b></td>
+      <td><code>watermark: canvas missing - photo will be saved WITHOUT watermark</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>★ 水印之后 commit 失败</td>
+      <td><code>commit failed after begin (prep=OK) - aborting, cooldown stays charged</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>录入启动 / 被拒</td>
+      <td><code>enroll start: name=张三</code> / <code>enroll start refused: name '张三' already used (id=1)</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>录入采样进度</td><td><code>enroll: sample 1/3</code> → <code>2/3</code> → <code>3/3</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>三张不一致（不入库）</td>
+      <td><code>enroll: sample 0/1 similarity 0.412 &lt; 0.5, retry</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>入库成功 + 底片</td>
+      <td><code>enrolled: id=4 name=张三</code> + <code>thumb written: id=4 3456 B (q90)</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>入库失败原因</td>
+      <td><code>enroll failed: ESP_ERR_NO_MEM</code>（满）/ <code>ESP_ERR_INVALID_STATE</code>（重名）</td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td><b>★ 录入超时（采到几张）</b></td>
+      <td><code>enroll timeout after 25000 ms: only 2/3 samples (last hint: Hold still (low conf) (52%))</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>四条 ENROLL 准入拦截</td>
+      <td><code>ENROLL refused: camera not running</code> / <code>face db not ready (SD mounted=0)</code> /
+          <code>face db full (10/10)</code> / <code>active model is not FACE</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>名字被截断</td><td><code>enroll name sanitized: '张三张三张三' -&gt; '张三张'</code></td>
+      <td class="tag t-cam">TAB_CAM</td></tr>
+  <tr><td>清空打卡记录</td>
+      <td><code>clear done: 37 entries removed under /sdcard/attendance</code> + <code>clear done in 890 ms (err=ESP_OK)</code></td>
+      <td class="tag t-punch">PUNCH</td></tr>
+  <tr><td>清空收尾（UI 侧）</td><td><code>clear finished: 0 records left</code></td>
+      <td class="tag t-page">PAGE_FACE</td></tr>
+  <tr><td>预览失败原因</td><td><code>preview rc=ESP_ERR_INVALID_STATE</code></td>
+      <td class="tag t-page">PAGE_FACE</td></tr>
+  <tr><td>记录页缓存</td><td><code>record buffer ready: 128 entries x 120 B (PSRAM)</code></td>
+      <td class="tag t-page">PAGE_FACE</td></tr>
+</table>
+
+<div class="card note">
+  <h3 style="margin-top:0">日志为什么是"限频"的</h3>
+  <p style="margin:6px 0">
+    USER 态每 1.5 s 走一遍决策，而"脸不合格""冷却期内"是<b>常态</b>不是异常 ——
+    无条件打日志 5 分钟能刷 200 行同样的字，把有用的行冲走。
+    所以新增 <code>skip_log(slot, fmt, ...)</code>：<b>按原因槽各自限频 30 s</b>，共 7 个槽
+    （quality / cooldown / no_sd / no_db / no_mem / busy / enroll_quality）。<br>
+    真正异常的路径（commit 失败、水印画布缺失）仍然 <code>ESP_LOGE</code> <b>无条件</b>打。
+  </p>
+</div>
+
+<div class="card ok">
+  <h3 style="margin-top:0">顺手修掉的一处哨兵值滥用</h3>
+  <p style="margin:6px 0">
+    <code>recog_pump()</code> 原来用 <code>pr.elapsed_ms != 0</code> 判"这次打卡任务跑完了"。
+    但 <code>elapsed_ms</code> 以 tick（10 ms）计，而 <code>punch_task</code> 有几条
+    <b>同一 tick 内立刻失败</b>的早退路径（参数不对 / SD 未挂载 / 目录拼不出来）
+    ⇒ <code>elapsed_ms == 0</code> ⇒ <b>"打卡失败"永远弹不出来</b>，用户只看到"按了没反应"。<br>
+    修法：<code>punch_record_t</code> 增加显式字段 <code>bool has_result</code>，
+    <code>punch_task</code> 收尾无条件置位，UI 改判它。<br>
+    规矩统一为：<b>状态用显式标志位，不要拿测量值当哨兵</b>（本工程第二次踩到）。
+  </p>
+</div>
+
+<hr>
+
+<h2>收尾（验收通过后）</h2>
+<ul>
+  <li>确认 <code>FACE_RECOG_PROBE_ENABLE</code> / <code>FACE_DB_PROBE_ENABLE</code> 都是 0。</li>
+  <li>确认 <code>FDB_PROBE_SEED_DEMO</code> 是 0（它写的是<b>真库</b> <code>/sdcard/face_db</code>，
+      正式固件不能留 3 个假人）。</li>
+  <li>固件体积：app 6.69 MB / 槽 7.34 MB；storage 6.51 MB / 区 9.31 MB。</li>
+</ul>
+
+<div class="card">
+  <h3 style="margin-top:0">已知限制（不是 bug）</h3>
+  <ul style="margin:6px 0">
+    <li>一次识别只取<b>面积最大</b>的那张脸 —— 多人同框时其余人不打卡（v1 取舍）。</li>
+    <li>打卡照片 240×240，够人脸存证，<b>不</b>是打印级。</li>
+    <li><code>PUNCH_LOG_MAX</code>=128 ⇒ 记录页顶栏写着 <code>(last 128)</code>，更早的看不到。</li>
+    <li><code>infer = 324 ms</code> 是否因 CPU 主频未跑满：未深挖。若实测明显更差，先查主频 / PSRAM 频率。</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

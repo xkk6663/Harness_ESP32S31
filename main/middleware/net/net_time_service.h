@@ -20,7 +20,9 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,6 +93,51 @@ void net_time_service_start(void);
  * @return true 表示时间已同步过，UI 可以显示时钟
  */
 bool net_time_service_time_valid(void);
+
+/* ---------------------------------------------------------------------------
+ *  ★ 取"可信时间"的唯一入口（S8-1 新增，方案 §5.1）
+ *
+ *  为什么要有这对函数（而不是让调用方自己 time(NULL) + localtime_r）：
+ *  `capture_service.c:146` 那样的自由组合**漏一次 time_valid 检查就写出 1970 时间戳**，
+ *  而 1970 在下游看起来是个"合法时刻"，不会报错、只会静静污染数据（打卡记录尤其致命）。
+ *  ⇒ 把"可信判定"和"取值"绑进同一个函数，让"忘了查"在**编译期就不可能发生**：
+ *     你拿到 net_time_t 时，valid 字段已经替你查过了。
+ *
+ *  ★ 纯增量改动，不改任何既有调用点。
+ * ------------------------------------------------------------------------- */
+
+/** 时间快照。`valid == false` 时其余字段全 0（**不是 1970**，调用方据此走降级）。 */
+typedef struct {
+    bool   valid;
+    int    year;          /* 2026 */
+    int    mon;           /* 1..12（**不是 tm_mon 的 0..11**，这里已经 +1） */
+    int    day;           /* 1..31 */
+    int    hour;          /* 0..23 */
+    int    min;           /* 0..59 */
+    int    sec;           /* 0..59 */
+    time_t epoch;         /* 真实 epoch 秒；valid=false 时为 0 */
+} net_time_t;
+
+/**
+ * @brief 取当前本地时间快照（线程安全，任意线程可调）
+ * @param out 不能为 NULL；未校时时 out->valid = false，其余字段为 0
+ */
+void net_time_service_get(net_time_t *out);
+
+/**
+ * @brief 格式化：valid 时输出 `"2026-09-28 10:30:45"`（19 B + NUL），
+ *        否则输出 `"---- -- -- --:--:--"`（19 B + NUL）
+ *
+ * ★ 占位符**刻意与真时间同长度**：UI 上排版不跳，人眼也一眼看出"时间不可信"，
+ *   而不是显示一个假的 `1970-01-01 08:00:00`。
+ *
+ * @param t       可为 NULL（等同 valid=false）
+ * @param out_len 建议 ≥ 20；不足时输出空串（不静默截断出半截时间）
+ */
+void net_time_service_format(const net_time_t *t, char *out, size_t out_len);
+
+/** 便捷组合：取时间 + 格式化一步到位（内部就是调上面两个）。 */
+void net_time_service_now_str(char *out, size_t out_len);
 
 /**
  * @brief 取最近一次天气快照（线程安全）

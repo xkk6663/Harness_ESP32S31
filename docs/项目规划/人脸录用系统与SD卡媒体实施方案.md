@@ -1,31 +1,27 @@
 # 人脸录用系统 + SD 卡媒体（拍照 / 录像 / 文件管理）实施方案
 
-> **★ 状态：S1 / S2-0 / S2a / S2b 代码已完成，待上机验收** —— 2026-09-25
-> **修订 v2（20:27）**：已并入用户决策"**新建 VIDEO tab 专做 720p 拍照/录像，CAM tab 240×240 专做模型/算法**"
-> ⇒ 新增 **§2.5 双 tab 架构与相机拥有权转移**，并据此重写 §4 / §5 / §9 / §12。
-> **修订 v3（20:37）**：三个决策点**全部落定**（①双 tab ②不带音频 ③<10 人）；
-> 实施 S1 时又发现一枚本分支特有的地雷 **`CONFIG_BSP_SD_MOUNT_POINT="/littlefs"`**（§3.1 坑③）。
-> **修订 v4（21:3x）★★ 关键勘误**：本文 §2.2 / §2.5.4 / §2.5.6 原写"切格式 = `VIDIOC_S_FMT`"
-> **不成立**。真实路径是 esp_video 的私有 ioctl **`VIDIOC_S_SENSOR_FMT`**，且必须自备一份
-> **带 `regs` 寄存器表**的描述（`ov3660_set_format()` 会把 `format->regs` 强转成
-> `ov3660_reginfo_t *` 去写寄存器）。**以 `docs/项目规划/改动记录.md` §23.1 为准**，
-> 那里有完整源码行号链与四条推论。另：§4.1 的"路线 B（RGB565+软件编码做 720p）"因
-> OV3660 **没有 1280×720 RGB565 档**而**不成立**，路线 A 是唯一解。
+> **★★ 状态：S1~S4 + S8 全部实施完毕并上机验收通过（2026-09-29）**。
+> S2（双 tab + 拍照/录像）、S3（人脸录用）、S4（文件管理页）、S8（人脸识别打卡，
+> 细化见 `S8_人脸识别打卡系统方案.md` §14~§18）均已闭环；
+> 验收期修复见 `改动记录.md` §73（预览 NO_MEM、PSRAM 即用即释放审计、letterbox、
+> 记录删除/对账、HSV 阉割、VIDEO 圆钮改版等）。**本文正文保留为设计依据。**
 >
-> **实施进度**：
-> - ✅ **S1 代码已完成并过单文件静态校验**（`esp-idf-syntax-check` → 2 ok / 2 checked）：
->   `main/middleware/periph/sdcard_service.{c,h}`（新建）、`main/CMakeLists.txt`、`main/app/main.c`、
->   `sdkconfig.defaults`（加警告注释）。
-> - ✅ **S2-0 双 tab 骨架 + 相机接口升级已完成**（4 个文件过校验）：
->   `middleware/camera/ov3660_fmt.{c,h}`（新建）、`camera_service.{c,h}`（接口升级）、
->   `ui/tab_video.{c,h}`（新建）、`ui/page_main.c`、`main/CMakeLists.txt`。
-> - ✅ **S2a 拍照 + S2b 录像已完成**：`middleware/camera/capture_service.{c,h}`（新建）、
->   `middleware/media/avi_mjpeg_muxer.{c,h}`（新建，**已过原生单测 ALL PASS**）、
->   `middleware/media/record_video_service.{c,h}`（新建）、`ui/tab_video.c`（接上服务）。
-> - ⬜ S3 / S4 待办（S3 仍受"`human_face_recognition` 组件不在 `managed_components/`"阻塞）。
-> - 📋 **上机验收清单已单列成文**：`docs/项目规划/S2_验收清单.md`（逐条可勾选）。
-> 分支：`端侧人脸识别`（b0b17a8）｜ 借鉴源：`main`（含 `sdcard_service` / SD 卡方案文档）
-> 工程根：`C:\Users\xiao1\Desktop\esp32\display_audio_photo`
+> **历史修订**（v2~v4，2026-09-25）：已并入用户决策"**新建 VIDEO tab 专做 720p 拍照/录像，CAM tab 240×240 专做模型/算法**"
+> ⇒ 新增 **§2.5 双 tab 架构与相机拥有权转移**，并据此重写 §4 / §5 / §9 / §12；
+> 实施中发现的本分支特有地雷 **`CONFIG_BSP_SD_MOUNT_POINT="/littlefs"`**（§3.1 坑③）；
+> v4 关键勘误：切格式走 esp_video 私有 ioctl **`VIDIOC_S_SENSOR_FMT`** 且必须自备
+> **带 `regs` 寄存器表**的描述（以 `改动记录.md` §23.1 为准）。
+>
+> **实施进度（2026-09-29 定稿）**：
+> - ✅ **S1**：`middleware/periph/sdcard_service.{c,h}`（SD 挂载）+ 分区表 + 烧录链路；
+> - ✅ **S2-0/2a/2b**：`ov3660_fmt` + camera_service 接口升级 + `tab_video` 骨架 +
+>   `capture_service`（拍照）+ `avi_mjpeg_muxer`（单测全过）+ `record_video_service`（录像）；
+> - ✅ **S3**：face_db / face_quality / face_recog_service（MSR+MNP+MFN）/ ENROLL 录入流程；
+> - ✅ **S4**：`file_mgr_service` + `tab_files`（FILES 页浏览回放）+ viewfinder 预览；
+> - ✅ **S8**：punch_service 打卡事务 + page_face 记录页 + CAM 页 MODE/FACE/PUNCH；
+>   最终验收结论见 `S8_人脸识别打卡系统方案.md` §18；
+> - 📋 遗留候选（不阻塞）：file_mgr `s_pv[2]` 按需化、阶段 3.5 fs_http_service。
+> 分支：`端侧人脸识别`｜ 工程根：`C:\Users\xiao1\Desktop\esp32\display_audio_photo`
 >
 > 本文所有"事实"都带**源码行号或实测值**；凡属推断的，一律标 **⚠ 未实测**。
 > **注意**：§2.5.4 / §4.2 的流程图里"用 `VIDIOC_S_FMT` 切格式""capture_service 自己管 V4L2"

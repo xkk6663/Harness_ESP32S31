@@ -611,6 +611,83 @@ bool net_time_service_time_valid(void)
     return s_time_valid;
 }
 
+/* ---------------------------------------------------------------------------
+ *  ★ 可信时间（S8-1，方案 §5.1）
+ * ------------------------------------------------------------------------- */
+/** 真时间与占位符**长度必须一致**（19 + NUL）：UI 排版不跳，且一眼看出不可信 */
+#define NET_TIME_STR_MAX        20
+#define NET_TIME_PLACEHOLDER    "---- -- -- --:--:--"
+
+#define NET_TIME_CLAMP(v, lo, hi)   ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
+
+void net_time_service_get(net_time_t *out)
+{
+    time_t   now;
+    struct tm tmv;
+
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+
+    if (!s_time_valid) {
+        return;                     /* valid=false，其余字段保持 0 */
+    }
+
+    now = time(NULL);
+    if (now <= (time_t)1600000000 || localtime_r(&now, &tmv) == NULL) {
+        /* 校时标志为真、但时间戳明显不合理（时钟被改 / TZ 没生效）⇒ 宁可报"不可信"。
+         * 打卡记录里一条错时间是查不出来的，而"不可信"至少是**可见**的。 */
+        return;
+    }
+
+    out->valid = true;
+    out->year  = tmv.tm_year + 1900;
+    out->mon   = tmv.tm_mon + 1;        /* ★ tm_mon 是 0..11，这里转成 1..12 */
+    out->day   = tmv.tm_mday;
+    out->hour  = tmv.tm_hour;
+    out->min   = tmv.tm_min;
+    out->sec   = tmv.tm_sec;
+    out->epoch = now;
+}
+
+void net_time_service_format(const net_time_t *t, char *out, size_t out_len)
+{
+    int y, mo, d, h, mi, s;
+
+    if (out == NULL || out_len == 0) {
+        return;
+    }
+    if (out_len < NET_TIME_STR_MAX) {
+        out[0] = '\0';              /* 宁可空串，也不静默截出"2026-09-28 10:3" */
+        return;
+    }
+    if (t == NULL || !t->valid) {
+        memcpy(out, NET_TIME_PLACEHOLDER, sizeof(NET_TIME_PLACEHOLDER));
+        return;
+    }
+
+    /* ★ clamp 不是为了防脏数据，而是为了**让 GCC 能证明不截断**：
+     *   本工程开了 -Werror=format-truncation=，GCC 按 int 的最坏值（-2147483648，
+     *   11 字符）估算 %d 的宽度。不 clamp 时 6 个字段最坏 = 6×11 + 5 分隔 = 71 字符，
+     *   GCC 就能"证明"20 字节装不下而报错。clamp 后最坏 = 19，证明通过。 */
+    y  = NET_TIME_CLAMP(t->year, 0, 9999);
+    mo = NET_TIME_CLAMP(t->mon,  0, 99);
+    d  = NET_TIME_CLAMP(t->day,  0, 99);
+    h  = NET_TIME_CLAMP(t->hour, 0, 99);
+    mi = NET_TIME_CLAMP(t->min,  0, 99);
+    s  = NET_TIME_CLAMP(t->sec,  0, 99);
+
+    snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d:%02d", y, mo, d, h, mi, s);
+}
+
+void net_time_service_now_str(char *out, size_t out_len)
+{
+    net_time_t t;
+    net_time_service_get(&t);
+    net_time_service_format(&t, out, out_len);
+}
+
 void net_time_service_get_weather(weather_data_t *out)
 {
     if (!out) {

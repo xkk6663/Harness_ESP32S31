@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>手动打卡 + 删除复活修复 · 上机验收速查</title>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#fff; --line:#e3e6ec; --ink:#1c2027; --mute:#6b7280;
+  --red:#d92b2b; --green:#12855b; --blue:#1d6fd6; --amber:#b7791f; --code:#f2f4f8;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+     font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1020px;margin:0 auto}
+h1{font-size:25px;margin:0 0 6px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+      padding:18px 22px;margin:0 0 16px}
+h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:15px;margin:16px 0 8px;color:var(--blue)}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;overflow:auto;font:13px/1.6 "Cascadia Mono",Consolas,monospace;margin:10px 0}
+.r{color:var(--red)} .g{color:var(--green)} .y{color:var(--amber)} .b{color:var(--blue)}
+.bad{border-left:4px solid var(--red)} .good{border-left:4px solid var(--green)}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#eef1f6;font-weight:600}
+code{background:var(--code);padding:1px 5px;border-radius:4px;
+     font:13px "Cascadia Mono",Consolas,monospace}
+ul{margin:8px 0;padding-left:22px}
+.kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.pill{background:#eef1f6;border:1px solid var(--line);border-radius:20px;
+      padding:3px 12px;font-size:13px}
+@media print{body{background:#fff}.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>手动打卡按钮 + face_db"删除复活" · 修复与上机验收速查</h1>
+<div class="sub">2026-09-28 深夜（第三轮）· display_audio_photo · §71 · 静态校验 8/8</div>
+
+<div class="card">
+  <h2>一句话结论</h2>
+  <p>本轮四件事，<b>因果互不相关</b>，必须分开排查 —— 别因为"图没出现"就去怀疑人脸库，
+  也别因为"人复活了"就去查打卡链路。</p>
+  <table>
+    <tr><th style="width:34%">诉求</th><th>结论</th></tr>
+    <tr><td>不要自动打卡；右侧加圆圈按钮，按下才拍、命中库才存图</td>
+        <td class="g">✅ 已改（§3）</td></tr>
+    <tr><td>face db 删掉人物后重新上电，人又"复活"了</td>
+        <td class="g">✅ <b>真 bug</b>：读侧一条判据把"空库"判成了坏档（§2）</td></tr>
+    <tr><td>识别人脸成功了，但 SD 卡里看不到打卡图</td>
+        <td class="y">⚠ 需日志定案；已补两条<b>一次分辨</b>的诊断（§4/§5）</td></tr>
+    <tr><td>录像档位改回 2（帧数与流畅性）</td>
+        <td class="g">✅ <code>MEDIA_BUF_CNT</code> 1 → 2（§6）</td></tr>
+  </table>
+  <div class="kv">
+    <span class="pill">识别成功 <span class="g">≠</span> 打卡落盘成功</span>
+    <span class="pill">"现象吻合" <span class="r">≠</span> "就是它"</span>
+    <span class="pill">接口说成功 <span class="r">≠</span> 介质上有</span>
+  </div>
+</div>
+
+<div class="card good">
+  <h2>1. 先做这一步：确认固件是不是新的</h2>
+  <p>这能省掉一半排查 —— 上一轮的恒真早退（§70）会让打卡 <b>100% 失败</b>，
+  而"识别成功"完全正常，现象一模一样。</p>
+  <table>
+    <tr><th style="width:46%">串口日志里出现</th><th>含义</th></tr>
+    <tr><td><code>punch accepted: xx</code>（旧词）</td>
+        <td class="r"><b>旧固件</b>，打卡仍 100% 失败 ⇒ 现象已被解释，<b>重烧即可</b></td></tr>
+    <tr><td><code>punch submitted (async): xx</code>（新词）</td>
+        <td class="g">新固件，继续按 §5 的对表逐条查</td></tr>
+  </table>
+</div>
+
+<div class="card bad">
+  <h2>2. ★★ face_db"删空人物后重启，人又回来了" —— 真 bug（已修）</h2>
+  <p>成因链：<b>每一环单看都合理，合起来才出事</b>。</p>
+  <table>
+    <tr><th style="width:8%">步</th><th style="width:32%">位置</th><th>代码 / 结果</th></tr>
+    <tr><td>①</td><td><code>face_db_delete()</code></td>
+        <td><code>if (s_count == 0) { s_dim = 0; }</code> ⇒ 删到<b>最后一个人</b>时内存 dim=0</td></tr>
+    <tr><td>②</td><td><code>fdb_build_image()</code></td>
+        <td><code>fdb_put_u16(buf + 6, s_dim)</code> ⇒ 盘上那份索引的 dim 字段也是 0</td></tr>
+    <tr><td>③</td><td><code>fdb_idx_read()</code></td>
+        <td class="r"><code>if (dim &lt;= 0 || dim &gt; DIM_MAX) return ESP_ERR_INVALID_SIZE;</code>
+        ⇒ <b>"空库"被判定为坏档</b></td></tr>
+    <tr><td>④</td><td><code>fdb_load_best()</code></td>
+        <td class="r">另一槽"坏了" ⇒ <code>use0 = ok[0]</code> ⇒ <b>回落到旧世代 = 人复活</b></td></tr>
+  </table>
+  <h3>为什么只有"删空"才复现</h3>
+  <p><code>s_dim</code> 只在 <code>s_count</code> 归零<b>那一刻</b>被清 0。删 1 人而库里还有别人时
+  dim 仍是 512，两份世代都能读，挑选逻辑完全正确。</p>
+  <h3>修复</h3>
+<pre><span class="g">/* 正确语义：count == 0 时空库是**合法状态**，dim 无意义、不参与校验；
+   只有"确有记录却不知道维度"（count&gt;0 &amp;&amp; dim 非法）才是真损坏。 */</span>
+<span class="y">if (count &gt; 0 &amp;&amp; (dim &lt;= 0 || dim &gt; FACE_DB_DIM_MAX))</span> { ...bad dim... }
+if (count == 0) ESP_LOGI(TAG, "%s: empty library - legal state, not corruption", name);</pre>
+  <p><b>不需要清 SD 卡（自愈）</b>：判据修对后两个槽都可读，空库那份 seq 更大 ⇒
+  下一轮挑选自然赢。</p>
+  <h3>被排除的嫌疑（重要）</h3>
+  <p>最初最大嫌疑是 <code>FDB_PROBE_SEED_DEMO</code>（"每次开机往真库写 3 条演示数据：
+  张三/李四/王五"）—— 行为与用户描述<b>完全吻合</b>。用二进制取证否掉：</p>
+<pre>cd build &amp;&amp; for f in *.elf *.bin; do strings -a "$f" | grep -c '\[SEED\]'; done
+<span class="g">→ 对 "[SEED]" / "张三" / "face_db_selftest" 全部 0 命中 ⇒ 该路径根本没参与编译</span></pre>
+  <p>它还被两层 <code>#if</code> 包着（外层 <code>FACE_DB_PROBE_ENABLE</code>=0）
+  ⇒ <b>外层关着等价于内层不存在</b>，<code>-DFDB_PROBE_SEED_DEMO=1</code> 也救不回来。</p>
+  <p class="r"><b>教训：「现象吻合」不等于「就是它」。</b></p>
+</div>
+
+<div class="card">
+  <h2>3. USER 态打卡改成"右侧圆形按钮"手动触发</h2>
+<pre>按下右侧圆形按钮
+   <span class="y">↓</span> 前置检查（逐条给话，见下）
+armed = true  +  deadline（引擎没就绪时放宽到 8 s）
+   <span class="y">↓</span> recog_pump() ④：<b>只在 armed 时</b>才提交 IDENTIFY（没按下 ⇒ 一次都不提交）
+   <span class="y">↓</span> user_on_result()
+      ├─ 未命中库（person_id == FACE_DB_GUEST_ID） → 提示 "Not in face db"，<b>不落盘</b>
+      ├─ 脸不合格 → 显示 hint，<b>保持 armed</b>（窗口内自动重试）
+      └─ 命中 → 画水印 → begin/commit → "Punched: 姓名"</pre>
+  <h3>关键实现点</h3>
+  <ul>
+    <li><b>触发闸门</b>：<code>recog_pump()</code> ④ 的 USER 分支第一行
+        <code>if (!s_punch_armed) return;</code> —— 这一行就是"不自动打卡"的全部实现。</li>
+    <li><b>每个终点都必须 <code>punch_disarm()</code></b>：成功 / 未命中 / 超时 / 冷却 /
+        无 SD / 库未就绪 / 内存不足。<b>漏一条，按钮就永久停在 SCAN</b> ——
+        那是"按了没反应"的另一种写法。唯一例外是 <code>PUNCH_PREP_BUSY</code>
+        （写盘只要百 ms 级，保持 armed 等下一拍）。</li>
+    <li><b>访客不落盘</b>做成显式开关 <code>PUNCH_RECORD_GUEST</code>（默认 0）；
+        判据用 <code>person_id == FACE_DB_GUEST_ID</code>，<b>不要</b>用 <code>r-&gt;name[0]</code>。</li>
+    <li><b>前置检查逐条给话</b>：相机没开 / 录像独占 / 无 SD / 库未就绪 / 库空 /
+        档位不是 FACE / 检测关 / <b>一帧都没送到</b>。每一条都是"按了没反应"的真实成因。</li>
+    <li><b>按钮视觉</b>：<code>LV_RADIUS_CIRCLE</code>（不是写死半径 —— 改尺寸时会静默变成
+        圆角矩形）；96×96 悬浮在取景画面右侧（<code>ignore_layout</code> +
+        <code>LV_ALIGN_RIGHT_MID, -34, 0</code>），<b>不参与</b>那条纵向 flex
+        （否则要重算 760 的行宽，连锁出"按钮被挤出可视区"）；文案 <code>PUNCH</code> ↔
+        <code>SCAN</code>，绿=待命 / 琥珀=扫描中（<b>不用红</b>，红是本工程的"录制中/危险"）。</li>
+    <li><b>状态栏</b>改 9 分支引导，直接回答"要按那颗圆按钮"以及"还差什么才能按"。</li>
+  </ul>
+</div>
+
+<div class="card good">
+  <h2>4. 新增两条诊断：把"卡上到底有没有东西"做成可查的</h2>
+  <h3>(a) 写后回读校验（<code>punch_task</code>）</h3>
+<pre>fclose(fp);
+struct stat vst;
+long on_card = (stat(abs, &amp;vst) == 0) ? (long)vst.st_size : -1L;
+if (on_card != (long)jlen)
+    ESP_LOGE(TAG, "WRITE VERIFY FAILED: %s on card = %ld B (expect %u) -> "
+                  "write did NOT land (read-only? no dir entry? bad sector?)", ...);</pre>
+  <p>理由：FATFS 里"<b>数据刷出去</b>"和"<b>目录项更新成功</b>"是两件事，而
+  <code>fwrite()</code> 只对前者负责。卡写保护 / 根目录项耗尽 / FAT 表扇区坏掉时，
+  <code>fwrite()</code> 可以返回<b>满计数</b>而文件在卡上根本不存在 ——
+  那时日志是一句漂亮的 <code>punch OK: ...</code>。<b>这种矛盾只有回读能当场抓住。</b></p>
+  <h3>(b) 打卡目录体检 <code>punch_service_dump_dir()</code>（新增 API）</h3>
+  <p>把 <code>/sdcard/attendance</code> 逐个子目录的<b>文件数与字节数</b>打到日志：</p>
+  <ul>
+    <li>目录<b>不存在</b> ⇒ <code>dir does NOT exist -&gt; no punch has ever reached the write step</code>
+        （排查方向立刻从"文件系统"转到"打卡链路"）；</li>
+    <li>目录在但 <b>0 文件</b> ⇒ <code>holds ZERO file -&gt; logged OK without landing</code>。</li>
+  </ul>
+  <p><b>调用时机</b>：<code>punch_btn_cb()</code> 里<b>每次进页面只打一次</b>。
+  挂按键而不是建页（建页可能早于 SD 挂载完成 ⇒ 误报"SD 未挂载"），
+  更不能挂 50 ms 刷新定时器（列几百个文件会卡住 UI 线程）。</p>
+</div>
+
+<div class="card">
+  <h2>5. 「SD 卡里没有打卡图」判读对表</h2>
+  <table>
+    <tr><th style="width:52%">日志</th><th>结论 / 下一步</th></tr>
+    <tr><td><code>punch OK: /sdcard/attendance/01_xx/&lt;时间&gt;.jpg | ... | N B jpeg</code></td>
+        <td class="g">照片<b>真的</b>写成功了，去 <code>/sdcard/attendance/01_xx/</code> 找。
+        若电脑上看不到，是读卡器 / 分区识别问题，不是设备的问题。</td></tr>
+    <tr><td><code>WRITE VERIFY FAILED: ... on card = -1 B</code></td>
+        <td class="r">卡写保护 / 坏扇区 / 根目录项耗尽</td></tr>
+    <tr><td><code>dir dump: /sdcard/attendance does NOT exist</code></td>
+        <td class="r">从来没有一次打卡走到落盘这步 ⇒ 回头查打卡链路</td></tr>
+    <tr><td><code>dir dump: ... = 0 file(s)</code>，但之前有过 <code>punch OK</code></td>
+        <td class="r">照片被删过，或确实没落盘</td></tr>
+    <tr><td><code>punch FAIL: &lt;err&gt;</code></td>
+        <td>带上这行 error 名回来看 §70 / §71</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>6. 改动文件 + 静态校验</h2>
+  <table>
+    <tr><th style="width:44%">文件</th><th>改动</th></tr>
+    <tr><td><code>main/middleware/face_db/face_db.c</code></td>
+        <td><b>修 bug</b>：<code>fdb_idx_read()</code> 的 dim 判据改为 <code>count &gt; 0 &amp;&amp;</code>；
+        空库分支加日志；<code>face_db_delete()</code> 加交叉引用注释</td></tr>
+    <tr><td><code>main/ui/tab_camera.c</code></td>
+        <td>手动打卡按钮（创建 / 回调 / 外观 / 状态栏 9 分支）；
+        <code>user_on_result()</code> 加访客闸门 + 每个终点 <code>punch_disarm()</code>；
+        <code>recog_pump()</code> ④ 改 armed 驱动 + 窗口收尾</td></tr>
+    <tr><td><code>main/middleware/camera/punch_service.c</code></td>
+        <td>写后回读校验；新增 <code>punch_service_dump_dir()</code></td></tr>
+    <tr><td><code>main/middleware/camera/punch_service.h</code></td>
+        <td>新增 <code>punch_service_dump_dir()</code> 声明</td></tr>
+    <tr><td><code>main/middleware/camera/camera_service.c</code></td>
+        <td><code>MEDIA_BUF_CNT</code> 1 → 2 + 注释改写</td></tr>
+  </table>
+  <p><b>静态校验</b>：<code>tab_camera.c</code> / <code>punch_service.c</code> /
+  <code>face_db.c</code> / <code>camera_service.c</code> / <code>main.c</code> /
+  <code>page_face.c</code> / <code>viewfinder.c</code> / <code>file_mgr_service.c</code>
+  = <b class="g">8/8 OK</b>；另用 <code>-DPUNCH_RECORD_GUEST=1</code> 单独校验了访客落盘那一侧，同样 OK。</p>
+  <h3>录像档位回退说明</h3>
+  <p><code>MEDIA_BUF_CNT 1 → 2</code>：媒体档连续 PSRAM 需求
+  <b>1.76 MB → 2.64 MB</b>（<code>(MEDIA_BUF_CNT+1) × 921,600 B</code>）。
+  回退条件已写进注释：若再出现 <code>dvp_cam: no mem for DVP backup buffer</code>
+  → <code>CAPTURE: start JPEG stream failed</code>，<b>优先让出大块</b>
+  （退出打卡页 / 取景器）再试，或临时 <code>-DMEDIA_BUF_CNT=1</code> 构建，
+  <b>不要动 <code>BUF_CNT</code></b>。</p>
+</div>
+
+<div class="card">
+  <h2>7. 上机验收步骤</h2>
+  <ol>
+    <li><b>烧录</b>：<code>idf.py build</code> → <code>flash</code>。
+        不涉及分区表 / 模型 ⇒ <b>不需要</b> <code>storage-flash</code>。</li>
+    <li><b>验 ① 删除不复活</b>：进 SYS → Face DB，把人<b>全删光</b> → 重新上电 →
+        子页应为空态；串口应出现
+        <code>idx slot x: empty library ... legal state, not corruption</code>。</li>
+    <li><b>验 ② 手动打卡</b>：CAM 页 USER 态应显示
+        <code>USER mode - tap PUNCH to check in</code>；
+        按右侧圆按钮 → 按钮变琥珀 <code>SCAN</code> + <code>Hold still - scanning ...</code>；
+        命中库显示 <code>Punched: 姓名 xxxxxx.jpg</code>；
+        库里没这个人显示 <code>Not in face db - not recorded</code>（<b>且不产生文件</b>）。</li>
+    <li><b>验 ③ 卡上有图</b>：看日志 <code>punch OK:</code> 的完整路径，
+        再去 <code>/sdcard/attendance/&lt;NN_姓名&gt;/</code> 核对；
+        或每次进页面按第一次 PUNCH 时看 <code>dir dump:</code> 那一行。</li>
+    <li><b>验 ④ 录像流畅</b>：VIDEO 页 <code>fps</code> 应明显高于
+        <code>MEDIA_BUF_CNT=1</code> 时的实测值，且写盘瞬间不再出现连续 <code>dropped</code>。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h2>8. 这一轮<b>没做</b>的事</h2>
+  <ul>
+    <li>没把 <code>punch_service_dump_dir()</code> 挂到每次打卡完成后
+        （怕在 LVGL 线程里列几百个文件造成卡顿）。</li>
+    <li>没做人脸底片目录（<code>/sdcard/face_db/thumbs/</code>）的同款体检
+        （用户说的是"打卡图"，先只覆盖 attendance）。</li>
+    <li>没动 <code>s_frame</code> / <code>s_jpeg</code> 的按需释放（仍是 lazy 分配）。</li>
+    <li>没改 ENROLL 态的任何行为（圆形按钮在 ENROLL 态隐藏）。</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

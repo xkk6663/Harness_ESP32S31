@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打卡失败根因 · 上机验收速查</title>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#fff; --line:#e3e6ec; --ink:#1c2027; --mute:#6b7280;
+  --red:#d92b2b; --green:#12855b; --blue:#1d6fd6; --amber:#b7791f; --code:#f2f4f8;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+     font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1020px;margin:0 auto}
+h1{font-size:25px;margin:0 0 6px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+      padding:18px 22px;margin:0 0 16px}
+h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:15px;margin:16px 0 8px;color:var(--blue)}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;overflow:auto;font:13px/1.6 "Cascadia Mono",Consolas,monospace;margin:10px 0}
+.r{color:var(--red)} .g{color:var(--green)} .y{color:var(--amber)} .b{color:var(--blue)}
+.bad{border-left:4px solid var(--red)} .good{border-left:4px solid var(--green)}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#eef1f6;font-weight:600}
+code{background:var(--code);padding:1px 5px;border-radius:4px;
+     font:13px "Cascadia Mono",Consolas,monospace}
+ul{margin:8px 0;padding-left:22px}
+.kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.pill{background:#eef1f6;border:1px solid var(--line);border-radius:20px;
+      padding:3px 12px;font-size:13px}
+@media print{body{background:#fff}.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>打卡 100% 失败 · 根因与上机验收速查</h1>
+<div class="sub">2026-09-28 深夜 · display_audio_photo · §70 · 静态校验 12/12 · 本地干跑 13/13</div>
+
+<div class="card">
+  <h2>一句话结论</h2>
+  <p class="big"><code>punch_service.c</code> 里一行<b>判据错配</b>的容量检查（<code>48 &gt;= 160</code>
+  恒 false，取 <code>!</code> 后恒 true）让<b>每一次打卡都在最早的几行就 <code>goto finish</code></b>，
+  返回 <code>ESP_ERR_INVALID_SIZE</code>；而那条早退<b>不打任何日志</b>。</p>
+  <div class="kv">
+    <span class="pill">识别/检测/匹配 <span class="g">全部正常</span></span>
+    <span class="pill">落盘 <span class="r">100% 失败</span></span>
+    <span class="pill">UI 却显示 <span class="y">punch accepted</span></span>
+    <span class="pill">根因 1 处</span>
+    <span class="pill">连带暴露 6 处编译告警</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>1. 根因：一次恒真的早退</h2>
+<pre>static bool path_cap_ok(size_t len) { return len &gt;= PUNCH_PATH_MAX; }   <span class="y">/* = 160 */</span>
+
+char root[PUNCH_ROOTBUF];                        <span class="y">/* = 48 */</span>
+if (!path_cap_ok(sizeof(root))) {                <span class="r">/* 48 &gt;= 160 = false  ⇒  !false 恒真 */</span>
+    res.err = ESP_ERR_INVALID_SIZE;
+    goto finish;                                 <span class="r">/* ← 每次打卡都从这里出去，且无日志 */</span>
+}
+snprintf(root, sizeof(root), "%s%s", SDCARD_MNT_PATH, PUNCH_DIR_NAME);  <span class="r">/* 永远执行不到 */</span></pre>
+  <p><code>path_cap_ok()</code> 的语义是「这块缓冲够不够装下<b>最长</b>路径（160 B）」——
+  <b>只对 <code>char x[PUNCH_PATH_MAX]</code> 有意义</b>。而 <code>root</code> 是专用小缓冲，
+  只需装 <code>"/sdcard"</code> + <code>"/attendance"</code> = 19 B。</p>
+  <p>同函数另有 <b>7 个调用点</b>，传的全是 <code>[PUNCH_PATH_MAX]</code> 缓冲、<b>全对</b>，
+  只有这 1 个传了 48 B 的 <code>root</code> —— 这种「绝大多数都对」最容易漏看。</p>
+  <h3>为什么一直没被发现</h3>
+  <ul>
+    <li>这条 <code>goto finish</code> <b>不带任何 ESP_LOG</b>（原注释写「编译期已锁，运行时再兜一次」）⇒ 完全静默；</li>
+    <li>UI 那行 <code>punch accepted</code> 是在 <code>commit()</code> <b>返回 OK</b> 时打的 ——
+        它只表示「作业已投递」，不表示「写盘成功」⇒ <b>日志与 UI 双双指向「成功」</b>。</li>
+  </ul>
+  <h3>修复</h3>
+<pre><span class="g">/* 删掉错配的运行时检查，改成编译期断言：改宏/换挂载点就直接编译失败 */</span>
+_Static_assert(PUNCH_ROOTBUF &gt;= sizeof(SDCARD_MNT_PATH) + sizeof(PUNCH_DIR_NAME),
+               "PUNCH_ROOTBUF too small to hold SDCARD_MNT_PATH + PUNCH_DIR_NAME");</pre>
+</div>
+
+<div class="card">
+  <h2>2. ★★★ 连带发现：「编译通过」≠「这段代码被编译检查过」</h2>
+  <p>修掉那一行之后，<code>probe_idf_syntax.py</code> 从 <b class="g">0 error</b>
+  立刻变成 <b class="r">6 error</b>（全是 <code>-Werror=format-truncation=</code>）。</p>
+<pre>原因：GCC 在编译期就把 path_cap_ok(48) 折叠成常量 false
+      ⇒ !false 恒真 ⇒ 它判定 goto finish <b>之后的整个 punch_task 是死代码</b>
+      ⇒ <b>根本不去分析</b>里面的 snprintf。</pre>
+  <p class="big r">一条恒真的早退 / <code>#if 0</code> / <code>return</code>，
+  会让后面的代码在 GCC 眼里消失 —— 连同它的<b>全部</b> <code>-Werror</code> 告警。</p>
+  <p><b>判读规则：</b>看到「修好一处逻辑后忽然冒出一堆编译错误」时，
+  第一反应应当是<b>「这些错误一直存在，只是刚被照亮」</b>，而不是「我引入了新问题」。</p>
+
+  <h3>那 6 个告警是真问题（不是误报）</h3>
+  <p>全是路径拼接 <code>snprintf(dst, sizeof(dst), "%s/%s", dir, name)</code>，
+  而 <code>struct dirent::d_name</code> 在 newlib 里是 <code>char[256]</code> ⇒ GCC 按最坏情况算：</p>
+  <table>
+    <tr><th>位置</th><th>表达式</th><th>最坏需求</th><th>目标容量</th></tr>
+    <tr><td>315 / 331</td><td><code>dir + "/" + d_name</code></td><td class="r">303 / 415 B</td><td>160</td></tr>
+    <tr><td>465 / 466</td><td><code>sub + "/" + base + ".jpg"</code></td><td class="r">63 B</td><td>48</td></tr>
+    <tr><td>469</td><td><code>sub + "/IMG_%04d.jpg"</code></td><td class="r">59 B</td><td>48</td></tr>
+    <tr><td>530</td><td><code>res.name = who-&gt;name</code></td><td class="r">GCC 认为无界（报 2135）</td><td>24</td></tr>
+  </table>
+  <p><b>修法（本工程标准出路）</b>：新增两个拼接原语
+  <code>path_join()</code> / <code>path_append()</code>（= <code>strlen</code> + <code>strnlen</code> +
+  <code>memcpy</code> + 手动补 NUL）。<br>
+  ① 语义显式：<b>超长即截断</b> ⇒ 截断后路径指向不存在的文件 ⇒ 后续
+  <code>stat()/fopen()</code> 自然失败 = <b>安全失败</b>，不是 UB；<br>
+  ② <b>GCC 不报</b> —— 它分析不了 <code>strnlen</code> 的返回值。</p>
+</div>
+
+<div class="card">
+  <h2>3. 「为什么一直没有检测框」诊断（新增）</h2>
+  <p>UI 上这 <b>四种完全不同的原因</b>都只显示同一句 <code>No face in view</code>。
+  现在 <code>tab_camera.c</code> 会打一条限频 5 s 的日志：</p>
+<pre>W TAB_CAM: no-box diag | frames in=N dropped=N | detect calls=N hits=N
+           | face_on=1 svc_en=1 state=3 model=FACE
+           | canvas=1 buf=1 bbox=1 media=0 cam_run=1</pre>
+  <table>
+    <tr><th>现象</th><th>含义</th><th>对策</th></tr>
+    <tr><td><code>frames in</code> 不涨</td><td>相机没把帧送到本页</td><td>按 STOP 再 START（回调没注册）</td></tr>
+    <tr><td><code>dropped ≈ in</code></td><td>帧尺寸不是 240×240</td><td>别的 tab 的档位没切回来</td></tr>
+    <tr><td><code>detect calls</code> 不涨</td><td>帧到了但检测没跑</td><td>查 <code>face_on</code> / <code>canvas</code> / <code>bbox</code></td></tr>
+    <tr><td><code>calls</code> 涨、<code>hits == 0</code></td><td>espdet 真的没检出脸</td><td>档位 / 光照 / 距离 / 模型状态</td></tr>
+  </table>
+  <p>外加两条硬故障 <code>ESP_LOGE</code>（连报 2 s 才认、只报一次）：</p>
+<pre><span class="r">camera running (owner=N) but ZERO frames reached this page</span>
+  -&gt; on_frame() is NOT registered: tap STOP then START
+<span class="r">camera running but ALL N frames were dropped as wrong size</span>
+  -&gt; stream is not 240x240 (another tab's format still active?)</pre>
+</div>
+
+<div class="card">
+  <h2>4. UI 文案：这才是「怎么打卡」的答案</h2>
+  <p><b>关键语义</b>：USER 态是<b>自动</b>识别 + 冷却去重打卡，
+  用户<b>不需要按任何按钮</b>。旧文案只写 <code>USER mode</code>，才让人以为「要先按 USER 才会打卡」。</p>
+  <table>
+    <tr><th>状态</th><th>旧文案</th><th>新文案</th></tr>
+    <tr><td>相机没开</td><td rowspan="4"><code>USER mode</code></td><td><code>USER mode - tap START to preview</code></td></tr>
+    <tr><td>没帧</td><td><code>USER mode - no frames (STOP then START)</code></td></tr>
+    <tr><td>有帧没脸</td><td><code>USER mode - face the camera (auto punch)</code></td></tr>
+    <tr><td>有脸</td><td><code>USER mode - punch is automatic</code></td></tr>
+    <tr><td>ENROLL 没帧</td><td><code>ENROLL: no face in view</code></td><td><code>ENROLL: no frames - tap STOP then START</code></td></tr>
+  </table>
+  <p>日志用词也改了：<code>punch accepted</code> → <code>punch submitted (async)</code>（它确实只是「已投递」）。</p>
+</div>
+
+<div class="card">
+  <h2>5. 本地干跑验证（13/13 PASS）</h2>
+  <p><code>.workbuddy/_gen_pathjoin_test.py</code> <b>从 <code>punch_service.c</code> 真实提取</b>这两个函数
+  （不手抄）→ 生成 <code>_pathjoin_test.c</code> → MinGW gcc 编译运行。</p>
+<pre>[1] sub_abs 正确                        <span class="g">PASS</span>
+[2] rel 正确                            <span class="g">PASS</span>
+[3] abs 完整                            <span class="g">PASS</span>
+[4] rel 中文(UTF-8 3B/字) OK            <span class="g">PASS</span>
+[5] 同秒防撞后缀 _01                    <span class="g">PASS</span>
+[6] 未校时 IMG_0007.jpg（base 不进名字） <span class="g">PASS</span>
+[7] 最坏 63 B → 截断到 47 B 且 NUL 结尾 <span class="g">PASS</span>
+[8] path_join 满 → -1 且原串不变        <span class="g">PASS</span>
+[9] 空 name → "abc/"                    <span class="g">PASS</span>
+[10] 空串 append → 不变                 <span class="g">PASS</span>
+[11] cap=1 → 保持空串、join 返回 -1     <span class="g">PASS</span>
+[12] 金丝雀(rel)： 前后各 8 B 未被触碰  <span class="g">PASS</span>
+[13] 金丝雀(path)：前后各 8 B 未被触碰  <span class="g">PASS</span></pre>
+  <p><b>金丝雀用例（12/13）是「截断真的没写越界」的唯一硬证据</b> ——
+  只看 <code>strlen()</code> 是看不出来的（越界写坏了相邻内存，<code>strlen</code> 依然正确）。</p>
+</div>
+
+<div class="card">
+  <h2>6. 上机验收（3 步）</h2>
+  <p><b>不需要</b> <code>idf.py storage-flash</code>（不涉及分区表 / 模型），<code>build</code> → <code>flash</code> 即可。</p>
+  <table>
+    <tr><th>#</th><th>看什么</th><th>期望</th></tr>
+    <tr><td>1</td><td>串口搜 <code>PUNCH:</code></td>
+        <td><code class="g">punch OK: /sdcard/attendance/01_xx/&lt;时间&gt;.jpg | ii (id=1 score=0.7xx) | NNNNN B jpeg</code><br>
+            <b class="r">绝不再出现</b> <code>punch FAIL: ESP_ERR_INVALID_SIZE</code></td></tr>
+    <tr><td>2</td><td>串口/PuTTY 里 <code>ls /sdcard/attendance/</code></td>
+        <td>出现 <code>01_ii/</code> 目录 + <code>index.csv</code>；<br>
+            <code>cat index.csv</code> 首行是表头 <code>seq,name,person_id,date,time,epoch_s,photo,score</code></td></tr>
+    <tr><td>3</td><td>屏幕状态栏（USER 态）</td>
+        <td>没人时 <code>USER mode - face the camera (auto punch)</code>；<br>
+            打卡成功 <code>Punched: ii 221014.jpg</code></td></tr>
+  </table>
+  <h3>万一还打不到卡</h3>
+  <p>直接看 <code>no-box diag</code> 那行 —— 按 §3 的表一步定位是四种原因里的哪一种，
+  不用再猜。</p>
+</div>
+
+<div class="card">
+  <h2>7. 改动文件</h2>
+  <table>
+    <tr><th>文件</th><th>改动</th></tr>
+    <tr><td><code>main/middleware/camera/punch_service.c</code></td>
+        <td>删错配检查 + <code>_Static_assert</code>；新增 <code>path_join</code>/<code>path_append</code>；
+            6 处拼接改造；<code>res.name</code> 用 <code>%.*s</code></td></tr>
+    <tr><td><code>main/ui/tab_camera.c</code></td>
+        <td>4 个诊断计数器 + <code>nobox_diag()</code>；<code>on_frame</code>/检测块打点；
+            2 条硬故障报警；状态栏引导文案；<code>punch submitted</code></td></tr>
+    <tr><td><code>docs/项目规划/改动记录.md</code></td><td>新增 <b>§70</b>（§70.0 ~ §70.10）</td></tr>
+    <tr><td><code>.workbuddy/_gen_pathjoin_test.py</code> + <code>_pathjoin_test.c</code></td>
+        <td>本地干跑测试（可重复跑）</td></tr>
+  </table>
+  <p><b>静态校验</b>：<code>punch_service.c</code> / <code>tab_camera.c</code> / <code>main.c</code> /
+  <code>page_face.c</code> / <code>viewfinder.c</code> / <code>camera_service.c</code> /
+  <code>file_mgr_service.c</code> / <code>tab_video.c</code> / <code>tab_files.c</code>（既有
+  <code>lv_list</code> 弃用警告 ×2）/ <code>page_main.c</code> / <code>face_recog_service.cpp</code> /
+  <code>face_service.cpp</code> = <b class="g">12/12 OK</b></p>
+</div>
+
+</div>
+</body>
+</html>

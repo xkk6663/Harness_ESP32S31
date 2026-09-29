@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打卡/录入与检测解耦 · 按需加载与彻底释放 · 速查</title>
+<style>
+:root{
+  --bg:#f7f8fa; --card:#fff; --line:#e3e6ec; --ink:#1c2027; --mute:#6b7280;
+  --red:#d92b2b; --green:#12855b; --blue:#1d6fd6; --amber:#b7791f; --code:#f2f4f8;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
+     font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1020px;margin:0 auto}
+h1{font-size:25px;margin:0 0 6px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+      padding:18px 22px;margin:0 0 16px}
+h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:15px;margin:16px 0 8px;color:var(--blue)}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;overflow:auto;font:13px/1.6 "Cascadia Mono",Consolas,monospace;margin:10px 0}
+.r{color:var(--red)} .g{color:var(--green)} .y{color:var(--amber)} .b{color:var(--blue)}
+.bad{border-left:4px solid var(--red)} .good{border-left:4px solid var(--green)}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#eef1f6;font-weight:600}
+code{background:var(--code);padding:1px 5px;border-radius:4px;
+     font:13px "Cascadia Mono",Consolas,monospace}
+ul{margin:8px 0;padding-left:22px}
+.kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.pill{background:#eef1f6;border:1px solid var(--line);border-radius:20px;
+      padding:3px 12px;font-size:13px}
+@media print{body{background:#fff}.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>打卡 / 录入 / 检测 三方解耦 · PSRAM 按需加载与彻底释放</h1>
+<div class="sub">2026-09-28 深夜（第四轮）· display_audio_photo · §72 · 静态校验 7/7</div>
+
+<div class="card">
+  <h2>一句话结论</h2>
+  <p>CAM 页拆成<b>三个各管各的功能</b>，每个都有独立完整的开始与结束：</p>
+  <table>
+    <tr><th style="width:26%">功能</th><th style="width:22%">所有者</th><th>开始</th><th>结束</th></tr>
+    <tr><td><b>face/hand 检测</b>（espdet）</td><td><b>FACE(det) 按钮</b></td>
+        <td>按下 → 加载</td><td>按下 → 停检测（模型<b>常驻</b>，D6 不变）</td></tr>
+    <tr><td><b>识别引擎</b>（MSR/MNP+MFN）</td><td><b>打卡</b> 或 <b>录入</b> 会话</td>
+        <td>会话开始 → 按需加载</td><td>会话结束 → <b class="g">彻底释放</b></td></tr>
+    <tr><td><b>录入用的检测</b></td><td>录入流程<b>借用</b></td>
+        <td>进 ENROLL 自动开</td><td>录入结束<b>归还</b> + <b class="g">彻底卸载</b></td></tr>
+  </table>
+  <div class="kv">
+    <span class="pill">旧病根：det 开着 ⇒ <span class="r">2.3 MB 识别引擎常驻</span></span>
+    <span class="pill">现在：谁需要、谁加载、谁释放</span>
+    <span class="pill">det 按钮 = 纯检测开关</span>
+  </div>
+</div>
+
+<div class="card bad">
+  <h2>1. PSRAM 账单（改前 vs 改后）</h2>
+  <table>
+    <tr><th style="width:30%">组件</th><th style="width:22%">占用</th><th>改前</th><th>改后</th></tr>
+    <tr><td>识别 MFN+arena</td><td>≈<b>2.11 MB</b> 峰值</td><td class="r">det 开着就常驻</td><td class="g">只在打卡/录入会话</td></tr>
+    <tr><td>识别 MSR+MNP</td><td>191 KB</td><td class="r">同上</td><td class="g">同上</td></tr>
+    <tr><td>识别帧缓冲 RGB888</td><td>172,800 B</td><td class="r">同上</td><td class="g">同上</td></tr>
+    <tr><td>检测 FACE 模型</td><td>≈<b>548 KB</b> 连续</td><td>det 开常驻；关检测不卸</td><td>用户开关时常驻（不变）；<b>借用的</b>在录入结束卸载</td></tr>
+    <tr><td>检测 HAND 模型</td><td>≈1.48 MB</td><td>同上</td><td>同上</td></tr>
+    <tr><td>检测 scratch</td><td>172,800 B</td><td class="r">首次 build 后<b>永不释放</b></td><td class="g">随 unload 一起释放</td></tr>
+    <tr><td>取景器</td><td>2,995,200 B</td><td colspan="2" class="g">§69 已按需 ✓（不变）</td></tr>
+    <tr><td>录入特征暂存</td><td>8,192 B</td><td class="r">常驻</td><td class="g">录入结束释放</td></tr>
+  </table>
+  <p><b>改前的耦合病根</b>：<code>recog_pump()</code> ③ 的
+  <code>want = face_service_enabled() &amp;&amp; face_model_active() &amp;&amp; state==RUNNING &amp;&amp; db_ready</code>
+  ⇒ <b>只要 det 按钮开着，2.3 MB 识别引擎就一直占着</b>，用户不打卡也占。</p>
+</div>
+
+<div class="card good">
+  <h2>2. 解耦的三个关键改动（<code>tab_camera.c</code>）</h2>
+  <h3>① 需求判据换成 <code>recog_need()</code>（全页唯一真相源）</h3>
+<pre>static bool recog_need(void) {
+    if (s_mode == CAM_MODE_ENROLL) return s_enroll_state != ENROLL_OFF;  <span class="y">/* 录入会话 */</span>
+    return s_punch_armed;                                                <span class="y">/* 打卡会话 */</span>
+}
+bool want = recog_need() &amp;&amp; face_db_is_ready() &amp;&amp; camera_service_is_running();</pre>
+  <p><b>不再引用</b> <code>face_service_enabled()</code> / <code>face_model_active()</code> /
+  <code>face_service_state()</code> —— 那三个是 det 按钮的领地。</p>
+  <h3>② 打卡不再依赖 espdet 的框</h3>
+  <p>删掉 ④ USER 分支的 <code>if (!q.ok) return;</code>。识别引擎自带 MSR+MNP
+  （自己检脸 + 5 点关键点），<b>根本不需要 espdet 的框</b>；旧的"先便宜后昂贵"
+  前置门把打卡和 det 按钮焊死在一起了。代价 = 一次按下真跑一次 MSR+MNP+MFN
+  （≈400 ms），但打卡是<b>手动</b>触发，可接受。</p>
+  <h3>③ det 的所有权模式（<code>s_det_borrowed</code>）</h3>
+  <ul>
+    <li>进 ENROLL 时若检测没开 ⇒ <b>借用</b>（置 borrowed）+ 自动开；</li>
+    <li>录入结束（<code>enroll_finish_to_user()</code>，<b>唯一出口</b>）⇒ 只归还<b>借来的</b>：
+        <code>set_enabled(false)</code> + <code>face_service_unload()</code>；</li>
+    <li><b>用户手动碰 FACE 按钮 ⇒ 所有权立即转移给用户</b>（清 borrowed），
+        录入退出不再代为归还 —— 否则用户自己按开的开关会被流程悄悄关掉。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>3. 新增 <code>face_service_unload()</code>（检测侧的"彻底释放"）</h2>
+  <table>
+    <tr><th style="width:34%">函数</th><th>语义</th></tr>
+    <tr><td><code>face_service_stop()</code></td>
+        <td>只翻 enabled，<b>模型常驻</b>（D6）—— <code>.h</code> 里
+            "Stop and release model / PSRAM" 旧注释<b>与实现不符</b>，已改正</td></tr>
+    <tr><td><code>face_service_unload()</code>（新）</td>
+        <td>停检测 + <b>卸模型</b> + <b>free scratch</b>（172,800 B）+ state=IDLE</td></tr>
+  </table>
+  <p><b>为什么只能在 cam_task 执行</b>（所以只投递意图 <code>s_unload_req</code>）：</p>
+  <ul>
+    <li><code>unload_all()</code> 删的是 esp-dl 模型对象，构造/析构都该在 cam_task；</li>
+    <li><b><code>s_scratch</code> 正被 <code>face_service_detect()</code> 每帧写</b>
+        （同在 cam_task），在 LVGL 线程直接 <code>heap_caps_free()</code> 就是 <b class="r">UAF</b>。</li>
+  </ul>
+  <p><b>防乱序</b>：<code>set_enabled(true)</code> 时若卸载请求还未消费，<b>拒绝</b>并告警
+  —— 否则"先卸后建"的顺序会乱，且卸载分支会把这个加载请求一起清掉。</p>
+  <p>保留 <code>s_last_good_id</code>：下次 <code>set_enabled(true)</code> 仍回到上次成功的档位。</p>
+</div>
+
+<div class="card">
+  <h2>4. 画布左侧时间显示（新需求）</h2>
+  <ul>
+    <li><b>位置</b>：<code>LEFT_MID +34</code>，与右侧打卡按钮（<code>RIGHT_MID -34</code>）
+        <b>镜像对称</b>；<code>ignore_layout</code> 不参与纵向 flex（同打卡按钮的理由）。</li>
+    <li><b>内容</b>：第一行 <code>年.月.日</code>，第二行 <code>时:分:秒</code>（具体到秒）。</li>
+    <li><b>显示判据</b>：<code>net_time_t.valid</code> —— 断网/未校时<b>整块隐藏</b>，
+        <b class="r">绝不显示 <code>---- -- --</code> 占位横线</b>（用户明确要求"不显示"）。
+        与打卡水印的时间判据是<b>同一套真相源</b>（同一个 <code>net_time_service</code>）。</li>
+    <li><b>开销</b>：refresh 50ms 一拍，文本没变就不写 label（秒跳才重绘一次）。</li>
+  </ul>
+</div>
+
+<div class="card good">
+  <h2>5. 会话生命周期的四个出口（都收干净）</h2>
+  <table>
+    <tr><th style="width:30%">出口</th><th>识别引擎</th><th>借来的检测</th><th>特征暂存</th></tr>
+    <tr><td>打卡出结果 / 超时 / 冷却</td><td class="g">disarm ⇒ ③ 下一拍 stop</td><td>（不借）</td><td>（不涉及）</td></tr>
+    <tr><td>录入成功 / 取消 / 超时</td><td class="g">s_enroll_state=OFF ⇒ stop</td><td class="g">归还 + unload</td><td class="g">free</td></tr>
+    <tr><td>MODE 切回 USER</td><td class="g">同上</td><td class="g">同上</td><td class="g">同上</td></tr>
+    <tr><td><b>离开 CAM 页</b></td><td class="g">无条件 stop（被拒则留 want 下次再试）</td><td class="g">同上</td><td class="g">同上</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>6. 改动文件 + 静态校验</h2>
+  <table>
+    <tr><th style="width:44%">文件</th><th>改动</th></tr>
+    <tr><td><code>main/ui/tab_camera.c</code></td>
+        <td><code>recog_need()</code>；③ want 解耦；④ USER 去 q 门；<code>punch_btn_cb</code>
+        删两条 det 拦截；<code>s_det_borrowed</code> 借/还；<code>enroll_finish_to_user</code>
+        收尾三件套；<code>face_btn_cb</code> 所有权转移；destroy 无条件 stop + 归还；
+        时间标签（创建/刷新/清理）；状态栏文案改写</td></tr>
+    <tr><td><code>main/middleware/camera/face_service.h</code></td>
+        <td>新增 <code>face_service_unload()</code> 声明 + 职责边界注释；修正 <code>stop()</code> 失实注释</td></tr>
+    <tr><td><code>main/middleware/camera/face_service.cpp</code></td>
+        <td><code>s_unload_req</code> + poll 开头卸载分支（含 scratch 释放）+
+        <code>face_service_unload()</code></td></tr>
+  </table>
+  <p><b>静态校验</b>：<code>tab_camera.c</code> / <code>face_service.cpp</code> /
+  <code>face_recog_service.cpp</code> / <code>punch_service.c</code> / <code>camera_service.c</code> /
+  <code>face_db.c</code> / <code>page_face.c</code> = <b class="g">7/7 OK</b>。</p>
+</div>
+
+<div class="card">
+  <h2>7. 上机判据</h2>
+  <ol>
+    <li><b>冷启动进 CAM 页</b>：串口<b>不应</b>出现 <code>recog engine ready</code> 或
+        <code>[modelmem] "FACE"</code> —— 什么都不加载。</li>
+    <li><b>只按 FACE</b>：<code>model "FACE" ready</code>；再按 ⇒
+        <code>detect OFF | model stays resident</code>（常驻，D6）。</li>
+    <li><b>按 PUNCH</b>：<code>recogmem pre ...</code> → <code>recog engine ready in ~1.2 s</code>
+        → <code>punch submitted (async)</code> → <b class="g">随后必须出现
+        <code>recog engine released</code></b>（≈2.11 MB 还回去）。</li>
+    <li><b>录入</b>：进 ENROLL（det 本来没开）⇒ <code>det borrowed for ENROLL</code>；
+        采完入库 ⇒ <code>detect OFF + model UNLOADED (PSRAM returned, scratch freed)</code>
+        + <code>recog engine released</code>。<b>两笔都还干净</b>。</li>
+    <li><b>录入中途手动按 FACE</b> ⇒ 退出录入时<b>不再</b>有 UNLOADED（所有权转移生效）。</li>
+    <li><b>时间显示</b>：连网 ⇒ 画布左侧两行 <code>2026.09.28</code> / <code>22:58:06</code> 每秒跳；
+        断网 ⇒ <b>什么都不显示</b>。</li>
+    <li><b>录像/拍照</b>：<code>MEDIA_BUF_CNT=2</code> 需要 2.64 MB 连续块 ——
+        打卡/录入结束后 PSRAM 已还干净，这条链路应更容易成功。</li>
+  </ol>
+  <p><b>不需要</b> <code>storage-flash</code>，<code>build</code> → <code>flash</code> 即可。</p>
+</div>
+
+<div class="card">
+  <h2>8. 没做 / 边界</h2>
+  <ul>
+    <li>没改 <code>face_service_stop()</code> 的 D6 常驻语义 —— 只有录入<b>借用的</b>检测才在结束时卸载。</li>
+    <li>没做 canvas 缓冲与 punch 帧/JPEG 缓冲的会话化释放（lazy 分配、量小、复用价值高）。</li>
+    <li>录入期间<b>手动把 FACE 关掉</b>会停在 <code>capturing 0/3</code> 并给出提示
+        （录入确实需要检测，引导会说明）。</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

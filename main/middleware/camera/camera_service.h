@@ -102,6 +102,13 @@ bool      camera_service_is_running(void);
  *        任一出参可为 NULL。
  */
 void camera_service_get_stream(uint32_t *w, uint32_t *h, cam_fmt_t *fmt);
+/**
+ * ★ §73.16：当前流是否注册了**帧回调**。
+ *   CAM 页预览 on_frame() 非空；VIDEO 页取景流回调传 NULL —— 这是区分
+ *   "CAM 页该收到帧却没收到（真故障）"与"VIDEO 页预览（正常）"的唯一可靠判据
+ *   （两页共用 CAM_OWNER_PREVEW，owner 区分不了）。
+ */
+bool camera_service_has_frame_cb(void);
 
 /** 当前占用者。CAM 页在 refresh() 里读它决定是否置灰（读了之后不要再自己"猜状态"）。 */
 cam_owner_t camera_service_owner(void);

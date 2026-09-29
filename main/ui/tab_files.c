@@ -31,6 +31,7 @@
 #include "middleware/media/file_mgr_service.h"
 #include "middleware/audio/media_player_service.h"
 #include "middleware/periph/sdcard_service.h"
+#include "middleware/camera/viewfinder.h"   /* ★ 2026-09-28 按需化：预览/播放借它的解码缓冲 */
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -203,6 +204,17 @@ static void open_path(const char *name, bool is_dir)
         return;
     }
     if (ext != NULL && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0)) {
+        /* ★★ 2026-09-28 按需化：预览要借取景器的 staging + 出图缓冲做硬件解码
+         *  （file_mgr 不再自配 1.8 MB）。所以**必须在 post 命令之前**、在 LVGL 线程
+         *  （也就是本函数上下文）acquire —— files 任务随后 borrow_stage() 才有东西可借，
+         *  且这条路径避免"运行中临时要 1.8 MB 连续 PSRAM"（碎片最严重的时刻）。
+         *  ⚠ 契约：本事务结束（FME_PREVIEW_DONE / 离开预览态）之前不得 release。 */
+        esp_err_t ae = viewfinder_acquire();
+        if (ae != ESP_OK) {
+            lv_label_set_text_static(s_status, "Not enough memory to decode");
+            lv_obj_set_style_text_color(s_status, COL_RED, 0);
+            return;
+        }
         s_mode = MODE_PREVIEW;
         s_pv_shown = false;
         apply_mode_visibility();
@@ -214,6 +226,14 @@ static void open_path(const char *name, bool is_dir)
         return;
     }
     if (ext != NULL && strcasecmp(ext, ".avi") == 0) {
+        /* ★ 同上：AVI 播放逐帧解码，全程占用 staging + 出图缓冲（可能持续几秒），
+         *   所以 acquire 之后要一直持有到 FME_PLAY_DONE。 */
+        esp_err_t ae = viewfinder_acquire();
+        if (ae != ESP_OK) {
+            lv_label_set_text_static(s_status, "Not enough memory to play");
+            lv_obj_set_style_text_color(s_status, COL_RED, 0);
+            return;
+        }
         s_mode = MODE_PLAY;
         s_pv_shown = false;
         apply_mode_visibility();
@@ -344,6 +364,22 @@ static void enter_browse_mode(void)
     if (s_mode == MODE_MP3) {
         media_player_service_stop();    /* 离开 MP3 态必停（幂等） */
     }
+
+    /* ★★ 2026-09-28 按需化：离开预览/播放态 = 归还取景器缓冲（"用完再销毁"的落点）。
+     *
+     *  ⚠ 必须守卫"files 任务是否还在用"：
+     *    `tab_files_set_active(false)` 会先 post STOP 再立即调本函数 —— 那一刻
+     *    do_play() 可能还没收到 STOP（还在 decode 当前帧），stage / 出图缓冲仍在被使用。
+     *    此时 free = UAF。所以只在 `!file_mgr_is_playing()` 时归还；
+     *    否则等 FME_PLAY_DONE 到达、s_run 回 IDLE 后本函数会被再调一次，
+     *    那时才真正 release（延迟归还，安全第一）。
+     *  ★ 幂等：浏览态 / MP3 态根本没 acquire 过，调用无害。
+     *  ★ s_pv_canvas 指向的是 file_mgr 自己的 s_pv[]（常驻、不随本释放失效），
+     *    所以这里**不需要**像 tab_video 那样先给画布换缓冲。 */
+    if (!file_mgr_is_playing()) {
+        viewfinder_release();
+    }
+
     s_mode = MODE_BROWSE;
     s_pv_shown = false;
     apply_mode_visibility();
@@ -632,6 +668,16 @@ void tab_files_destroy(void)
     file_mgr_cmd_t cmd = { .id = FMC_STOP };
     file_mgr_post_cmd(&cmd);                    /* 播放中退出主页面：请求停止 */
     media_player_service_stop();                /* MP3 同理（幂等，未播放无害） */
+
+    /* ★ 2026-09-28 按需化：页面销毁兜底归还取景器缓冲（页面可能停在预览/播放态）。
+     *  ⚠ 同样要守卫 —— do_play() 可能还没收到上面的 STOP。那种情况下**不 release**：
+     *    它退出后若页面还在，会经 FME_PLAY_DONE → enter_browse_mode() 归还；
+     *    若页面已销毁（本函数马上要删定时器，事件再也不会被处理），这块内存就留到
+     *    下次进页面时归还（acquire 幂等，不会重复分配）——**宁可延迟，不可 UAF**。 */
+    if (!file_mgr_is_playing()) {
+        viewfinder_release();
+    }
+
     if (s_timer) {
         lv_timer_del(s_timer);
         s_timer = NULL;

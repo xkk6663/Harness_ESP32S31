@@ -24,6 +24,7 @@
 #include "page_bluetooth.h"
 #include "page_rgb.h"
 #include "page_system.h"
+#include "page_face.h"                  /* ★ S8-1：人脸库管理页 */
 #include "middleware/audio/audio_service.h"
 #include "middleware/periph/button_service.h"
 
@@ -36,6 +37,7 @@ enum {
     ROW_BLUETOOTH,
     ROW_RGB,
     ROW_SYSTEM,
+    ROW_FACE,                           /* ★ S8-1 */
 };
 
 static void volume_event_cb(lv_event_t *e)
@@ -83,6 +85,9 @@ static void row_click_cb(lv_event_t *e)
     case ROW_SYSTEM:
         PageManager_Load(&Page_System);
         break;
+    case ROW_FACE:
+        PageManager_Load(&Page_Face);       /* ★ S8-1 */
+        break;
     default:
         break;
     }
@@ -104,9 +109,15 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_set_style_text_color(title, COL_CYAN, 0);
     lv_obj_set_style_text_font(title, UI_FONT, 0);
 
-    /* Volume card */
+    /* Volume card
+     * ★ S8-1：高度 80 → 68。本页是**不可滚动**的全屏页（下面 lv_obj_set_scrollable
+     *   (screen,false)），内容超高不是"能滚一下"，而是**最后一行被直接裁掉**——
+     *   正是那种"按钮在、回调也挂了，但用户看不到也点不到"的隐性故障。
+     *   竖直预算（480 px）：pad_top 16 + 标题 16 + 6×pad_row 12 + 本卡 + 5 行 × 56
+     *   = 16+16+72+68+280 = 452 ⇒ 留 28 px 余量。
+     *   ⚠ 再加第 6 行就必须同时动这里，别只顾着加 ui_common_setting_row。 */
     lv_obj_t *vol = lv_obj_create(screen);
-    lv_obj_set_size(vol, BSP_LCD_H_RES - 40, 80);
+    lv_obj_set_size(vol, BSP_LCD_H_RES - 40, 68);
     lv_obj_set_style_bg_color(vol, COL_CARD, 0);
     lv_obj_set_style_border_color(vol, COL_BORDER, 0);
     lv_obj_set_style_border_width(vol, 1, 0);
@@ -132,10 +143,11 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
         lv_group_add_obj(group, s_vol_slider);
     }
 
-    /* Four resource sub-page entries */
+    /* Resource sub-page entries（★ S8-1：加 FACE 一行，见上面 vol 卡的竖直预算） */
     ui_common_setting_row(screen, LV_SYMBOL_WIFI, "WIFI", row_click_cb, (void *)(uintptr_t)ROW_WIFI);
     ui_common_setting_row(screen, LV_SYMBOL_BLUETOOTH, "Bluetooth", row_click_cb, (void *)(uintptr_t)ROW_BLUETOOTH);
     ui_common_setting_row(screen, LV_SYMBOL_IMAGE, "RGB LED", row_click_cb, (void *)(uintptr_t)ROW_RGB);
+    ui_common_setting_row(screen, LV_SYMBOL_LIST, "Face DB", row_click_cb, (void *)(uintptr_t)ROW_FACE);
     ui_common_setting_row(screen, LV_SYMBOL_SETTINGS, "System", row_click_cb, (void *)(uintptr_t)ROW_SYSTEM);
 
     if (s_vol_timer == NULL) {

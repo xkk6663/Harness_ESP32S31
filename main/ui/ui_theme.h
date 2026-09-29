@@ -34,6 +34,10 @@ extern "C" {
 
 /* ---- shared fonts ---- */
 #define UI_FONT       (&lv_font_montserrat_14)
+/* ★ §73.11：CAM 页时间显示用大字号（sdkconfig 已启用 CONFIG_LV_FONT_MONTSERRAT_20）。
+ *   ⚠ 用之前先确认 sdkconfig 里 20 号真的开了 —— 没开的话这里是指向空结构的
+ *     未定义符号，链接期就会失败（fail loud，不算坏事）。 */
+#define UI_FONT_BIG   (&lv_font_montserrat_20)
 
 #ifdef __cplusplus
 }

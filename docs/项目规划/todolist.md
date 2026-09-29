@@ -347,25 +347,22 @@
 
 ## 当前下一步
 
-> ★ 2026-09-25 复核后**重写**：原文的"**先做阶段 2**"已过期 —— 阶段 2/3 主体早已落地并在运行（见顶部勘误）。
+> ★ 2026-09-29 复核后再次**重写**：阶段三端侧 AI（S8 人脸识别打卡系统）**已全部实施并上机验收通过**
+> （2026-09-29），验收期问题已在 `改动记录.md` §73.1~§73.12 全部闭环。
 
-**当前活跃线 = 阶段三「端侧 AI」（分支 `端侧人脸识别`）。**
+**当前活跃线 = 维护 + 候选项拍板**（无进行中的新工程）。
 
-**㈠ 代码侧已完成、只等烧录**（用户已明确"晚点烧录验证"）：
-- S1 多档模型加载（p4 变体 + 常驻不卸载）+ F48 花屏根因修复（`REFRESH_AUTO=y`）。
-  一次 `idf.py build` **同时带上两件事**，但**验收分开看**；清单见
-  `docs/开发文档/多模型加载策略_S1方案.md` §8.3（模型侧 4 行 + 屏幕侧 1 条"眼看"）。
+**㈠ 验收后的遗留候选**（按性价比排序；开工前需先拍板）：
 
-**㈡ 下一批候选**（按性价比排序；**① ② 属新工程，开工前需先定范围**）：
-
-| # | 候选 | 性质 | 是否需要烧录才能开工 |
+| # | 候选 | 性质 | 备注 |
 |---|---|---|---|
-| 1 | **阶段 3.5 文件系统管理** —— `fs_http_service`（远程上传/下载/删除/设壁纸）+ `wallpaper_service` + 文件浏览器 UI | 最大的**成片空白**；纯中间层代码 | **否**（代码可离线写完，验收才要上机） |
-| 2 | **阶段三 3.3 新功能** —— 人脸录入 / YOLO11 | 新工程，**需新模型素材** | 素材需要，代码可先写 |
-| 3 | **阶段 6 OTA**（A/B 双槽 + 回滚防砖） | 大工程；本工程唯一的**防砖**能力 | 否（代码量大） |
-| 4 | **阶段 2 量化验收**（端到端 ≤100ms / 本机回环 ≤8ms / 30min 老化） | 纯实测 | **是**（只测不写码） |
+| 1 | file_mgr `s_pv[2]`（921,600 B）按需化 | 内存优化 | 需 UI→file_mgr"预览关闭"回程事件；详见 `改动记录.md` §73.10 |
+| 2 | **阶段 3.5 文件系统管理** —— `fs_http_service` + `wallpaper_service` + 文件浏览器 UI | 最大的**成片空白**；纯中间层代码 | 验收才要上机 |
+| 3 | **阶段 6 OTA**（A/B 双槽 + 回滚防砖） | 大工程；本工程唯一的**防砖**能力 | 代码量大 |
+| 4 | YOLO11 物体识别 | 新工程 | 原 HSV 已删（§73.12），新需求需重新拍板 |
+| 5 | **阶段 2 量化验收**（端到端 ≤100ms / 本机回环 ≤8ms / 30min 老化） | 纯实测 | 只测不写码 |
 
-**㈢ 工程施工纪律（不变）**：新源文件注册 `main/CMakeLists.txt` SRCS/REQUIRES；中间层禁 `include lvgl`；
+**㈡ 工程施工纪律（不变）**：新源文件注册 `main/CMakeLists.txt` SRCS/REQUIRES；中间层禁 `include lvgl`；
 每单元 build→flash(COM9)→抓日志闭环；完成后打勾 + `改动记录.md` 追加 + 文件索引更新。
 
 > 默认选型（需求已定，可改）：ASR=sherpa-onnx 离线流式；GUI=PySide6；设备传音=toggle；PC 回讲=按住 PTT；FS=LittleFS。
@@ -373,43 +370,32 @@
 
 ---
 
-## 阶段三：端侧 AI（摄像头 + 本地人脸检测）— 进行中
+## 阶段三：端侧 AI（摄像头 + 人脸识别打卡系统）— ✅ S8 已验收（2026-09-29）
 
 > 分支：`端侧人脸识别`（main 停在阶段二收尾 ca85592）
+> ★ 2026-09-29 复核：**S8 人脸识别打卡系统（录入/识别/打卡/记录管理）已全部实施并上机验收通过**，
+> 权威进展见 `docs/项目规划/S8_人脸识别打卡系统方案.md` §14~§18 与 `改动记录.md` §23~§73。
+> 下方旧勾选保留为历史快照，**以本块为准**。
 
-### 3.1 已完成
+### 3.1 已完成（★ 2026-09-29 口径）
 - [x] middleware 重构：audio/ net/ periph/ camera/ 四子目录
-- [x] OV3660 DVP 采集（240x240 RGB565_BE_240FPS），双 buffer mmap，lazy init
-- [x] tab_camera：START/HSV/FACE 三按钮横排，canvas 240x240，点击全屏 zoom 2x
+- [x] OV3660 DVP 采集，双 buffer mmap，lazy init
+- [x] tab_camera：canvas 预览 + 点击全屏 zoom（HSV 已于 §73.12 **整功能删除**：color_hsv.c/.h 下线）
 - [x] 软件校正：垂直翻转 + 水平镜像 + RGB565 字节序交换
-- [x] HSV 红色检测（红色框 overlay）
 - [x] 图标从固件迁到 LittleFS（LVGL POSIX FS L: 盘符），app bin 降 ~1.5MB
-- [x] 分区表扩 ota：ota_0/ota_1 各 5MB，littlefs 5.8MB
+- [x] 分区表扩 ota：ota_0/ota_1 各 5MB→6M，littlefs/SD 口径见分区表定稿 v1.1
 - [x] esp-dl + human_face_detect 依赖，模型放 littlefs/models/（不编固件）
 - [x] face_service.cpp：C++ 封装 HumanFaceDetect，C ABI 给 tab_camera
+- [x] **S8 全链**：face_db / face_recog_service（MSR+MNP+MFN）/ punch_service / page_face（记录页）/
+      tab_camera（MODE+FACE+PUNCH）；`改动记录.md` §23~§41
+- [x] **S8 验收期修复**：二次录入分配洞、记录删除/对账、预览 NO_MEM、REQBUFS 判据、
+      PSRAM 即用即释放审计（D6 常驻废除）、letterbox 等比预览、时间升降序（`改动记录.md` §73）
 
-### 3.2 进行中（2026-09-25 复核更新）
-- [x] HSV 红色识别阈值调优 —— **观测埋点已完成**：`color_hsv.c:42` 打 `avg RGB=(r,g,b) red_pixels=n/m`；
-      阈值本身是否再调**需上机看数**（摄像头白平衡会冲淡红色，依据见 `docs/工程规范/11_遇到的问题.md`）；
-- [ ] FACE 按钮端到端验证 —— **代码侧已就绪**（S1 多档 + 常驻，见 `docs/开发文档/多模型加载策略_S1方案.md` §8），
-      **只差一次烧录**；验收 4 行日志已列在该文档 §8.3；
-- [x] 240x240 RGB565 格式在 sdkconfig.defaults 固化 —— **已固化**（`sdkconfig.defaults:125-128`）：
-      `CONFIG_CAMERA_OV3660_DVP_RGB565_BE_240X240_24FPS=y` + `CONFIG_CAMERA_OV3660_DVP_DEFAULT_FMT_RGB565_BE_240X240_24FPS=y`，
-      并显式把 `CONFIG_CAMERA_OV3660_DVP_YUV422_YUYV_640X480_10FPS=n`（防 reconfigure 丢配置）。
-
-### 3.3 待办（★ 均为**新工程**，开工前需先拍板范围；2026-09-25 复核：三项**都还没开工**）
-- [ ] 人脸识别录入（human_face_recognition）—— 需新模型 + 特征库 + UI 录入/比对流程；
-- [ ] YOLO11 颜色/物体识别 —— 模型同样放 littlefs；涉及新的 esp-dl 模型与后处理，是独立议题；
-- [ ] 摄像头任务绑核 + 隔帧推理调优 —— 属**调优项**（非新功能），依赖上机读 `[resident]` 与
-      PSRAM 带宽日志（`内存优化可执行方案.md` §11 的判读口径）。
-
-### 3.4 已知问题（2026-09-25 复核：三条**都已有结论与处理**，但**都还欠一次上机复验**）
-- [x] FACE 加载偶发 `ESP_ERR_NO_MEM` —— 根因已定：`esp_timer_create` **只认内部堆、零回落** ⇒
-      内部堆碎片先打到它。处理已落地：`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0`（`sdkconfig:1996`）
-      + taskLVGL 栈按实测水位收敛 + 模型改**常驻、不反复 delete**（S1 的 D6）。
-      依据：`改动记录.md` §18、`docs/开发文档/内存优化可执行方案.md`；
-- [x] HSV 红色识别阈值需现场调优 —— 观测埋点已加（见 3.2），**阈值数值仍待上机定**；
-- [x] 摄像头长时间运行闪屏重启 —— 根因定案为 **RGB bounce buffer 供数（1699 Hz 的 EOF ISR）
-      被 flash 擦写打断**（`11_遇到的问题.md` F48 第三轮），已改 `CONFIG_BSP_LCD_RGB_REFRESH_AUTO=y`
-      （`sdkconfig:4023`，关 bounce buffer），**待上机复验**；
-- [ ] 详细经验：`docs/项目规划/堆分配与任务竞争经验总结.md`
+### 3.2 已知问题（2026-09-29 复核：全部有结论）
+- [x] FACE 加载偶发 `ESP_ERR_NO_MEM` —— 已修（`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0` +
+      taskLVGL 栈收敛 + 加载移出 LVGL 线程 + 起流前腾地/`unload_sync`）；
+- [x] ~~HSV 红色识别阈值调优~~ —— **HSV 功能已删除**（§73.12 用户拍板阉割），议题关闭；
+- [x] 摄像头长时间运行闪屏重启 —— 已改 `CONFIG_BSP_LCD_RGB_REFRESH_AUTO=y`，已复验通过；
+- [ ] file_mgr `s_pv[2]`（921,600 B 常驻）按需化 —— 唯一遗留候选，需 UI→file_mgr 回程事件；
+- [ ] 摄像头任务绑核 + 隔帧推理调优 —— 属调优项，依赖上机读 `[resident]` 日志；
+- [ ] YOLO11 颜色/物体识别 —— 独立议题未开工（原 HSV 已删，新需求需重新拍板）。
