@@ -158,6 +158,32 @@ void face_recog_poll(void);
  *    状态保持 RUNNING/LOADING，调用方应下一拍重试（防 UAF）。 */
 esp_err_t face_recog_stop(void);
 
+/* ==========================================================================
+ *  §73.21 会话独占（claim）—— 多驱动竞争的根治
+ * ==========================================================================
+ *  ★ 背景（2026-09-30 实测事故）：MCP 打卡会话（ai_punch）接管相机期间，
+ *    CAM 页的 recog_pump 用"停流前的陈旧 canvas 帧"继续提交识别作业、并
+ *    抢走/消费了会话的结果（单槽结果总线被两个驱动共写共读）—— 会话读到
+ *    "路过时的陈旧帧"的 guest 结论，误判"人脸库里没有你"。
+ *
+ *  ★ 语义：认领后，**其他任务**的 face_recog_submit() 返回
+ *    ESP_ERR_INVALID_STATE、face_recog_result() 返回 NULL、
+ *    face_recog_result_consume() 被忽略 —— 引擎与结果通道由认领任务独占。
+ *    认领者自己的调用完全不受影响。face_recog_poll()/stop() 不受认领影响
+ *    （poll 单飞幂等；stop 只由认领者自己调）。
+ *  ★ 判定按**任务句柄**（不用锁）：认领/释放/提交/取结果必须都在同一任务
+ *    里完成 —— TAB_CAM 在 LVGL 任务、ai_punch 在 WS 收包任务，天然互斥。
+ *  ★ 幂等：重复认领返回 true；被他人持有时返回 false（附警告日志）。
+ *  ★ 责任：认领者必须在会话结束（含所有失败路径）时 release —— 参照
+ *    ai_punch 的 cleanup 写法。 */
+bool face_recog_session_claim(void);
+void face_recog_session_release(void);
+
+/** 当前是否有 MCP 会话持有引擎（§73.24：tab_camera 结果槽轮询的守卫——
+ *  会话存续期间 CAM 页不得消费 punch_service 结果槽，否则会把 ai_punch
+ *  还没读走的结果偷走并 clear，导致 MCP 打卡误报失败；2026-09-30 实测）。 */
+bool face_recog_session_is_claimed(void);
+
 /** 引擎状态（语义同 face_service_state）。★ 纯 getter，无副作用。 */
 face_state_t face_recog_state(void);
 

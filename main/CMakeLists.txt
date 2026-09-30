@@ -8,6 +8,9 @@ idf_component_register(SRCS
                         "middleware/ai/ai_speaker.c"
                         "middleware/ai/ai_camera.c"
                         "middleware/ai/ai_device.c"
+                        "middleware/ai/ai_punch.c"
+                        "middleware/ai/ai_music.c"
+                        "middleware/periph/safe_reboot.c"
                         "middleware/net/wifi_manager.c"
                         "middleware/net/net_time_service.c"
                         "middleware/periph/fs_service.c"
@@ -69,13 +72,14 @@ idf_component_register(SRCS
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
                                     esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1
                                     esp_driver_jpeg
+                                    ## ★ §73.27：esp_crt_bundle.h 在 esp-tls（点歌搜索 TLS 验证）
                                     ## ---- §60 异族模型（vendor 本地组件，SDCARD 模式）----
                                     hand_detect hand_gesture_recognition
                                     ## ★ §62 阉割 POSE：coco_pose 组件已删除，不再 REQUIRES。
                                     ## ---- S5 M2/M3：MP3 播放 + 小智对话（组件名以拉取后为准）----
                                     esp_player esp_audio_render esp_extractor esp_audio_codec
                                     media_lib_sal gmf_core gmf_audio gmf_io
-                                    av_processor gmf_ai_audio esp-sr esp_xiaozhi
+                                    av_processor gmf_ai_audio esp-sr esp_xiaozhi esp-tls
                                     fatfs sdmmc)
 
 # =============================================================================

@@ -1037,8 +1037,15 @@ static void recog_pump(void)
         face_recog_result_consume();
     }
 
-    /* ---- ② 打卡落盘收尾提示（消费掉结果，保证只提示一次）---- */
-    if (!punch_service_busy()) {
+    /* ---- ② 打卡落盘收尾提示（消费掉结果，保证只提示一次）----
+     * ★★ §73.24 双守卫（2026-09-30 实测盗窃案）：这个结果槽是**全局单槽**，
+     *   page_face.c:190 早就警告过"会被 CAM 页的打卡轮询偷走"。MCP 语音打卡
+     *   （ai_punch）踩实了：punch 任务 125ms 写好结果，本页下一拍 pump 就把它
+     *   get+clear 偷走 ⇒ ai_punch 等待循环空转 6s 超时，误报"打卡失败"
+     *   （而 SD 上照片/流水其实都成功了）。
+     *   守卫 = 本页自己 armed 发起的打卡才轮询 + MCP 会话认领期间绝不碰：
+     *   MCP 打卡的结果由 ai_punch 自己等自己读（它也先 clear_last 清陈旧）。 */
+    if (s_punch_armed && !face_recog_session_is_claimed() && !punch_service_busy()) {
         punch_record_t pr;
         memset(&pr, 0, sizeof(pr));
         punch_service_get_last(&pr);

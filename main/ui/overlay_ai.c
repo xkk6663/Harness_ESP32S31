@@ -240,6 +240,24 @@ static void preview_poll(void)
 {
     uint8_t *buf = NULL;
     int w = 0, h = 0;
+    /* §73.23 视频流模式（打卡实时取景）：
+     *  - on：新帧连续换显，不启动 3s 定时器（并清掉静态卡残留定时器，
+     *    防止它把视频流中途藏掉）；
+     *  - 收尾沿（上一拍 on、这一拍 off）：立即隐藏 + 释放显示缓冲。
+     * explain/capture 的静态照片卡（off 稳态）行为不变：一帧 + 3s 消失。 */
+    bool video = ai_camera_preview_video_get();
+    static bool s_pv_video_prev;
+    if (s_pv_video_prev && !video) {
+        s_pv_video_prev = false;
+        if (s_pv_timer) {
+            lv_timer_del(s_pv_timer);
+            s_pv_timer = NULL;
+        }
+        preview_hide_now();
+        return;
+    }
+    s_pv_video_prev = video;
+
     if (!ai_camera_preview_take(&buf, &w, &h)) {
         return;
     }
@@ -258,9 +276,12 @@ static void preview_poll(void)
     lv_obj_move_foreground(s_pv_box);   /* 兜底：确保浮在日志容器之上 */
     if (s_pv_timer) {
         lv_timer_del(s_pv_timer);
+        s_pv_timer = NULL;
     }
-    s_pv_timer = lv_timer_create(preview_timer_cb, 3000, NULL);
-    lv_timer_set_repeat_count(s_pv_timer, 1);
+    if (!video) {
+        s_pv_timer = lv_timer_create(preview_timer_cb, 3000, NULL);
+        lv_timer_set_repeat_count(s_pv_timer, 1);
+    }
     ESP_LOGI(TAG, "camera preview shown %dx%d", w, h);
 }
 

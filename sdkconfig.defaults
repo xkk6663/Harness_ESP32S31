@@ -259,3 +259,13 @@ CONFIG_LV_FS_MEMFS_LETTER=65
 
 # 73.11: CAM time display needs montserrat_20
 CONFIG_LV_FONT_MONTSERRAT_20=y
+
+# §73.24 本机用 SNTP 权威校时；服务端落钟会把时区偏移烤进 UTC 纪元 + localtime 再 +8 = UTC+16（17时变次日1时）
+# CONFIG_XIAOZHI_SYNC_SYSTEM_TIME_FROM_SERVER is not set
+
+# ASP 输出格式对齐 play_io（16k/2ch）：点歌 mp3 统一转 16k 立体声（双喇叭分离度，带宽 8kHz）
+# 慢放铁律：dest 必须 == play_io 声明格式，否则声明与数据不符必慢放（§73.27 补充 7）
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_RESAMPLE_EN=y
+CONFIG_AUDIO_SIMPLE_PLAYER_RESAMPLE_DEST_RATE=16000
+CONFIG_ESP_AUDIO_SIMPLE_PLAYER_CH_CVT_EN=y
+CONFIG_AUDIO_SIMPLE_PLAYER_CH_CVT_DEST=2

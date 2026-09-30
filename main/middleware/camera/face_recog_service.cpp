@@ -697,7 +697,12 @@ void recog_run_once(recog_job_t job)
 
     r->valid = true;
 
-    /* ---- ③ 查库（EXTRACT 作业不做这一步）---- */
+    /* ---- ③ 查库（EXTRACT 作业不做这一步）----
+     * ★ §73.22：未命中时把"库内最高分者是谁"带进日志 —— 2026-09-30 打卡排查
+     *   的实测盲区：只有 score=0.556 而不知道跟谁比的，"底片质量差"与
+     *   "库里是别人/脏数据"无法区分。face_db_find_best 现在未命中也回填
+     *   m.person（见 face_db.c），这里顺手接住。 */
+    const char *best_name = "-";    /* 未识别/EXTRACT 时无意义，打 '-' */
     if (job == RECOG_JOB_IDENTIFY) {
         face_db_match_t m;
         memset(&m, 0, sizeof(m));
@@ -710,20 +715,24 @@ void recog_run_once(recog_job_t job)
             r->name[sizeof(r->name) - 1] = '\0';
         } else {
             /* 未命中：落到访客（R3 不误报 —— 阈值没过就当陌生人，不硬套一个名字）。
-             * score 仍然给出来（是"最高分"），UI 上显示它便于用户判断阈值松紧。 */
+             * score 仍然给出来（是"最高分"），UI 上显示它便于用户判断阈值松紧。
+             * ★ m.person 已回填库内最高分者（slot>=0 时），仅供日志诊断。 */
             r->matched   = false;
             r->person_id = FACE_DB_GUEST_ID;
             r->name[0]   = '\0';
+            if (slot >= 0 && m.person.name[0] != '\0') {
+                best_name = m.person.name;
+            }
         }
     } else {
         r->score = 0.0f;
     }
 
     s_last_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
-    ESP_LOGI(TAG, "%s: %s%s (score=%.3f, box=%d,%d %dx%d, kp=%s, %u ms)",
+    ESP_LOGI(TAG, "%s: %s%s (score=%.3f, best=%s, db=%d, box=%d,%d %dx%d, kp=%s, %u ms)",
              (job == RECOG_JOB_IDENTIFY) ? "identify" : "extract",
              r->matched ? "MATCH " : "guest ", r->name,
-             r->score, r->x, r->y, r->w, r->h,
+             r->score, best_name, face_db_count(), r->x, r->y, r->w, r->h,
              (kpc == 0) ? "ok" : "ANOMALY",
              (unsigned)s_last_ms);
 }
@@ -921,8 +930,63 @@ bool face_recog_busy(void)
     return s_job_running || s_result_new;
 }
 
+/* ===========================================================================
+ *  ★★ §73.21 会话独占（claim）—— 实测事故的根治
+ *
+ *  事故（2026-09-30）：MCP 打卡会话（ai_punch）接管相机期间，CAM 页的
+ *  recog_pump 仍在跑 —— 它的守卫 `camera_service_is_running()`（tab_camera
+ *  ④）把"我们起的流"当成了"自己的预览在跑"，于是用**停流前的陈旧 canvas
+ *  帧**连续提交识别作业，并把我们会话的结果抢走消费（实锤日志：
+ *  `TAB_CAM: punch: NO MATCH (guest, det=0.97)`）。两个驱动 + 单槽结果总线
+ *  ⇒ 我们读到的是"路过时的陈旧帧"的 guest 结论 ⇒ 误判"人脸库里没有你"。
+ *
+ *  修法：引擎级认领——认领后其他任务的 submit / result / consume 一律被拒，
+ *  引擎与结果通道由认领任务独占。识别周期按"认领任务句柄"判定，不用加锁
+ *  （认领/释放/提交/取结果都在同一任务内完成；TAB_CAM 在 LVGL 任务、
+ *  ai_punch 在 WS 收包任务，天然互斥）。
+ * =========================================================================== */
+static TaskHandle_t s_claim_task = nullptr;
+
+static bool session_blocked(void)
+{
+    return s_claim_task != nullptr && xTaskGetCurrentTaskHandle() != s_claim_task;
+}
+
+bool face_recog_session_claim(void)
+{
+    TaskHandle_t cur = xTaskGetCurrentTaskHandle();
+    if (s_claim_task == cur) {
+        return true;    /* 重复认领：幂等 */
+    }
+    if (s_claim_task != nullptr) {
+        ESP_LOGW(TAG, "session claim refused (held by %s)", pcTaskGetName(s_claim_task));
+        return false;
+    }
+    s_claim_task = cur;
+    ESP_LOGI(TAG, "session claimed by %s (others' submit/result blocked)", pcTaskGetName(cur));
+    return true;
+}
+
+void face_recog_session_release(void)
+{
+    if (s_claim_task != nullptr && s_claim_task == xTaskGetCurrentTaskHandle()) {
+        s_claim_task = nullptr;
+        ESP_LOGI(TAG, "session released");
+    }
+}
+
+bool face_recog_session_is_claimed(void)
+{
+    return s_claim_task != nullptr;
+}
+
 esp_err_t face_recog_submit(const uint16_t *rgb565le, uint16_t w, uint16_t h, recog_job_t job)
 {
+    if (session_blocked()) {
+        /* ★ §73.21：被认领任务独占期间，其他调用方一律拒绝（含退避提示）。
+         *   tab_camera ④ 对 INVALID_STATE 已有"留话 + 500ms 退避"的处理。 */
+        return ESP_ERR_INVALID_STATE;
+    }
     if (rgb565le == nullptr) return ESP_ERR_INVALID_ARG;
     if (w == 0 || h == 0 || w > RECOG_MAX_W || h > RECOG_MAX_H) {
         /* ★ 说清楚而不是静默丢弃：这个限制来自帧缓冲的编译期大小。 */
@@ -956,12 +1020,18 @@ esp_err_t face_recog_submit(const uint16_t *rgb565le, uint16_t w, uint16_t h, re
 
 const recog_result_t *face_recog_result(void)
 {
+    if (session_blocked()) {
+        return nullptr;   /* §73.21：结果通道归认领任务，其他人看不见 */
+    }
     if (!s_result_new || s_result == nullptr) return nullptr;
     return s_result;
 }
 
 void face_recog_result_consume(void)
 {
+    if (session_blocked()) {
+        return;           /* §73.21：同上——不许替认领任务消费结果 */
+    }
     s_result_new = false;
 }
 

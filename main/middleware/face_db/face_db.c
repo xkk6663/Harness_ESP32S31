@@ -924,9 +924,14 @@ int face_db_find_best(const float *feat, int dim, float thr, face_db_match_t *ou
 
     if (best >= 0) {
         out->score = best_score;
+        /* ★★ §73.22：未命中也回填最佳匹配者。
+         *   旧版只在命中时填 person ⇒ 上层日志只能看到"最高分 0.556"，
+         *   看不到"这 0.556 是跟谁比的" ⇒ "底片质量差"与"库里是别人/脏数据"
+         *   两种完全不同的病在日志上长得一模一样（2026-09-30 打卡排查实测盲区）。
+         *   matched 语义不变：仍只由阈值决定，未命中时调用方照旧落访客。 */
+        memcpy(&out->person, &s_persons[best], sizeof(out->person));
         if (best_score >= thr) {
             out->matched = true;
-            memcpy(&out->person, &s_persons[best], sizeof(out->person));
         }
     }
     xSemaphoreGive(s_lock);

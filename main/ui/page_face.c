@@ -664,6 +664,14 @@ static void view_apply(void)
 static void del_btn_cb(lv_event_t *e)
 {
     uint16_t  id  = (uint16_t)(uintptr_t)lv_event_get_user_data(e);
+
+    /* §73.25：删人前先取姓名（删完就查不到了）——打卡目录名/CSV 前缀都要用 */
+    face_person_t p;
+    char name[FACE_NAME_MAX] = "";
+    if (face_db_find_by_id(id, &p) == ESP_OK) {
+        snprintf(name, sizeof(name), "%s", p.name);
+    }
+
     esp_err_t err = face_db_delete(id);
 
     if (err != ESP_OK) {
@@ -677,6 +685,15 @@ static void del_btn_cb(lv_event_t *e)
     }
 
     ESP_LOGI(TAG, "deleted id=%u", (unsigned)id);
+    /* §73.25：打卡目录（照片）+ 该人全部流水行同步清理（异步一次性任务）。
+     * 失败只记日志不拦库删除 —— 残留可在 FILES 页对账/清空兜底。 */
+    if (name[0] != '\0') {
+        esp_err_t pe = punch_service_purge_person(id, name);
+        if (pe != ESP_OK) {
+            ESP_LOGW(TAG, "purge attendance of id=%u rc=%s (residual ok, FILES 可对账)",
+                     (unsigned)id, esp_err_to_name(pe));
+        }
+    }
     lv_async_call(async_refresh_cb, NULL);          /* ← 延后一拍重建，原因见上 */
 }
 

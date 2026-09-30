@@ -6,12 +6,17 @@
 
 /**
  * @file ai_camera.c
- * @brief 小智 MCP 相机工具实现（S7-A1 / §58，见头文件）。
+ * @brief 小智 MCP 相机工具实现（S7-A1 / §58；§73.18 同步桥改造，见头文件）。
  *
- * 并发模型：
- *   - MCP 工具回调（协议栈任务）：置 s_busy + 拷 question + 建任务，立即返回；
- *     mcp-c-sdk 串行分发 ⇒ s_busy 检查-置位无竞态。
+ * 并发模型（§73.18 改造后）：
+ *   - MCP 工具回调（WS 收包任务上下文）：建 explain 任务后**阻塞等待完成**，
+ *     把真实识别文本作为 tools/call 结果同步返回。旧版"立即返回占位符"导致
+ *     服务端大模型永远拿不到识别文本（占位符就是它收到的全部工具结果），
+ *     实际回答只走了本地 UI 通道。官方 xiaozhi-esp32 固件的 explain 工具
+ *     本就是回调内同步完成拍照+视觉问答（数秒级阻塞是官方既定契约）。
  *   - explain 任务（每次现建，PSRAM 栈，自删）：相机事务 + 同步 HTTP。
+ *     重活仍留在独立任务里：WS 收包任务栈小，TLS/HTTP 不下探（§73.18
+ *     评估：整段同步进回调会有栈溢出风险，故采用"信号量桥"折中）。
  *   - 帧回调（cam_task）：只 memcpy + 置事件组（camera_service.h 硬约束）。
  */
 
@@ -24,6 +29,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/idf_additions.h"
 
 #include "esp_mcp_engine.h"
@@ -52,6 +58,17 @@ static EventGroupHandle_t s_frame_evt;  /* BIT0 = 抓到一帧 */
 #define FRAME_WAIT_MS  3000
 #define EXPLAIN_OUT_SIZE 1024           /* 视觉回答文本缓冲 */
 #define EXPLAIN_STACK_SIZE (16 * 1024)  /* PSRAM 栈（纯 HTTP/TLS，F35 允许外置） */
+/* §73.18 桥接等待上限：帧等待 3s + vision HTTP 超时 30s + 任务收尾余量。
+ * 任务所有路径都保证 give，正常永远先于它到达；超时只兜异常（结果届时
+ * 仍会经 report() 进 UI 浮窗，只是服务端模型收不到）。 */
+#define EXPLAIN_BRIDGE_TIMEOUT_MS (40 * 1000)
+
+/* §73.18 同步桥：explain 任务 → MCP 工具回调的结果交接。
+ * 没有它，tools/call 的 response 就是占位符，服务端大模型永远
+ * "拿不到照片识别的结果"（根因修复的核心交接点）。 */
+static SemaphoreHandle_t s_done;        /* 二值信号量：explain 任务完成 */
+static char s_answer[EXPLAIN_OUT_SIZE]; /* 结果文本（首条 finish_with 获胜） */
+static volatile bool s_answer_done;
 
 /* ---- 拍照预览（§59b）：RGB565 缩略图单槽交接 ----
  * 生产者 = 解码所在任务（explain 任务 / capture 预览任务），
@@ -65,6 +82,21 @@ static uint8_t *s_pv_buf;               /* 待取/显示中的 RGB565 帧（NULL
 static int      s_pv_w, s_pv_h;
 static volatile bool s_pv_pending;      /* s_pv_buf 有效，等 UI 取 */
 static portMUX_TYPE s_pv_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* §73.23 视频流模式：true 时 UI 连续显示新帧（实时取景），不启动 3s 隐藏
+ * 定时器；false（收尾沿）时 UI 立即隐藏并清残留。静态照片卡路径不受影响
+ * （explain/capture 预览仍是"一帧 + 3s 自动消失"）。 */
+static volatile bool s_pv_video;
+
+void ai_camera_preview_video_set(bool on)
+{
+    s_pv_video = on;
+}
+
+bool ai_camera_preview_video_get(void)
+{
+    return s_pv_video;
+}
 
 static void preview_publish(uint8_t *rgb, int w, int h)
 {
@@ -96,17 +128,37 @@ bool ai_camera_preview_take(uint8_t **buf, int *w, int *h)
     return got;
 }
 
-/* JPEG 码流 → 1/2 scale RGB565 缩略图 → publish。
- * 失败静默（预览是赠品，不抢 explain/capture 主流程的报错通道）。 */
+void ai_camera_preview_publish_rgb565(uint8_t *buf, int w, int h)
+{
+    if (buf && w > 0 && h > 0) {
+        /* §73.19：打卡照片复用同一预览单槽（AI 浮窗照片卡 3s 自动消失）。
+         * 语义与 preview_publish 一致：buf 所有权移交槽（UI take 后 UI free）。 */
+        preview_publish(buf, w, h);
+    } else if (buf) {
+        heap_caps_free(buf);
+    }
+}
+
+/* JPEG 码流 → 1/2 scale RGB888 解码 → 原地压缩 RGB565 → publish。
+ * 失败静默（预览是赠品，不抢 explain/capture 主流程的报错通道）。
+ *
+ * ★★ §73.23 为什么不再用 RGB565_LE 直解（2026-09-30 实测偏绿事故）：
+ *   旧版 cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE，真机上 AI 浮窗
+ *   预览整体偏绿；同一份传感器 JPEG 落 SD 卡后走 FILES 页查看颜色正常
+ *   （= 传感器码流本身颜色是对的），而本仓**所有 RGB888 解码点**
+ *   （overlay_wallpaper / overlay_wp_particles）颜色全部正常。
+ *   ⇒ 判定：软解 RGB565 输出转换环节与 LVGL 原生 u16 值序不符（组件是
+ *   闭源 .a，实现不可读），绕开它——走已验证的 RGB888 路径，像素压缩
+ *   在自己手里（与 ai_punch make_punch_preview 同一套位算式）。 */
 static void preview_decode_publish(const uint8_t *jpg, size_t len)
 {
     jpeg_dec_handle_t dec = NULL;
     jpeg_dec_header_info_t info = {0};
-    uint8_t *out = NULL;
+    uint8_t *out = NULL;    /* 解码期 = RGB888（padded_w*PV_H*3），解码后原地压缩成 RGB565 */
     int out_len = 0;
 
     jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;  /* LVGL16 原生小端，免逐像素换序 */
+    cfg.output_type = JPEG_PIXEL_FORMAT_RGB888;   /* §73.23：RGB888 是全仓已验证的正常色路径 */
     cfg.scale.width = PV_W;
     cfg.scale.height = PV_H;
     if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
@@ -129,9 +181,18 @@ static void preview_decode_publish(const uint8_t *jpg, size_t len)
     }
     {
         /* 输出尺寸对账：块对齐可能补齐，宽度以 out_len 反推（防画面错乱） */
-        int w = out_len / 2 / PV_H;
-        if (out_len != PV_W * PV_H * 2) {
+        int w = out_len / 3 / PV_H;
+        if (out_len != PV_W * PV_H * 3) {
             ESP_LOGW(TAG, "preview padded: out_len=%d -> w=%d", out_len, w);
+        }
+        /* 原地压缩 RGB888 → RGB565（LVGL 原生小端 u16 值序）。
+         * 前向迭代安全：第 i 像素写到字节偏移 2i，读自 3i，恒有 2i <= 3i。 */
+        uint16_t *d = (uint16_t *)out;
+        const uint8_t *p = out;
+        for (int i = 0; i < w * PV_H; i++, p += 3) {
+            d[i] = (uint16_t)(((uint16_t)(p[0] >> 3) << 11) |
+                              ((uint16_t)(p[1] >> 2) << 5)  |
+                              (uint16_t)(p[2] >> 3));
         }
         preview_publish(out, w, PV_H);
         out = NULL;     /* 所有权已移交槽 */
@@ -174,6 +235,12 @@ static void on_jpeg_frame(const uint8_t *data, uint32_t size,
 
 static void finish_with(const char *msg)
 {
+    /* §73.18：结果双路分发——s_answer 交给 MCP 工具结果（服务端模型），
+     * report() 走 XZ_EVT_TEXT 进 UI 浮窗对话记录（本地可见）。 */
+    if (!s_answer_done) {
+        strlcpy(s_answer, msg, sizeof(s_answer));
+        s_answer_done = true;
+    }
     report(msg);
 }
 
@@ -258,6 +325,9 @@ out:
     }
     s_jpg_len = 0;
     s_busy = false;
+    /* §73.18：唤醒阻塞中的工具回调（所有路径必经；give 后本任务随即自删，
+     * s_answer 已在 finish_with 里定格，回调侧读取安全） */
+    xSemaphoreGive(s_done);
     ESP_LOGI(TAG, "explain task done");
     vTaskDeleteWithCaps(NULL);
 }
@@ -303,14 +373,15 @@ static void cap_preview_task(void *arg)
     vTaskDeleteWithCaps(NULL);
 }
 
-/* ---- MCP 工具回调（协议栈任务上下文：只置标志 + 建任务，立即返回） ---- */
+/* ---- MCP 工具回调（WS 收包任务上下文：重活交 explain 任务，本回调
+ *      阻塞等结果——§73.18 同步桥，官方固件同款工具契约） ---- */
 
 static esp_mcp_value_t cb_explain(const esp_mcp_property_list_t *props)
 {
     if (s_busy) {
         return esp_mcp_value_create_string("A photo is already being analyzed, please wait.");
     }
-    if (!s_cli) {
+    if (!s_cli || !s_done) {
         return esp_mcp_value_create_string("Camera service is not initialized.");
     }
     const char *q = esp_mcp_property_list_get_property_string(props, "question");
@@ -319,6 +390,8 @@ static esp_mcp_value_t cb_explain(const esp_mcp_property_list_t *props)
 
     s_busy = true;
     s_jpg_len = 0;
+    s_answer[0] = '\0';
+    s_answer_done = false;
     BaseType_t ok = xTaskCreateWithCaps(explain_task, "ai_cam", EXPLAIN_STACK_SIZE,
                                         NULL, 5, NULL, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
@@ -326,8 +399,18 @@ static esp_mcp_value_t cb_explain(const esp_mcp_property_list_t *props)
         ESP_LOGE(TAG, "create explain task failed");
         return esp_mcp_value_create_string("Failed to start the camera task (out of memory).");
     }
-    ESP_LOGI(TAG, "explain requested: %.64s", s_question);
-    return esp_mcp_value_create_string("Photo taken. I am analyzing it now, one moment please.");
+    ESP_LOGI(TAG, "explain requested: %.64s (blocking for result)", s_question);
+
+    /* §73.18 同步桥：阻塞直至 explain 任务落出结果。任务所有路径都 give
+     * （帧等待 3s + vision HTTP 30s 内必达），40s 只兜异常路径。 */
+    xSemaphoreTake(s_done, pdMS_TO_TICKS(EXPLAIN_BRIDGE_TIMEOUT_MS));
+    s_busy = false;
+
+    if (s_answer[0] == '\0') {
+        ESP_LOGW(TAG, "explain bridge timeout (result will reach UI via report later)");
+        return esp_mcp_value_create_string("Vision analysis timed out - please retry.");
+    }
+    return esp_mcp_value_create_string(s_answer);
 }
 
 /* ---- 注册 ---- */
@@ -363,8 +446,17 @@ esp_err_t ai_camera_init(void)
     if (s_cli) {
         return ESP_OK;   /* 幂等 */
     }
+    /* §73.18 同步桥信号量（先于客户端创建，失败即整体失败） */
+    s_done = xSemaphoreCreateBinary();
+    ESP_RETURN_ON_FALSE(s_done, ESP_ERR_NO_MEM, TAG, "bridge semaphore");
     /* 无 config：URL 等会话建立后每次现取（token 会刷新） */
-    return esp_xiaozhi_camera_create(NULL, &s_cli);
+    esp_err_t err = esp_xiaozhi_camera_create(NULL, &s_cli);
+    if (err != ESP_OK) {
+        vSemaphoreDelete(s_done);
+        s_done = NULL;
+        return err;
+    }
+    return ESP_OK;
 }
 
 void ai_camera_set_result_cb(ai_camera_result_cb_t cb)

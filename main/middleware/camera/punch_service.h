@@ -221,6 +221,27 @@ esp_err_t punch_service_log_clear(void);
 esp_err_t punch_service_log_delete(int seq);
 
 /**
+ * @brief 清除**某个人**的全部打卡痕迹（**异步**，§73.25）：删
+ *        /sdcard/attendance/<NN_姓名>/ 整个目录（连照片），并把 index.csv
+ *        里 photo 列以该目录为前缀的行全部去掉。
+ *
+ * ★ 2026-09-30 新增（用户反馈"face db 删人后打卡文件夹和照片还留着"）。
+ *   面向的调用点是 face db 人物页的删除按钮：face_db_delete 只管库
+ *   （索引 + 特征 + 底片），打卡目录是 punch_service 的领地 —— 两边各清
+ *   各的，与"清空打卡记录不影响人脸库"红线互为镜像。
+ * ★ 目录名用与写入侧同一生成器 face_db_attendance_dir(id, name)（序号 +
+ *   安全化姓名），删人后 id 不复用，前缀依旧唯一。
+ * ★ CSV 行按 photo 相对路径前缀（"<NN_姓名>/"）圈中，不依赖 name 列。
+ * ★ 异步理由同 log_clear；发起后用 `punch_service_busy()` 轮询，
+ *   结果槽 clear_op=true（CAM 页/其他 UI 不会弹"打卡成功"）。
+ * @param id   人物 id（访客 0 拒绝）
+ * @param name 人物姓名（UTF-8；用于生成目录名，须与录入时一致）
+ * @return ESP_OK 已受理 / ESP_ERR_INVALID_ARG 参数不对 /
+ *         ESP_ERR_INVALID_STATE 正忙或 SD 未挂载
+ */
+esp_err_t punch_service_purge_person(uint16_t id, const char *name);
+
+/**
  * @brief 同步打卡流水与照片目录（**异步**）：把 index.csv 里"照片文件已经
  *        不存在"的行整行删掉，再清掉 attendance 下的空子目录。
  *

@@ -50,6 +50,10 @@
 #include "ai_speaker.h"
 #include "ai_camera.h"
 #include "ai_device.h"
+#include "ai_punch.h"                        /* §73.19：MCP 打卡工具 */
+#include "ai_music.h"                        /* §73.25：MCP 在线点歌工具 */
+#include "middleware/audio/media_player_service.h"  /* §73.26：反向抢占（起会话前停歌） */
+#include "middleware/periph/safe_reboot.h"   /* §73.20 有序软重启 */
 #include "audio_service.h"
 
 static const char *TAG = "XZ_SVC";
@@ -69,6 +73,23 @@ static const char *TAG = "XZ_SVC";
 #define XZ_FRAME_MS         60
 #define XZ_OPUS_BITRATE     24000
 
+/* ★ §73.27 补充 7：下行锚点定档 16k/2ch（用户裁决：基本功能优先，双喇叭
+ * 保留立体声分离度，带宽 8kHz——小喇叭高频滚降 ~10kHz，实际听感损失有限）。
+ * ★ 慢放铁律（补充 4/5 两轮真机实锤）：ASP 输出格式必须恒等于 play_io
+ *   声明格式——sdkconfig dest(16000/2) == play_io(16000/2)，mixer 流声明
+ *   与数据一致，任何源格式 mp3 通吃，慢放不会复发。
+ * 链路全景：
+ *   音乐   mp3 源 → ASP(rate_cvt→16k + ch_cvt→2ch，sdkconfig 定死) →
+ *          mixer playback 流(in=play_io) → render(16k/2ch) → ES8389 双喇叭
+ *   TTS    opus 16k/1ch → feeder 管线内 ch_cvt(1→2)/rate_cvt(16k 原样，
+ *          dest 动态取 play_io) → render → 同上，零改动自动适配
+ *   上行   I2S TX/RX 同控制器共享时钟 ⇒ TX 16k/2ch 则物理 RX 16k/2ch，
+ *          read_cb 取 L 通道直通（无重采样！与旧 mono RX 同一颗麦，
+ *          IDF mono RX 默认 slot_mask=LEFT，i2s_std.h:35）→ AFE/Opus
+ *          16k 链路与历史版本完全一致 */
+#define XZ_PLAY_RATE        16000
+#define XZ_PLAY_CHANNELS    2
+
 /* 上行读块大小：recorder FIFO 按块返回（单块 ≤ 请求值即返回），
  * 此值只是上限；60ms @16k/16bit/mono PCM = 1920B，Opus 帧更小 */
 #define XZ_REC_READ_SIZE    (1920 * 2)
@@ -77,11 +98,23 @@ static const char *TAG = "XZ_SVC";
 typedef enum {
     XZ_CMD_START = 0,
     XZ_CMD_STOP,
+    XZ_CMD_MUSIC_PLAY,   /* §73.27：url=PSRAM 堆串（xz_task 消费后释放） */
+    XZ_CMD_MUSIC_STOP,
 } xz_cmd_id_t;
 
 typedef struct {
     xz_cmd_id_t id;
+    char *url;           /* 仅 MUSIC_PLAY 用；其他命令置 NULL */
 } xz_cmd_t;
+
+/* ★ §73.27 音频策略优先级（av_processor：priority 大者胜出出声）：
+ * TTS feeder(2) > 音乐 playback(1) ⇒ 小智说话时音乐被 gate 静音、
+ * 进度照走，TTS 停自动恢复（policy winner 机制，无需我们干预） */
+#define XZ_TTS_PRIORITY      2
+#define XZ_MUSIC_PRIORITY    1
+/* 点歌 URL 常驻缓冲：xz_task 拷入，播放期存活，下次 play 覆盖（av_processor
+ * 内部换曲先同步停旧流再 run 新串，覆盖时序安全） */
+#define XZ_MUSIC_URL_MAX     512
 
 /* ---- 状态 ---- */
 static QueueHandle_t s_cmd_q;
@@ -106,6 +139,9 @@ static volatile bool s_ptt_start_pending;
 /* TTS stop 后的回声静默窗：stop 事件到 ≠ 本地 feeder 队列播空（feeder 无
  * flush API），MM/尾音期间抢上的帧会被服务器转写成垃圾。窗口内不上行 */
 #define XZ_ECHO_GUARD_MS    500
+/* barge-in（用户按住打断 TTS）时的缩短版静默窗：扬声器 abort 收尾尾音
+ * 远短于自然播完，200ms 足够覆盖且不吃用户开口的前半秒（补充 6） */
+#define XZ_ECHO_GUARD_BARGE_MS  200
 static volatile TickType_t s_tts_quiet_until;
 /* ★ §53 会话聋化自愈：实测（2026-09-27 日志）第 4 轮起服务器对 listen start/
  * stop 全部 ESP_OK 却不再回任何 stt/tts（连接活着、音频在发）——服务器侧
@@ -125,6 +161,17 @@ static audio_play_handle_t     s_play;
 /* ext 独占租借借出的服务句柄（session_setup 记录，teardown close 后归还） */
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
+
+/* ★ §73.27 会话内点歌状态（音乐走 s_play 的 audio_playback 通路，
+ * 与 TTS 同一条下行流；s_music_playing 以播放器真实事件为准维护） */
+static char s_music_url[XZ_MUSIC_URL_MAX];
+static volatile bool s_music_playing;
+static xz_music_evt_cb_t s_music_evt_cb;
+/* ★ PTT barge-in 停音乐有 ~1s 延迟（gmf abort + 管线收尾），期间上行
+ * 闸门若仍锁死，用户开头的话被吃掉（真机实证：按住 1.4s 只发出 2 帧）。
+ * barging = "stop 已发出、音乐正在收尾"——闸门视同已让路，宁可让最后
+ * 一小段歌声漏上行也不吃用户语音。 */
+static volatile bool s_music_barging;
 
 /* ============================================================
  * 事件上抛
@@ -162,9 +209,20 @@ static esp_err_t xz_play_write_cb(uint8_t *data, int size, void *ctx)
     if (s_spk == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    /* esp_codec_dev_write：成功返回 >=0（字节数/OK），失败负值 */
+    /* esp_codec_dev_write：成功返回 >=0（字节数/OK），失败负值。
+     * §73.27 补充 7：数据格式 = play_io（16k/2ch），write 透传不关心格式 */
     return (esp_codec_dev_write(s_spk, data, size) >= 0) ? ESP_OK : ESP_FAIL;
 }
+
+/* ---- §73.27 补充 7：上行读取缓冲（16k/2ch 交错 → 取 L 直通 16k/1ch）。
+ * 补充 5 的 FIR 降采样器已随 48k 锚点一并撤销（16k 锚点无需重采样） */
+#define XZ_REC_CHUNK_SAMPLES  2048   /* 单趟处理的 16k 样本数 */
+#define XZ_REC_SCRATCH_BYTES  (XZ_REC_CHUNK_SAMPLES * XZ_PLAY_CHANNELS * (XZ_BITS / 8))
+static int16_t *s_rec_scratch;
+/* ★ §73.27 补充 6 xrun 探针：read_cb 进入间隔 > 请求块时长+15ms 容差
+ * = feed 任务被抢占过久，I2S DMA（60ms）濒临覆盖 → 丢样本实锤计数 */
+static TickType_t s_rec_last_tick;
+static uint32_t   s_rec_xrun_risk;
 
 static esp_err_t xz_rec_read_cb(uint8_t *data, int size, void *ctx)
 {
@@ -172,7 +230,84 @@ static esp_err_t xz_rec_read_cb(uint8_t *data, int size, void *ctx)
     if (s_mic == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    return (esp_codec_dev_read(s_mic, data, size) >= 0) ? ESP_OK : ESP_FAIL;
+    /* ★ §73.27 补充 7：物理 RX 已是 16k/2ch（TX 立体声陪跑，共享时钟），
+     * 取 L 通道直通输出 16k/1ch——无任何重采样，与旧 mono RX（IDF 默认
+     * slot_mask=LEFT）同一颗麦，上行链路回归历史已知良好状态 */
+    if (s_rec_scratch == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* xrun 探针（补充 6，保留）：按实际请求块时长 + 15ms 容差，超限 = DMA 濒危 */
+    TickType_t now = xTaskGetTickCount();
+    int block_ms = (size >> 1) * 1000 / XZ_SAMPLE_RATE;
+    if (s_rec_last_tick != 0 &&
+        (now - s_rec_last_tick) > pdMS_TO_TICKS(block_ms + 15)) {
+        s_rec_xrun_risk++;
+        ESP_LOGW(TAG, "rec read gap %dms > %dms, xrun risk #%u",
+                 (int)(now - s_rec_last_tick) * portTICK_PERIOD_MS,
+                 block_ms + 15, (unsigned)s_rec_xrun_risk);
+    }
+    s_rec_last_tick = now;
+    int out_total = size >> 1;              /* 16k 输出样本数 = 输入帧数 */
+    int done = 0;
+    while (done < out_total) {
+        int chunk = out_total - done;
+        if (chunk > XZ_REC_CHUNK_SAMPLES) {
+            chunk = XZ_REC_CHUNK_SAMPLES;
+        }
+        int rd = esp_codec_dev_read(s_mic, s_rec_scratch,
+                                    chunk * XZ_PLAY_CHANNELS * (XZ_BITS / 8));
+        if (rd < 0) {
+            return ESP_FAIL;
+        }
+        int16_t *out = (int16_t *)data + done;
+        for (int i = 0; i < chunk; i++) {
+            out[i] = s_rec_scratch[i * XZ_PLAY_CHANNELS];   /* L = mic0 */
+        }
+        done += chunk;
+    }
+    return ESP_OK;
+}
+
+/* ★ §73.27：点歌播放器事件（av_processor 内部 esp_audio_simple_player 的
+ * 播放任务上下文调用——只置 volatile 标志 + 转投回调，绝不阻塞）。
+ * s_music_playing 是上行闸门的判据之一，必须以真实事件为准（STOPPED/
+ * FINISHED/ERROR 任一路径都要复位，否则音乐停了上行永久被闸） */
+static void xz_playback_event_cb(audio_play_state_t state, void *ctx)
+{
+    (void)ctx;
+    switch (state) {
+    case AUDIO_PLAY_STATE_PLAYING:
+        s_music_playing = true;
+        ESP_LOGI(TAG, "music PLAYING");
+        if (s_music_evt_cb) {
+            s_music_evt_cb(XZ_MUSIC_STARTED, ESP_OK);
+        }
+        break;
+    case AUDIO_PLAY_STATE_FINISHED:
+        s_music_playing = false;
+        s_music_barging = false;
+        ESP_LOGI(TAG, "music FINISHED");
+        if (s_music_evt_cb) {
+            s_music_evt_cb(XZ_MUSIC_FINISHED, ESP_OK);
+        }
+        break;
+    case AUDIO_PLAY_STATE_ERROR:
+        s_music_playing = false;
+        s_music_barging = false;
+        ESP_LOGE(TAG, "music ERROR");
+        if (s_music_evt_cb) {
+            s_music_evt_cb(XZ_MUSIC_ERROR, ESP_FAIL);
+        }
+        break;
+    case AUDIO_PLAY_STATE_STOPPED:
+        /* 用户叫停/换曲/teardown——工具响应已告知，不重复上报 */
+        s_music_playing = false;
+        s_music_barging = false;
+        ESP_LOGI(TAG, "music STOPPED");
+        break;
+    default:   /* IDLE/PAUSED：v1 无消费方 */
+        break;
+    }
 }
 
 /* ============================================================
@@ -216,8 +351,14 @@ static void chat_event_cb(esp_xiaozhi_chat_event_t event, void *event_data, void
             /* stop 事件到 ≠ feeder 播空：开回声静默窗（§52）。
              * ★ 且按 §48 教训：tts stop 后服务器回合必复位——若用户正按住
              *   （含"按住期间 TTS 才开始"的竞态），欠一张 listen start，
-             *   由上行任务补票，否则这一按到头都是聋的 */
-            s_tts_quiet_until = xTaskGetTickCount() + pdMS_TO_TICKS(XZ_ECHO_GUARD_MS);
+             *   由上行任务补票，否则这一按到头都是聋的
+             * ★ §73.27 补充 6：barge-in（s_ptt_on = 用户正按着主动打断
+             *   开口说话）时静默窗缩短到 200ms——500ms 会吃掉用户开口的
+             *   前半秒（"识别不到我说的话"主诉之一）。与 music barging
+             *   同款取舍：宁可让 200ms TTS 尾音漏进上行，不吃人声。 */
+            s_tts_quiet_until = xTaskGetTickCount() +
+                pdMS_TO_TICKS(s_ptt_on ? XZ_ECHO_GUARD_BARGE_MS
+                                       : XZ_ECHO_GUARD_MS);
             if (s_ptt_on) {
                 s_ptt_start_pending = true;
             }
@@ -245,14 +386,15 @@ static void chat_event_cb(esp_xiaozhi_chat_event_t event, void *event_data, void
     }
     case ESP_XIAOZHI_CHAT_EVENT_CHAT_SYSTEM_CMD: {
         /* §58 A3：服务器命令（vendor 只上报）。reboot = 立即重启（78 固件
-         * 同款；esp_restart 不做清理——NVS 无在写操作，codec 状态重启后
-         * 重新 init，风险可接受）。其他命令忽略。 */
+         * 同款）。§73.20 勘误：原"esp_restart 不做清理，风险可接受"被打脸
+         * （软重启后黑屏卡死）——改走 safe_reboot_perform 有序收尾。
+         * 其他命令忽略。 */
         const char *cmdstr = (const char *)event_data;
         ESP_LOGW(TAG, "system cmd: %s", cmdstr ? cmdstr : "(null)");
         if (cmdstr && strcmp(cmdstr, "reboot") == 0) {
             notify(XZ_EVT_TEXT, "Rebooting device...", 1, ESP_OK);
             vTaskDelay(pdMS_TO_TICKS(200));   /* 给 notify/日志一点落盘时间 */
-            esp_restart();
+            safe_reboot_perform("server system cmd");
         }
         break;
     }
@@ -324,6 +466,16 @@ static esp_err_t chat_setup(void)
         ESP_LOGE(TAG, "ai_camera_attach failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    ret = ai_punch_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_punch_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = ai_music_attach(mcp);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ai_music_attach failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ret = ai_device_attach(mcp);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ai_device_attach failed: %s", esp_err_to_name(ret));
@@ -344,7 +496,7 @@ static void xz_uplink_task(void *arg)
     (void)arg;
     int consec_err = 0;
     uint32_t frames = 0, n_sent = 0, n_skip_tts = 0, n_skip_ptt = 0,
-             n_skip_echo = 0, total_b = 0;
+             n_skip_echo = 0, n_skip_music = 0, total_b = 0;
     uint32_t round_sent = 0;    /* 本轮（按住期间）已发帧数，§53 自愈判据 */
     for (;;) {
         int ret = audio_recorder_read_data(s_recorder, s_uplink_buf, XZ_REC_READ_SIZE);
@@ -367,6 +519,16 @@ static void xz_uplink_task(void *arg)
          *   复位回合后再补发。TTS 中直接发 listen start 实测把会话搞死。 */
         bool want = s_ptt_want;
         if (want != s_ptt_on && s_chatting && s_chat) {
+            /* ★ §73.27：按住 PTT = 说话意图 ⇒ 音乐立即让路（点歌是会话内
+             * 动作，会话还在，无需拆任何东西）。停流走命令队列（xz_task
+             * 执行）；置 barging = 上行闸门视同已让路（stop 收尾 ~1s 内
+             * 用户开头的话不被吃，代价是尾段少量歌声漏上行）。 */
+            if (want && s_music_playing) {
+                xz_cmd_t m = { .id = XZ_CMD_MUSIC_STOP, .url = NULL };
+                xQueueSend(s_cmd_q, &m, 0);
+                s_music_barging = true;
+                ESP_LOGI(TAG, "ptt: music barge-in (stop playback)");
+            }
             esp_err_t r;
             if (want && s_tts_active) {
                 r = esp_xiaozhi_chat_send_abort_speaking(
@@ -422,11 +584,15 @@ static void xz_uplink_task(void *arg)
                      esp_err_to_name(r));
         }
 
-        /* 闸门：会话在 + PTT 已生效 + TTS 未在播 + 回声静默窗已过。 */
+        /* 闸门：会话在 + PTT 已生效 + TTS 未在播 + 音乐未在播（§73.27；
+         * barge-in 收尾期视同已让路）+ 回声静默窗已过。音乐出声期间上行
+         * skip：单麦无回采 AEC 关（§53），歌声外放会污染识别——想说话按
+         * PTT，音乐自动让路。 */
         bool in_quiet = (s_tts_quiet_until != 0 &&
                          xTaskGetTickCount() < s_tts_quiet_until);
+        bool music_blocking = (s_music_playing && !s_music_barging);
         bool may_send = (s_chatting && s_chat && s_ptt_on &&
-                         !s_tts_active && !in_quiet);
+                         !s_tts_active && !music_blocking && !in_quiet);
         if (may_send) {
             esp_err_t err = esp_xiaozhi_chat_send_audio_data(
                 s_chat, (const char *)s_uplink_buf, ret);
@@ -438,6 +604,14 @@ static void xz_uplink_task(void *arg)
             }
         } else if (s_tts_active && s_ptt_on) {
             n_skip_tts++;      /* TTS 播放中暂停上行 */
+        } else if (music_blocking && s_ptt_on) {
+            n_skip_music++;    /* §73.27：音乐出声中暂停上行 */
+            if ((n_skip_music % 50) == 1) {
+                /* 补票：边沿那次 STOP 可能被命令队列满吞掉——按住期间
+                 * 音乐必须让路，否则用户全程聋。~3s 一次，代价可忽略 */
+                xz_cmd_t m = { .id = XZ_CMD_MUSIC_STOP, .url = NULL };
+                xQueueSend(s_cmd_q, &m, 0);
+            }
         } else if (in_quiet) {
             n_skip_echo++;     /* TTS 刚停：尾音静默窗 */
         } else {
@@ -447,12 +621,15 @@ static void xz_uplink_task(void *arg)
         /* ★ 可追溯水位：每 25 帧（~1.5s）一条，闸门状态全部留痕 */
         if ((frames % 25) == 0) {
             ESP_LOGI(TAG, "uplink: frames=%u sent=%u skip_tts=%u skip_ptt=%u "
-                          "skip_echo=%u last=%dB total=%uKB tts=%d ptt=%d pend=%d",
+                          "skip_echo=%u skip_music=%u last=%dB total=%uKB "
+                          "tts=%d ptt=%d pend=%d music=%d xrun=%u",
                      (unsigned)frames, (unsigned)n_sent, (unsigned)n_skip_tts,
-                     (unsigned)n_skip_ptt, (unsigned)n_skip_echo, ret,
+                     (unsigned)n_skip_ptt, (unsigned)n_skip_echo,
+                     (unsigned)n_skip_music, ret,
                      (unsigned)(total_b / 1024),
                      (int)s_tts_active, (int)s_ptt_on,
-                     (int)s_ptt_start_pending);
+                     (int)s_ptt_start_pending, (int)s_music_playing,
+                     (unsigned)s_rec_xrun_risk);
         }
     }
 }
@@ -489,6 +666,15 @@ static void session_teardown(void)
         vTaskDelete(s_uplink_task);
         s_uplink_task = NULL;
     }
+    /* ★ §73.27 teardown 顺序：先停两路源（music stop + feeder stop，
+     * simple_player 任务还在写 render stream）→ 再关 mixer render →
+     * 再逐层 close，防止写已关句柄 */
+    if (s_play && s_music_playing) {
+        (void)audio_playback_stop(s_play);
+    }
+    s_music_playing = false;
+    s_music_barging = false;
+    (void)audio_processor_mixer_close();
     if (s_feeder) {
         audio_feeder_stop(s_feeder);
     }
@@ -501,10 +687,17 @@ static void session_teardown(void)
         s_feeder = NULL;
     }
     if (s_play) {
+        /* 音乐已在前段（mixer close 前）停过，这里只 close */
         audio_playback_close(s_play);
         s_play = NULL;
     }
     audio_manager_deinit();
+
+    /* §73.27 补充 5：上行降采样 scratch（audio_manager 读回调已停，安全） */
+    if (s_rec_scratch) {
+        heap_caps_free(s_rec_scratch);
+        s_rec_scratch = NULL;
+    }
 
     /* 归还 codec：必须先 close 两个 dev（约定见 audio_service.h） */
     if (s_spk) {
@@ -572,30 +765,63 @@ static esp_err_t session_setup(void)
     s_mic = mic;
 
     /* 2. av_processor audio_manager（0.7.0：设备 IO 走回调，喂借出句柄的
-     *    读写实现；格式经 audio_manager_config_set_same_io_format 设置） */
+     *    读写实现）
+     * ★ §73.27 补充 7：play_io 与 rec_io 拆开设置——play 16k/2ch（锚点
+     *   格式，TTS 由 feeder 管线 ch_cvt 自动补声道、音乐由 ASP 统一转换
+     *   对齐此格式，mixer 恒匹配）；rec 声明 16k/1ch（AFE/Opus 期望；
+     *   物理 RX 仍 2ch，read_cb 取 L 消化）。 */
     audio_manager_config_t acfg = DEFAULT_AUDIO_MANAGER_CONFIG();
     acfg.play_io.write_cb = xz_play_write_cb;
     acfg.rec_io.read_cb   = xz_rec_read_cb;
-    audio_manager_config_set_same_io_format(&acfg, XZ_SAMPLE_RATE, XZ_BITS,
-                                            XZ_BOARD_CHANNELS);
+    audio_manager_config_set_play_io_format(&acfg, XZ_PLAY_RATE, XZ_BITS,
+                                            XZ_PLAY_CHANNELS);
+    audio_manager_config_set_rec_io_format(&acfg, XZ_SAMPLE_RATE, XZ_BITS,
+                                           XZ_BOARD_CHANNELS);
     snprintf(acfg.mic_layout, sizeof(acfg.mic_layout), "%s", XZ_MIC_LAYOUT);
     ESP_GOTO_ON_ERROR(audio_manager_init(&acfg), fail, TAG, "audio_manager_init");
 
-    /* 3. open 两个 dev（16k 全双工）+ 增益在 open 之后（ES8389 语义） */
-    esp_codec_dev_sample_info_t fs = {
-        .sample_rate = XZ_SAMPLE_RATE,
-        .channel = XZ_BOARD_CHANNELS,
+    /* 3. open 两个 dev：spk 16k/2ch（锚点格式，双喇叭立体声）；mic 物理
+     *    层随 I2S TX 同控制器共享时钟同为 16k/2ch（数据由 read_cb 取 L
+     *    消化，AFE/Opus 消费 16k/1ch）。增益在 open 之后（ES8389 语义） */
+    esp_codec_dev_sample_info_t fs_play = {
+        .sample_rate = XZ_PLAY_RATE,
+        .channel = XZ_PLAY_CHANNELS,
         .bits_per_sample = XZ_BITS,
     };
-    ESP_GOTO_ON_ERROR(esp_codec_dev_open(spk, &fs) == ESP_CODEC_DEV_OK
+    esp_codec_dev_sample_info_t fs_mic = {
+        .sample_rate = XZ_PLAY_RATE,        /* 物理时钟对齐 TX，见上 */
+        .channel = XZ_PLAY_CHANNELS,
+        .bits_per_sample = XZ_BITS,
+    };
+    ESP_GOTO_ON_ERROR(esp_codec_dev_open(spk, &fs_play) == ESP_CODEC_DEV_OK
                         ? ESP_OK : ESP_FAIL, fail, TAG, "open spk");
-    ESP_GOTO_ON_ERROR(esp_codec_dev_open(mic, &fs) == ESP_CODEC_DEV_OK
+    ESP_GOTO_ON_ERROR(esp_codec_dev_open(mic, &fs_mic) == ESP_CODEC_DEV_OK
                         ? ESP_OK : ESP_FAIL, fail, TAG, "open mic");
     esp_codec_dev_set_out_vol(spk, 70);
     esp_codec_dev_set_in_gain(mic, 24.0);
 
-    /* 4. 下行 playback（URL 播放入口，v1 不主动 play；0.7.0 句柄制） */
+    /* 3.5 上行读取缓冲（PSRAM）+ xrun 探针基线（补充 6 保留） */
+    s_rec_scratch = heap_caps_malloc(XZ_REC_SCRATCH_BYTES,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_GOTO_ON_FALSE(s_rec_scratch, ESP_ERR_NO_MEM, fail, TAG,
+                      "rec scratch alloc");
+    s_rec_last_tick = 0;
+    s_rec_xrun_risk = 0;
+
+    /* 4. 下行 playback（★ §73.27 起正式启用：MCP 点歌的 URL 播放入口，
+     *    v1 曾 open 但从不 play 闲置至今。priority 压到 TTS feeder 之下 =
+     *    说话时音乐被音频策略自动静音让路，说完恢复；事件回调上抛
+     *    STARTED/FINISHED/ERROR 给 ai_music → 对话记录）。
+     *    ★ 任务摆位（2026-09-30 实机 WDT 实锤）：pvmp3 软解很重，core0
+     *    prio5 直接饿死 IDLE0（看门狗连拍）+ 饿死 CPU0 低优先级任务
+     *    （iot_button ADC 轮询 = PTT 无反应）——挪 core1、降到 prio4。 */
     audio_play_config_t pcfg = DEFAULT_AUDIO_PLAY_CONFIG();
+    pcfg.priority = XZ_MUSIC_PRIORITY;
+    pcfg.event_cb = xz_playback_event_cb;
+    pcfg.event_cb_ctx = NULL;
+    pcfg.block_until_done = false;
+    pcfg.task_config.task_core = 1;
+    pcfg.task_config.task_prio = 4;
     ESP_GOTO_ON_ERROR(audio_playback_open(&pcfg, &s_play), fail, TAG, "playback_open");
 
     /* 5. 上行 recorder：Opus 编码 + AFE（DIRECT 模式无唤醒词）
@@ -636,8 +862,23 @@ static esp_err_t session_setup(void)
     dec->params.opus.audio_info.channels = 1;
     dec->params.opus.audio_info.frame_duration = XZ_FRAME_MS;
     fcfg.feeder_task_config.task_core = 1;
+    fcfg.priority = XZ_TTS_PRIORITY;   /* ★ §73.27：TTS 压音乐（策略见宏注释） */
     ESP_GOTO_ON_ERROR(audio_feeder_open(&fcfg, &s_feeder), fail, TAG, "feeder_open");
     ESP_GOTO_ON_ERROR(audio_feeder_start(s_feeder), fail, TAG, "feeder_start");
+
+    /* 6.5 ★ §73.27 修复"音乐无声"：开官方混音器。
+     *    两个实锤根因：① 音频策略对**常驻 PLAYING 的 feeder**（start 后
+     *    state 恒 PLAYING）优先级恒赢，priority 1 的音乐被 can_player_output
+     *    全程 gate（PCM 全丢）= 无声主因；② mp3 解码出 16k/2ch 而 play_io
+     *    是 16k/1ch，非 mixer 直写路径无格式转换。mixer 模式下两路 PCM 都
+     *    写 render（内部 ch/rate/bit 转换 + 混音）→ 统一 16k/1ch 出 write_cb，
+     *    TTS 与音乐真并行（外放场景即同时响），policy 互斥失效（mixer unit
+     *    候选合并）。失败仅降级告警：TTS 通路不受影响。 */
+    esp_err_t mix_err = audio_processor_mixer_open(s_play, s_feeder);
+    if (mix_err != ESP_OK) {
+        ESP_LOGW(TAG, "mixer open failed: %s (music may be silent)",
+                 esp_err_to_name(mix_err));
+    }
 
     /* 7. 上行任务 + PSRAM 读缓冲 */
     s_uplink_buf = heap_caps_calloc(1, XZ_REC_READ_SIZE, MALLOC_CAP_SPIRAM);
@@ -695,10 +936,40 @@ static void xz_task(void *arg)
             continue;
         }
         if (cmd.id == XZ_CMD_START && s_state == XZ_STATE_IDLE) {
+            /* §73.26 反向抢占：听歌时用户按 PTT 说话 ⇒ 音乐自动停、租约
+             * 归还，会话才能拿到 ext_claim_exclusive（旧约定是"UI 层先停
+             * 播放"，现在音乐由 MCP 点起，归属模糊 ⇒ 统一在这里收口）。
+             * 未播放时无害。 */
+            media_player_service_stop();
             session_setup();
         } else if (cmd.id == XZ_CMD_STOP &&
                    (s_state == XZ_STATE_PREPARING || s_state == XZ_STATE_CHATTING)) {
             session_teardown();
+        } else if (cmd.id == XZ_CMD_MUSIC_PLAY) {
+            /* ★ §73.27：会话内点歌。url 先落常驻缓冲再播（av_processor 的
+             * simple_player 播放任务在建 IO 时仍引用字符串，堆串必须即刻
+             * 收编；换曲时 av_processor 内部先同步停旧流再起新流，覆盖安全）。
+             * esp_audio_simple_player_run = 同步建管线 + 异步起播，xz_task
+             * 短暂阻塞可接受；TCP/HTTP 拉流在播放任务里，不占会话。 */
+            bool has_play = (s_play != NULL);
+            if (has_play && cmd.url != NULL && cmd.url[0] != '\0') {
+                snprintf(s_music_url, sizeof(s_music_url), "%s", cmd.url);
+                esp_err_t err = audio_playback_play(s_play, s_music_url);
+                ESP_LOGI(TAG, "music play: %s (%.64s)",
+                         esp_err_to_name(err), s_music_url);
+            } else {
+                ESP_LOGW(TAG, "music play dropped (play=%d url=%p)",
+                         has_play, (void *)cmd.url);
+            }
+            if (cmd.url != NULL) {
+                heap_caps_free(cmd.url);
+            }
+        } else if (cmd.id == XZ_CMD_MUSIC_STOP) {
+            if (s_play != NULL) {
+                esp_err_t err = audio_playback_stop(s_play);
+                ESP_LOGI(TAG, "music stop: %s", esp_err_to_name(err));
+                /* s_music_playing 由 STOPPED 事件复位（stop 异步生效） */
+            }
         }
     }
 }
@@ -720,6 +991,10 @@ void xiaozhi_service_init(void)
     } else {
         ESP_LOGW(TAG, "ai_camera_init failed (vision tools disabled)");
     }
+    /* §73.19：MCP 打卡结果同走 XZ_EVT_TEXT(role=assistant) 进 AI 浮窗对话记录 */
+    ai_punch_set_result_cb(on_ai_camera_result);
+    /* §73.26：MCP 点歌的播放结果（失败/播完）同通道回传 —— 假链不再无声 */
+    ai_music_set_result_cb(on_ai_camera_result);
     ESP_LOGI(TAG, "xiaozhi_service ready (mic_layout=%s ch=%d, no wake word)",
              XZ_MIC_LAYOUT, XZ_BOARD_CHANNELS);
 }
@@ -794,4 +1069,48 @@ esp_err_t xiaozhi_service_get_vision_endpoint(char *url, size_t url_size,
 void xiaozhi_service_set_evt_cb(xiaozhi_evt_cb_t cb)
 {
     s_evt_cb = cb;
+}
+
+/* ---- §73.27 会话内点歌（方案 B）：见 xiaozhi_service.h ---- */
+
+esp_err_t xiaozhi_service_music_play(const char *url)
+{
+    if (url == NULL || url[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 点歌是会话内动作：会话不在则无从谈起（kicker 慢搜期间用户可能
+     * 已手动结束会话——如实告知即可，不影响状态机） */
+    if (s_state != XZ_STATE_CHATTING || s_play == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char *u = heap_caps_malloc(strlen(url) + 1, MALLOC_CAP_SPIRAM);
+    if (u == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    strcpy(u, url);
+    xz_cmd_t cmd = { .id = XZ_CMD_MUSIC_PLAY, .url = u };
+    if (xQueueSend(s_cmd_q, &cmd, 0) != pdPASS) {
+        heap_caps_free(u);
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t xiaozhi_service_music_stop(void)
+{
+    if (s_play == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xz_cmd_t cmd = { .id = XZ_CMD_MUSIC_STOP, .url = NULL };
+    return (xQueueSend(s_cmd_q, &cmd, 0) == pdPASS) ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void xiaozhi_service_set_music_evt_cb(xz_music_evt_cb_t cb)
+{
+    s_music_evt_cb = cb;
+}
+
+bool xiaozhi_service_music_playing(void)
+{
+    return s_music_playing;
 }

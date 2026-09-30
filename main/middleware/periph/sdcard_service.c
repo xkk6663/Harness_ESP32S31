@@ -173,6 +173,27 @@ esp_err_t sdcard_service_mount(void)
     return ESP_OK;
 }
 
+void sdcard_service_unmount(void)
+{
+    if (!s_mounted || !s_card) {
+        return;   /* 未挂载（没插卡）：无事可做 */
+    }
+    /* ★ §73.20 有序软重启的核心一步：
+     *  - f_unmount：把 FAT 脏缓冲全部回写、FATFS 关卷 —— 否则 esp_restart
+     *    落在写盘事务中间 = 文件系统脏（轻则下次挂载慢/丢最后一条记录，
+     *    重则 index.csv / face_db 索引半行）；
+     *  - 卡回 Standby 态 —— 软重启后 CMD0 重新枚举不再撞"卡还在 busy"。
+     * 失败不拦（马上就要重启了，尽力而为）；host 由 unmount 内部收尾。 */
+    esp_err_t err = esp_vfs_fat_sdcard_unmount(SDCARD_MNT_PATH, s_card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "unmount failed: %s (continuing, device is rebooting)", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "SD card unmounted (flush OK)");
+    }
+    s_mounted = false;
+    s_card = NULL;
+}
+
 bool sdcard_service_is_mounted(void)
 {
     return s_mounted;

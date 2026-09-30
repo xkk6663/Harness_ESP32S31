@@ -105,6 +105,13 @@ static volatile int  s_op_del_seq = 0;
 /** ★ 2026-09-28：本次任务是"流水-照片对账"（把照片已缺失的行整行删掉）。 */
 static volatile bool s_op_sync = false;
 
+/** §73.25 purge 模式：删某个人的打卡目录 + 该人全部 CSV 流水行
+ *  （face db 删人时的同步清理）。s_op_purge_prefix 存 "01_张三/"（**含尾
+ *  '/'**）—— CSV 的 photo 列（rec.rel）就是以它开头的相对路径，前缀比对
+ *  即可精准圈中该人的所有行，不依赖 name 列（改名/重名都不受影响）。 */
+static volatile bool s_op_purge = false;
+static char s_op_purge_prefix[PUNCH_SUBBUF + 2];   /* sub(≤21 可容 40) + '/' + NUL */
+
 /* ---------------------------------------------------------------------------
  *  小工具
  * ------------------------------------------------------------------------- */
@@ -425,11 +432,14 @@ static esp_err_t do_clear(const char *root)
  * @param root          /sdcard/attendance 绝对路径
  * @param del_seq       >0 = 只删这一行（单条删除模式）；0 = 不按 seq 删
  * @param drop_missing  true = "照片文件不存在"的行也删（对账模式）
+ * @param del_prefix    非空 = rel 以它开头的行整行删（§73.25 purge 模式，
+ *                      如 "01_张三/"）；NULL/空串 = 不按前缀删
  * @param out_dropped   输出：实际删掉的行数（可 NULL）
  * @return ESP_OK / ESP_ERR_NOT_FOUND（del_seq 模式下没找到那一行）
  */
 static esp_err_t csv_rewrite_filtered(const char *root, int del_seq,
-                                      bool drop_missing, int *out_dropped)
+                                      bool drop_missing, const char *del_prefix,
+                                      int *out_dropped)
 {
     char csv[PUNCH_PATH_MAX];
     char tmp[PUNCH_PATH_MAX];
@@ -486,6 +496,11 @@ static esp_err_t csv_rewrite_filtered(const char *root, int del_seq,
                         }
                     }
                 }
+            } else if (del_prefix != NULL && del_prefix[0] != '\0' &&
+                       strncmp(rec.rel, del_prefix, strlen(del_prefix)) == 0) {
+                /* §73.25 purge：该人的整段流水（rel 以 "<NN_姓名>/" 开头）。
+                 * 照片不用在这删 —— purge 分支已把整个目录连文件一起删了。 */
+                keep = false;
             } else if (drop_missing) {
                 /* 对账：stat 照片，不在卡上的行整行删掉 */
                 char photo[PUNCH_PATH_MAX];
@@ -600,11 +615,48 @@ static void punch_task(void *arg)
         goto finish;
     }
 
+    /* ---- §73.25 purge 模式（face db 删人 → 同步删打卡目录 + 该人全部流水行）---- */
+    if (s_op_purge) {
+        res.clear_op = true;
+        int dropped = 0;
+        /* 目录绝对路径 = root + '/' + prefix（prefix 含尾 '/'，先拼再去掉） */
+        char sub_abs[PUNCH_PATH_MAX];
+        if (!path_cap_ok(sizeof(sub_abs))) { res.err = ESP_ERR_INVALID_SIZE; goto finish; }
+        snprintf(sub_abs, sizeof(sub_abs), "%s/%s", root, s_op_purge_prefix);
+        sub_abs[strlen(sub_abs) - 1] = '\0';            /* 去掉 prefix 尾部的 '/' */
+        DIR *sd = opendir(sub_abs);
+        if (sd == NULL) {
+            ESP_LOGW(TAG, "purge: opendir(%s) failed, errno=%d (nothing to purge?)",
+                     sub_abs, errno);
+        } else {
+            int removed = 0;
+            struct dirent *se;
+            while ((se = readdir(sd)) != NULL) {
+                if (strcmp(se->d_name, ".") == 0 || strcmp(se->d_name, "..") == 0) continue;
+                char f[PUNCH_PATH_MAX];
+                f[0] = '\0';
+                path_append(f, sizeof(f), sub_abs);
+                if (path_join(f, sizeof(f), se->d_name) != 0) break;
+                if (unlink(f) == 0) removed++;
+            }
+            closedir(sd);
+            if (rmdir(sub_abs) == 0) removed++;
+            ESP_LOGI(TAG, "purge: %d entry(ies) removed under %s", removed, sub_abs);
+        }
+        res.err = csv_rewrite_filtered(root, 0, false, s_op_purge_prefix, &dropped);
+        if (res.err == ESP_ERR_NOT_FOUND) {
+            res.err = ESP_OK;       /* CSV 不存在 = 天然没有该人行，目录已删即达标 */
+        }
+        ESP_LOGI(TAG, "purge done (prefix=%s): %d csv row(s) dropped",
+                 s_op_purge_prefix, dropped);
+        goto finish;
+    }
+
     /* ---- 删单条模式（2026-09-28：face db 记录页的行内 DEL 按钮） ---- */
     if (s_op_del_seq > 0) {
         res.clear_op = true;            /* 复用"维护操作"语义：CAM 页不会弹打卡成功提示 */
         int dropped = 0;
-        res.err = csv_rewrite_filtered(root, s_op_del_seq, false, &dropped);
+        res.err = csv_rewrite_filtered(root, s_op_del_seq, false, NULL, &dropped);
         if (res.err == ESP_OK) {
             rmdir_empty_subdirs(root);
             ESP_LOGI(TAG, "delete seq=%d done: %d row(s) dropped", s_op_del_seq, dropped);
@@ -616,7 +668,7 @@ static void punch_task(void *arg)
     if (s_op_sync) {
         res.clear_op = true;
         int dropped = 0;
-        res.err = csv_rewrite_filtered(root, 0, true, &dropped);
+        res.err = csv_rewrite_filtered(root, 0, true, NULL, &dropped);
         if (res.err == ESP_OK) {
             rmdir_empty_subdirs(root);
             ESP_LOGI(TAG, "sync done: %d stale row(s) dropped", dropped);
@@ -832,6 +884,7 @@ finish:
     s_op_clear   = false;
     s_op_del_seq = 0;       /* ★ 2026-09-28：维护操作的标志同样要在退出前清干净 */
     s_op_sync    = false;
+    s_op_purge   = false;   /* §73.25 */
     s_busy       = false;
 
     /* ★★ §73.9（用户验收标准："cam 里面的 PSRAM 按需分配、即用即释放"）：
@@ -1089,6 +1142,33 @@ esp_err_t punch_service_log_sync(void)
     s_busy       = true;
     esp_err_t err = spawn_task();
     if (err != ESP_OK) s_op_sync = false;
+    return err;
+}
+
+esp_err_t punch_service_purge_person(uint16_t id, const char *name)
+{
+    if (id == FACE_DB_GUEST_ID || name == NULL || name[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_busy) return ESP_ERR_INVALID_STATE;
+    if (!sdcard_service_is_mounted()) return ESP_ERR_INVALID_STATE;
+
+    /* 目录名与写入侧同一生成器（序号 + 安全化姓名），保证与盘上目录对得上。
+     * ★ 在 face_db_delete **之后**调也没关系：attendance_dir 只做格式化，
+     *   不查库（人删了 id 也不会复用，目录名依旧唯一）。 */
+    char sub[PUNCH_SUBBUF];
+    esp_err_t e = face_db_attendance_dir(id, name, sub, sizeof(sub));
+    if (e != ESP_OK) return e;
+
+    snprintf(s_op_purge_prefix, sizeof(s_op_purge_prefix), "%s/", sub);
+    s_op_clear   = false;
+    s_op_del_seq = 0;
+    s_op_sync    = false;
+    s_op_purge   = true;
+    s_pend_valid = false;
+    s_busy       = true;
+    esp_err_t err = spawn_task();
+    if (err != ESP_OK) s_op_purge = false;    /* 起任务失败必须回滚标志 */
     return err;
 }
 

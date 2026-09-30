@@ -44,6 +44,18 @@ extern "C" {
  */
 esp_err_t sdcard_service_mount(void);
 
+/**
+ * @brief 卸载 SD 卡（§73.20 有序软重启专用；**平时不要调**）
+ *
+ * ★ 做两件事：f_unmount（FAT 脏缓冲回写 + 关卷）+ VFS 注销。
+ *   esp_restart 前必须走这一步——软重启落在写盘事务中间 = 文件系统脏，
+ *   这是"软重启比断电更危险"的最大来源。
+ * ★ 失败不拦（调用方马上就重启了）；未挂载时直接返回（幂等）。
+ * ★ 调用后 SD 相关 API（照片/录像/人脸库）不可用——只在重启前调用。
+ * ★ 任意任务可调；与其他任务并发 SD 访问由调用方保证（重启前的收尾阶段）。
+ */
+void sdcard_service_unmount(void);
+
 /** SD 卡当前是否已挂载（供 UI 置灰/提示用，任意线程可调） */
 bool sdcard_service_is_mounted(void);
 

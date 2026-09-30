@@ -10,8 +10,8 @@
  *
  * 并发模型：两个工具回调全部即时返回（无阻塞动作）：
  *   - get_status 纯查询，直接返回；
- *   - reboot 走 vTaskDelay(500) 后 esp_restart（给 MCP response 发送留时间，
- *     与 A3 SYSTEM_CMD 同款取舍：不清理，NVS 无在写操作）。
+ *   - reboot 走 vTaskDelay(500) 后 safe_reboot_perform（§73.20：给 MCP
+ *     response 发送留时间 + 有序收尾，不再裸 esp_restart）。
  *   - wifi.set_enabled 已阉割（§58b 勘误，见下方勘误注释）。
  */
 
@@ -28,6 +28,8 @@
 
 #include "ai_device.h"
 #include "middleware/net/wifi_manager.h"
+#include "middleware/periph/safe_reboot.h"
+#include "xiaozhi_service.h"   /* reboot 收尾时尽力停会话（§73.20） */
 
 static const char *TAG = "AI_DEV";
 
@@ -54,12 +56,15 @@ static esp_mcp_value_t cb_wifi_get_status(const esp_mcp_property_list_t *props)
     return esp_mcp_value_create_string(s_ret);
 }
 
-/* 延迟重启（独立任务；给 MCP response 发送留 500ms） */
+/* 延迟重启（独立任务；给 MCP response 发送留 500ms）。
+ * §73.20：重启本体从裸 esp_restart 换成 safe_reboot_perform（停相机/卸 SD/
+ * 停 Wi-Fi/屏待机）——裸重启已实机复现"软重启后黑屏卡死"，见 §73.20。 */
 static void reboot_task(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    xiaozhi_service_stop();   /* 尽力停会话（异步受理制，不等 teardown） */
+    safe_reboot_perform("mcp device.reboot");
 }
 
 static esp_mcp_value_t cb_reboot(const esp_mcp_property_list_t *props)

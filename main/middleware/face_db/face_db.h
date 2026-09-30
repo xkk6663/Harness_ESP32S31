@@ -183,6 +183,12 @@ esp_err_t face_db_get_feat(const face_person_t *p, float *out, int dim);
  * @param thr    命中阈值；`score < thr` 时 matched=false（person_id 语义上是访客）
  * @param out    结果（不能为 NULL）
  * @return 命中的**槽位号**（0..count-1）；未命中 / 空库 / 库未就绪返回 -1
+ *
+ * @note ★ §73.22：库里非空且有可比条目时，**未命中也回填 out->person**
+ *       （= 库内最高分者）与 out->score。这样上层日志能回答
+ *       "这个 0.55 是跟谁比的" —— 区分"底片质量差"与"库里是别人"。
+ *       matched 仍只由阈值决定；未命中的调用方应继续按访客处理，
+ *       不得把 out->person 当成"已识别的人"。
  */
 int face_db_find_best(const float *feat, int dim, float thr, face_db_match_t *out);
 
