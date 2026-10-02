@@ -35,14 +35,12 @@ static lv_obj_t *s_connect_btn;
 static lv_obj_t *s_ssid_lab;      /* target SSID shown in connect sub-view header */
 static lv_obj_t *s_cancel_btn;
 static lv_timer_t *s_poll_timer;
-static lv_obj_t *s_mode_btn;
-static lv_obj_t *s_mode_lab;
 static lv_obj_t *s_power_btn;
 static lv_obj_t *s_power_lab;
 static lv_obj_t *s_ap_info_label;
 static lv_obj_t *s_clients_label;
-static wifi_role_t s_last_role = (wifi_role_t)-1;
-static int s_last_client_count = -1;
+/* ★ §74 补充 4：APSTA 常开后"AP↔STA 模式切换"按钮已删 —— 热点常开 +
+ * STA 自动连是唯一形态，二选一开关没有存在意义（还是上轮崩机的引爆点）。 */
 
 static char s_cur_ssid[WIFI_SSID_LEN_MAX + 1];
 static char s_ip[16];
@@ -90,7 +88,6 @@ static void ap_click_cb(lv_event_t *e);
 static void show_connect_view(bool enter)
 {
     lv_obj_set_hidden(s_power_btn, enter);
-    lv_obj_set_hidden(s_mode_btn, enter);
     lv_obj_set_hidden(s_start_btn, enter);
     lv_obj_set_hidden(s_ap_list, enter);
     lv_obj_set_hidden(s_pwd_row, !enter);
@@ -187,13 +184,6 @@ static void ap_click_cb(lv_event_t *e)
     show_connect_view(true);
 }
 
-static void mode_btn_cb(lv_event_t *e)
-{
-    (void)e;
-    wifi_role_t cur = wifi_manager_get_role();
-    wifi_manager_set_role(cur == WIFI_ROLE_AP ? WIFI_ROLE_STA : WIFI_ROLE_AP);
-}
-
 static void power_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -220,35 +210,11 @@ static void poll_cb(lv_timer_t *t)
     lv_obj_set_style_bg_color(s_power_btn, w_on ? COL_GREEN : COL_RED, 0);
     lv_label_set_text_static(s_power_lab, w_on ? LV_SYMBOL_OK"  WiFi: ON" : LV_SYMBOL_CLOSE"  WiFi: OFF");
 
-    /* 角色变化：按 AP/STA 显示对应控件 */
-    wifi_role_t role = wifi_manager_get_role();
-    if (role != s_last_role) {
-        s_last_role = role;
-        bool is_ap = (role == WIFI_ROLE_AP);
-        lv_label_set_text(s_mode_lab, is_ap ? LV_SYMBOL_WIFI"  Mode: AP (tap->STA)"
-                                            : LV_SYMBOL_WIFI"  Mode: STA (tap->AP)");
-        if (is_ap) {
-            lv_obj_set_hidden(s_start_btn, true);
-            lv_obj_set_hidden(s_ap_list, true);
-            lv_obj_set_hidden(s_pwd_row, true);
-            lv_obj_set_hidden(s_ap_info_label, false);
-            lv_obj_set_hidden(s_clients_label, false);
-            char ip[16];
-            wifi_manager_get_ip(ip, sizeof(ip));
-            lv_label_set_text_fmt(s_ap_info_label,
-                                  "AP hotspot: %s\npassword: %s\nboard IP: %s",
-                                  wifi_manager_get_ap_ssid(), "800180Xiao",
-                                  ip[0] ? ip : "starting...");
-            s_last_client_count = -1;   /* 触发刷新一次 */
-        } else {
-            lv_obj_set_hidden(s_start_btn, false);
-            lv_obj_set_hidden(s_ap_list, false);
-            lv_obj_set_hidden(s_ap_info_label, true);
-            lv_obj_set_hidden(s_clients_label, true);
-        }
-    }
+    /* ★ §74 补充 4：APSTA 常开 —— 角色分支整段删除，AP 信息/客户端列表与
+     * 扫描连接控件**同时**可见（热点常开 + 可连路由，本就是并存的两件事）。
+     * 热点信息随客户端/IP 变化刷新（放进下方客户端刷新块）。 */
 
-    /* AP 模式下每轮刷新客户端连接状态与 IP（IP 是后到的，不能只看 count） */
+    /* AP 热点信息 + 客户端连接状态（角色恒为 AP/APSTA，始终刷新） */
     if (wifi_manager_get_role() == WIFI_ROLE_AP) {
         int n = wifi_manager_get_client_count();
         char ips[4][16];
@@ -265,6 +231,13 @@ static void poll_cb(lv_timer_t *t)
             }
         }
         lv_label_set_text(s_clients_label, txt);
+
+        char ip[16];
+        wifi_manager_get_ip(ip, sizeof(ip));
+        lv_label_set_text_fmt(s_ap_info_label,
+                              "AP hotspot: %s\npassword: %s\nboard IP: %s",
+                              wifi_manager_get_ap_ssid(), "800180Xiao",
+                              ip[0] ? ip : "starting...");
     }
 
     if (s_scan_done) {
@@ -307,27 +280,16 @@ static lv_obj_t *wifi_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_power_lab, COL_DARK, 0);
     lv_obj_add_event_cb(s_power_btn, power_btn_cb, LV_EVENT_CLICKED, NULL);
 
-    /* role toggle: AP <-> STA */
-    s_mode_btn = lv_button_create(page);
-    lv_obj_set_size(s_mode_btn, BSP_LCD_H_RES - 80, 40);
-    lv_obj_set_style_bg_color(s_mode_btn, COL_CYAN, 0);
-    lv_obj_set_style_radius(s_mode_btn, 10, 0);
-    s_mode_lab = lv_label_create(s_mode_btn);
-    lv_obj_center(s_mode_lab);
-    lv_obj_set_style_text_color(s_mode_lab, COL_DARK, 0);
-    lv_obj_add_event_cb(s_mode_btn, mode_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    /* AP info (only visible in AP mode) */
+    /* ★ §74 补充 4：APSTA 常开 —— 热点信息/客户端列表与扫描控件常驻同屏，
+     * 不再有"模式切换"按钮 */
     s_ap_info_label = lv_label_create(page);
     lv_label_set_text_static(s_ap_info_label, "");
     lv_obj_set_style_text_color(s_ap_info_label, COL_TEXT, 0);
-    lv_obj_set_hidden(s_ap_info_label, true);
 
-    /* AP 客户端列表（仅 AP 模式可见） */
+    /* AP 客户端列表 */
     s_clients_label = lv_label_create(page);
     lv_label_set_text_static(s_clients_label, "");
     lv_obj_set_style_text_color(s_clients_label, COL_TEXT, 0);
-    lv_obj_set_hidden(s_clients_label, true);
 
     /* start / scan button */
     s_start_btn = lv_button_create(page);
@@ -437,10 +399,8 @@ static void wifi_destroy(lv_obj_t *page)
     s_state_label = s_start_btn = s_ap_list = s_pwd_row = NULL;
     s_pwd_ta = s_kb = s_connect_btn = NULL;
     s_ssid_lab = s_cancel_btn = NULL;
-    s_mode_btn = s_mode_lab = s_ap_info_label = s_clients_label = NULL;
+    s_ap_info_label = s_clients_label = NULL;
     s_power_btn = s_power_lab = NULL;
-    s_last_role = (wifi_role_t)-1;
-    s_last_client_count = -1;
 }
 
 const Page_t Page_Wifi = {

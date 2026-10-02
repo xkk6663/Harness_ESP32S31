@@ -171,7 +171,7 @@ static wifi_evt_cb_t s_sys_cb;
 static bool s_connected;
 static bool s_enabled = true;
 static char s_ip[16];
-static wifi_role_t s_role = WIFI_ROLE_STA;   /* 默认上电 STA（连已保存路由），UI 可切 AP */
+static wifi_role_t s_role = WIFI_ROLE_AP;   /* ★ §74 默认上电 APSTA（"AP 角色"=热点+STA 并发），UI 可切纯 STA */
 
 /* AP 客户端表 */
 #define AP_MAX_CLIENTS 4
@@ -199,6 +199,11 @@ static wifi_store_t s_pending_store;       /* 自动连接扫描期间暂存凭�
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_heal_timer;
 static bool s_wifi_stopped;    /* give-up 后 esp_wifi_stop 过，自愈时要先 start */
+/* ★ §74 补充 3：角色切换/主开关**主动**停 radio 的意图标志。
+ * esp_wifi_stop() 会异步派发 STA_DISCONNECTED，事件与调用方"清状态"赛跑；
+ * 没有此标志时 handler 会在 radio 已停的窗口里去重连（set_config →
+ * ESP_ERR_WIFI_STOP_STATE → ESP_ERROR_CHECK abort，真机已炸过一次）。 */
+static volatile bool s_intentional_down = false;
 
 /* ★ §41 断连自愈：give up ≠ 永久死亡。
  * 实证（2026-09-26）：reason=200 bcn_timeout 后 10 连击 NO_AP_FOUND（两个 SSID
@@ -216,8 +221,14 @@ static void heal_timer_arm(void)
 static void heal_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_connected || s_role != WIFI_ROLE_STA) {
-        return;                       /* 兜底：连着/AP 角色不动作 */
+    /* ★ §74 补充 3：主开关关着就别自愈上电 */
+    if (!s_enabled) {
+        return;
+    }
+    /* ★ §74：APSTA 角色同样要自愈 STA —— 热点虽在，路由可能回来了；
+     * 只有"STA 已连上"才不动作（原版连 AP 角色也一并跳过，不适配 APSTA）。 */
+    if (s_connected) {
+        return;
     }
     if (s_phase != PHASE_IDLE || s_have_active) {
         return;                       /* 正在尝试或用户手动流程中，不打扰 */
@@ -227,6 +238,7 @@ static void heal_timer_cb(void *arg)
             return;
         }
         s_wifi_stopped = false;
+        s_intentional_down = false;   /* radio 活了，恢复正常重连语义 */
     }
     ESP_LOGW(TAG, "heal: retry auto-connect (router may be back)");
     wifi_manager_auto_connect();
@@ -292,7 +304,17 @@ static void apply_candidate(const wifi_cred_t *cred)
     } else {
         sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+    /* ★ §74 补充 3：软化 —— radio 正被停时 set_config 返回
+     * STOP_STATE，绝不能 abort（真机已炸过一次）；记日志回 IDLE，
+     * 是否重连交给调用方的意图标志/状态位决定。 */
+    esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    if (cfg_err != ESP_OK) {
+        ESP_LOGW(TAG, "set_config(STA) fail %s (radio down?), skip reconnect",
+                 esp_err_to_name(cfg_err));
+        s_phase = PHASE_IDLE;
+        s_have_active = false;
+        return;
+    }
 
     strncpy(s_cur_ssid, cred->ssid, sizeof(s_cur_ssid) - 1);
     s_retry_num = 0;
@@ -327,7 +349,13 @@ static void next_candidate_or_giveup(void)
         s_have_active = false;
         s_connected = false;
         ESP_LOGE(TAG, "all saved Wi-Fi failed after retries, give up (heal timer armed)");
-        s_enabled = false; esp_wifi_stop();  /* auto-disable after 5 retries */
+        if (s_role == WIFI_ROLE_AP) {
+            /* ★ §74：APSTA 下热点必须活着 —— 只断 STA 侧（保留热点与网页
+             * 管理端），60s 后 heal 自愈重试路由（heal cb 已放开 AP 角色） */
+            esp_wifi_disconnect();
+        } else {
+            s_enabled = false; esp_wifi_stop();  /* auto-disable after 5 retries */
+        }
         s_wifi_stopped = true;
         heal_timer_arm();                    /* ★ §41：60s 后自愈重扫 */
         notify(WIFI_EVT_ALL_FAILED, NULL);
@@ -389,9 +417,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             s_connected = false;
             notify(WIFI_EVT_STA_LEFT, NULL);
         }
-    } else if (base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
-        ip_event_ap_staipassigned_t *as =
-            (ip_event_ap_staipassigned_t *)event_data;
+    } else if (base == IP_EVENT && event_id == IP_EVENT_ASSIGNED_IP_TO_CLIENT) {
+        /* ★ IDF v6.1 改名：旧名 IP_EVENT_AP_STAIPASSIGNED / ip_event_ap_staipassigned_t
+         *   已 deprecated，新结构体 ip_event_assigned_ip_to_client_t 的 mac/ip
+         *   字段与旧版一致，纯改名（esp_netif_types.h:100/172）。 */
+        ip_event_assigned_ip_to_client_t *as =
+            (ip_event_assigned_ip_to_client_t *)event_data;
         if (xSemaphoreTake(s_client_mtx, portMAX_DELAY) == pdTRUE) {
             for (int i = 0; i < AP_MAX_CLIENTS; i++) {
                 if (s_clients[i].used && memcmp(s_clients[i].mac, as->mac, 6) == 0) {
@@ -410,6 +441,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
          * "内部 RAM 被挤干"同源；若 largest 正常，则更像 RF/共存问题。 */
         ESP_LOGW(TAG, "disconnected from \"%s\", reason=%d | " MEM_DIAG_FMT,
                  s_cur_ssid, d->reason, MEM_DIAG_ARGS(0));
+
+        /* ★ §74 补充 3：主动下电（角色切换/主开关/give-up）引发的断连，
+         * 绝不重连 —— radio 可能已停，set_config 会 STOP_STATE abort */
+        if (s_intentional_down || !s_enabled) {
+            ESP_LOGI(TAG, "intentional down (role/master switch), no reconnect");
+            notify(WIFI_EVT_DISCONNECTED, NULL);
+            return;
+        }
 
         if (s_phase == PHASE_TRYING) {
             /* 连接阶段失败：计数重试 */
@@ -492,6 +531,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
+/* ★ §74 前向声明（wifi_manager_init 里 ap_radio_start 在定义之前调用） */
+static void ap_radio_start(void);
+
 void wifi_manager_init(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -524,7 +566,7 @@ void wifi_manager_init(void)
                                                &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_AP_STAIPASSIGNED,
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT,
                                                &wifi_event_handler, NULL));
 
     /* 重连定时器（单次，1s） */
@@ -544,9 +586,9 @@ void wifi_manager_init(void)
 
     s_client_mtx = xSemaphoreCreateMutex();
 
-    /* 默认上电 STA 模式：开发板自动连已保存路由；UI 可切 AP 开热点 */
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    /* ★ §74：默认上电 APSTA —— 热点常开（手机随时连 http://192.168.4.1
+     *   进管理端）+ STA 尽力连已保存路由。UI 仍可切纯 STA。 */
+    ap_radio_start();
     /* ★ F48 针对 reason=200 (WIFI_REASON_BEACON_TIMEOUT) 的实验项：
      * 默认 WIFI_PS_MIN_MODEM 让射频在 DTIM 之间休眠，靠软件按时唤醒收 beacon；
      * 本工程早期 CPU 长期被 RGB bounce 中断（1699 次/秒 x ~300 us）占满 ⇒
@@ -558,7 +600,8 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     wifi_manager_auto_connect();
 
-    ESP_LOGI(TAG, "wifi STA init done, auto-connecting saved creds");
+    ESP_LOGI(TAG, "wifi APSTA init done: hotspot " AP_DEFAULT_SSID
+             " up + STA auto-connecting saved creds");
 }
 
 /* AP DHCP 不下发默认网关(option 3)与 DNS(option 6)：
@@ -585,7 +628,19 @@ static void ap_setup_dhcp_no_route(void)
     ESP_LOGI(TAG, "AP dhcps: no gateway/dns announced");
 }
 
+/* ★ §74：AP 角色升级为 **APSTA 并发**——热点常开（手机/PC 连上来用网页管理端），
+ *   同时 STA 尽力自动连已保存路由（小智对话 / PC 副屏 / NTP 校时全程不断）。
+ *   单射频分时复用：STA 连上路由后 AP 信道自动跟随（已连手机会被踢重连一次）。
+ *   管理流量（几十 KB/s）对 STA 业务基本无感。
+ *   开机默认即 APSTA（热点从上电就可用）；UI 仍可切纯 STA。 */
 static void start_ap_mode(void)
+{
+    ap_radio_start();
+    /* STA 侧尽力连已保存路由（无保存记录时直接返回，热点不受影响） */
+    wifi_manager_auto_connect();
+}
+
+static void ap_radio_start(void)
 {
     wifi_config_t ap_cfg = {0};
     strncpy((char *)ap_cfg.ap.ssid, AP_DEFAULT_SSID, sizeof(ap_cfg.ap.ssid) - 1);
@@ -594,10 +649,19 @@ static void start_ap_mode(void)
     ap_cfg.ap.channel = AP_CHANNEL;
     ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ap_cfg.ap.max_connection = 4;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
     ap_setup_dhcp_no_route();
+    /* ★ §74 补充 7：两侧带宽钉死 HT20 —— APSTA 共射频，任何一侧带宽变动
+     * 都是一次完整射频重调，会波及另一侧：实证为"AP 客户端断开 → AP 接口
+     * HT40↔HT20 抖动（wifi:new:<7,0>,old:<7,2>）→ STA 侧 DELBA/断流甚至
+     * 被路由器踢掉"。路由器本就是 CBW20（phytype:CBW20-SGI），两侧钉死
+     * HT20 零吞吐损失，重配置触发源彻底消除。
+     * ★ IDF v6.1 枚举改名：WIFI_BW_HT20 已移除，新名 WIFI_BW20（=1，
+     * esp_wifi_types_generic.h:293），语义同为 20MHz。 */
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW20));
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20));
 }
 
 void wifi_manager_set_role(wifi_role_t role)
@@ -605,17 +669,22 @@ void wifi_manager_set_role(wifi_role_t role)
     if (role == s_role) {
         return;
     }
-    esp_wifi_stop();
-    esp_timer_stop(s_reconnect_timer);
+    /* ★ §74 补充 3：先清状态、立意图标志，再停 radio —— 断连事件与这里
+     * 赛跑时 handler 必须看到"这是主动下电"（详见 s_intentional_down 注释） */
     s_phase = PHASE_IDLE;
     s_have_active = false;
     s_connected = false;
     s_ip[0] = 0;
+    s_intentional_down = true;
+    esp_wifi_stop();
+    esp_timer_stop(s_reconnect_timer);
     s_role = role;
 
     if (role == WIFI_ROLE_AP) {
+        s_intentional_down = false;      /* 新 radio 已起，结束意图窗口 */
         start_ap_mode();
     } else {
+        s_intentional_down = false;
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_start());
         wifi_manager_auto_connect();   /* 切回 STA：读 NVS 自动连 */
@@ -748,6 +817,7 @@ void wifi_manager_set_enabled(bool on)
 {
     s_enabled = on;
     if (on) {
+        s_intentional_down = false;      /* 主动上电，结束意图窗口 */
         ESP_ERROR_CHECK(esp_wifi_start());
         if (s_role == WIFI_ROLE_AP) {
             /* AP mode starts DHCP in start_ap_mode already; just restart */
@@ -757,11 +827,13 @@ void wifi_manager_set_enabled(bool on)
         }
         ESP_LOGI(TAG, "wifi enabled");
     } else {
+        /* ★ §74 补充 3：先清状态、立意图标志，再停 radio（同 set_role） */
         esp_timer_stop(s_reconnect_timer);
         s_phase = PHASE_IDLE;
         s_have_active = false;
         s_connected = false;
         s_ip[0] = 0;
+        s_intentional_down = true;
         esp_wifi_stop();
         ESP_LOGI(TAG, "wifi disabled (radio off)");
     }

@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>端侧视觉终端 · 管理端</title>
+<style>
+  :root{ --bg:#121212; --card:#1e1e1e; --line:#333; --txt:#e6e6e6; --dim:#9a9a9a;
+         --acc:#4a9eff; --ok:#3fb96f; --warn:#e0a040; --bad:#e05b5b; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ background:var(--bg); color:var(--txt);
+        font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header{ display:flex; align-items:center; gap:10px; padding:14px 16px;
+          background:var(--card); border-bottom:1px solid var(--line);
+          position:sticky; top:0; z-index:5; }
+  header h1{ font-size:17px; font-weight:600; flex:1; }
+  #dot{ width:10px; height:10px; border-radius:50%; background:var(--bad); }
+  #dot.on{ background:var(--ok); }
+  nav{ display:flex; gap:8px; padding:10px 16px; background:var(--card);
+       border-bottom:1px solid var(--line); position:sticky; top:53px; z-index:5; }
+  nav button{ flex:1; padding:9px 0; border:1px solid var(--line); border-radius:8px;
+              background:transparent; color:var(--dim); font-size:14px; }
+  nav button.on{ background:var(--acc); border-color:var(--acc); color:#fff; }
+  main{ padding:14px 16px 40px; max-width:960px; margin:0 auto; }
+  .page{ display:none; } .page.on{ display:block; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:10px;
+         padding:12px; margin-bottom:12px; }
+  .muted{ color:var(--dim); font-size:13px; }
+  .evt{ display:flex; gap:10px; align-items:center; padding:8px 0;
+        border-bottom:1px solid var(--line); }
+  .evt:last-child{ border-bottom:none; }
+  .evt img, .evt .noimg{ width:56px; height:56px; border-radius:8px; object-fit:cover;
+                         background:#000; flex:none; display:flex; align-items:center;
+                         justify-content:center; color:var(--dim); font-size:20px; }
+  .evt .t{ font-size:12px; color:var(--dim); }
+  .evt .err{ color:var(--bad); font-size:12px; }
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
+  th{ color:var(--dim); font-weight:500; }
+  td img{ width:44px; height:44px; border-radius:6px; object-fit:cover; }
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .chips button{ padding:7px 14px; border:1px solid var(--line); border-radius:16px;
+                 background:transparent; color:var(--txt); font-size:13px; }
+  .chips button.on{ background:var(--acc); border-color:var(--acc); color:#fff; }
+  .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+  .item{ background:var(--card); border:1px solid var(--line); border-radius:10px;
+         overflow:hidden; cursor:pointer; position:relative; }
+  .item img{ width:100%; height:110px; object-fit:cover; display:block; background:#000; }
+  .item .nm{ padding:6px 8px; font-size:12px; white-space:nowrap; overflow:hidden;
+             text-overflow:ellipsis; }
+  .item .badge{ position:absolute; top:6px; left:6px; background:rgba(0,0,0,.65);
+                color:#fff; font-size:11px; padding:2px 7px; border-radius:10px; }
+  .item.dir img{ height:110px; opacity:.25; }
+  #lightbox{ position:fixed; inset:0; background:rgba(0,0,0,.92); display:none;
+             z-index:20; align-items:center; justify-content:center; flex-direction:column; }
+  #lightbox.on{ display:flex; }
+  #lightbox img{ max-width:96vw; max-height:82vh; object-fit:contain; }
+  #lightbox .cap{ color:#ccc; font-size:13px; padding:10px; }
+  #lightbox .x{ position:absolute; top:12px; right:16px; color:#fff; font-size:30px; }
+  #player{ position:fixed; inset:0; background:rgba(0,0,0,.95); display:none;
+           z-index:20; flex-direction:column; align-items:center; justify-content:center; }
+  #player.on{ display:flex; }
+  #player .stage{ width:min(96vw,640px); aspect-ratio:4/3; background:#000;
+                  border-radius:10px; display:flex; align-items:center;
+                  justify-content:center; overflow:hidden; }
+  #player .stage img{ max-width:100%; max-height:100%; }
+  #player .ctl{ width:min(96vw,640px); margin-top:12px; }
+  #player input[type=range]{ width:100%; }
+  #player .btns{ display:flex; gap:10px; margin-top:10px; }
+  #player button{ flex:1; padding:10px 0; border-radius:8px; border:1px solid var(--line);
+                  background:var(--card); color:var(--txt); font-size:14px; }
+  #player button.pri{ background:var(--acc); border-color:var(--acc); color:#fff; }
+  .spin{ display:inline-block; width:14px; height:14px; border:2px solid var(--dim);
+         border-top-color:#fff; border-radius:50%; animation:sp 1s linear infinite;
+         vertical-align:-2px; }
+  @keyframes sp{ to{ transform:rotate(360deg);} }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span>
+  <h1>端侧视觉终端 · 管理端</h1>
+  <span class="muted" id="st">连接中…</span>
+</header>
+<nav>
+  <button data-p="live" class="on">实时打卡</button>
+  <button data-p="log">打卡记录</button>
+  <button data-p="media">媒体浏览</button>
+  <button data-p="manage">壁纸/音乐</button>
+</nav>
+<main>
+  <div id="page-live" class="page on">
+    <div class="card">
+      <div class="muted" style="margin-bottom:6px">
+        识别到库内人脸并完成打卡后，1 秒内出现在这里
+      </div>
+      <div id="live-list"><div class="muted">暂无打卡事件，等待识别…</div></div>
+    </div>
+  </div>
+  <div id="page-log" class="page">
+    <div class="card">
+      <button onclick="loadLog()" id="logbtn">刷新记录</button>
+      <span class="muted" id="logstat" style="margin-left:10px"></span>
+      <div style="overflow-x:auto; margin-top:10px">
+        <table id="logtbl"><thead><tr>
+          <th>照片</th><th>姓名</th><th>日期</th><th>时间</th><th>分数</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+  <div id="page-media" class="page">
+    <div class="chips" id="dirs"></div>
+    <div class="card">
+      <div class="muted" id="mediapath" style="margin-bottom:10px"></div>
+      <div class="grid" id="grid"></div>
+      <div class="muted" id="mediastat" style="margin-top:10px"></div>
+    </div>
+  </div>
+  <div id="page-manage" class="page">
+    <div class="card">
+      <b>设备壁纸</b> <span class="muted" id="wp-cur"></span>
+      <div style="margin:10px 0">
+        <input type="file" id="wp-file" accept="image/jpeg" style="display:none">
+        <button onclick="document.getElementById('wp-file').click()">上传壁纸（800×480 JPEG）</button>
+        <span class="muted" id="wp-up"></span>
+      </div>
+      <div class="muted" style="margin-bottom:8px">点「设为壁纸」立即切换（设备端渐变过渡）；「删」从池中移除。上传非 800×480 图会被设备拒收。</div>
+      <div class="grid" id="wp-grid"></div>
+    </div>
+    <div class="card">
+      <b>音乐（MP3/WAV）</b>
+      <div style="margin:10px 0">
+        <input type="file" id="mu-file" accept=".mp3,.wav" style="display:none">
+        <button onclick="document.getElementById('mu-file').click()">上传音乐</button>
+        <span class="muted" id="mu-up"></span>
+      </div>
+      <div id="mu-list"></div>
+    </div>
+  </div>
+</main>
+
+<div id="lightbox" onclick="lbClose()">
+  <span class="x">&times;</span>
+  <img id="lb-img" alt="">
+  <audio id="lb-audio" controls style="display:none; width:min(90vw,480px)"></audio>
+  <div class="cap" id="lb-cap"></div>
+</div>
+
+<div id="player">
+  <div class="stage"><img id="pv-img" alt=""></div>
+  <div class="ctl">
+    <input type="range" id="pv-slider" min="0" max="0" value="0">
+    <div class="muted" id="pv-info"></div>
+    <div class="btns">
+      <button class="pri" id="pv-play" onclick="pvToggle()">播放</button>
+      <button onclick="pvClose()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const enc = encodeURIComponent;
+const esc = s => (s+'').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtSize = n => n >= 1048576 ? (n/1048576).toFixed(1)+' MB'
+                   : n >= 1024 ? (n/1024).toFixed(0)+' KB' : n+' B';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------- 导航 ---------- */
+document.querySelectorAll('nav button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.remove('on'));
+    document.querySelectorAll('.page').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    $('#page-' + b.dataset.p).classList.add('on');
+    if (b.dataset.p === 'log'  && !logLoaded) loadLog();
+    if (b.dataset.p === 'media') loadDir(curDir);
+    if (b.dataset.p === 'manage') loadManage();
+  };
+});
+
+/* ---------- 打卡事件轮询（1s；gen 代际号机制，见 web_server.c） ---------- */
+let gen = -1;
+async function pollPunch() {
+  try {
+    const r = await fetch('/api/punch/last?gen=' + gen, {cache:'no-store'});
+    const j = await r.json();
+    gen = j.gen;
+    $('#dot').classList.add('on');
+    $('#st').textContent = '已连接';
+    if (j.has === 1 && j.type === 'punch') addLive(j);
+  } catch (e) {
+    $('#dot').classList.remove('on');
+    $('#st').textContent = '连接断开，重试中…';
+  }
+  setTimeout(pollPunch, 1000);
+}
+function addLive(j) {
+  const list = $('#live-list');
+  if (list.querySelector('.muted')) list.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'evt';
+  const ok = j.err === 'ESP_OK' || j.err === 'ESP_OK';
+  const t = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+  const img = j.err === 'ESP_OK' && j.path
+    ? `<img src="/api/media/file?path=${enc(j.path)}" onerror="this.outerHTML='<div class=noimg>&#128100;</div>'">`
+    : `<div class="noimg">&#9888;</div>`;
+  div.innerHTML = `${img}
+    <div style="flex:1">
+      <div><b>${esc(j.name)}</b>
+        ${j.person_id === 0 ? '<span class="muted">（访客）</span>' : ''}
+      </div>
+      <div class="t">${t} · 分数 ${Number(j.score).toFixed(2)}
+        ${j.time_valid ? '' : ' · <span class="err">未校时</span>'}
+        ${j.err === 'ESP_OK' ? '' : `<span class="err">${esc(j.err)}</span>`}
+      </div>
+    </div>`;
+  list.prepend(div);
+  while (list.children.length > 30) list.lastChild.remove();
+}
+pollPunch();
+
+/* ---------- 打卡记录 ---------- */
+let logLoaded = false;
+async function loadLog() {
+  $('#logstat').innerHTML = '<span class="spin"></span> 读取中…';
+  try {
+    const r = await fetch('/api/attendance/list', {cache:'no-store'});
+    const j = await r.json();
+    const tb = $('#logtbl tbody');
+    tb.innerHTML = j.rows.map(x => `<tr>
+      <td>${x.rel ? `<img src="/api/media/file?path=${enc('/sdcard/attendance/'+x.rel)}"
+            onerror="this.style.visibility='hidden'">` : ''}</td>
+      <td>${esc(x.name)}${x.person_id === 0 ? ' <span class="muted">访客</span>' : ''}</td>
+      <td>${esc(x.date)}</td><td>${esc(x.time)}</td>
+      <td>${Number(x.score).toFixed(2)}</td>
+    </tr>`).join('');
+    $('#logstat').textContent = `共 ${j.rows.length} 条`;
+    logLoaded = true;
+  } catch (e) {
+    $('#logstat').textContent = '读取失败';
+  }
+}
+
+/* ---------- 媒体浏览 ---------- */
+const QUICK = ['/sdcard/photos', '/sdcard/videos', '/sdcard/attendance',
+               '/sdcard/music', '/sdcard/wallpaper', '/sdcard'];
+let curDir = '/sdcard/photos';
+const DIRNAMES = {'/sdcard/photos':'拍照', '/sdcard/videos':'录像',
+                  '/sdcard/attendance':'打卡照', '/sdcard/music':'录音',
+                  '/sdcard/wallpaper':'壁纸池', '/sdcard':'SD 根目录'};
+function renderChips() {
+  $('#dirs').innerHTML = QUICK.map(p =>
+    `<button data-d="${p}" class="${p === curDir ? 'on' : ''}">${DIRNAMES[p]}</button>`
+  ).join('');
+  document.querySelectorAll('#dirs button').forEach(b => {
+    b.onclick = () => loadDir(b.dataset.d);
+  });
+}
+const isImg = n => /\.(jpg|jpeg|png|gif)$/i.test(n);
+const isAvi = n => /\.avi$/i.test(n);
+const isAud = n => /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(n);   /* 浏览器原生可解 */
+
+async function loadDir(p) {
+  curDir = p;
+  renderChips();
+  $('#mediapath').textContent = p;
+  $('#grid').innerHTML = '';
+  $('#mediastat').innerHTML = '<span class="spin"></span> 列目录中…';
+  try {
+    const r = await fetch('/api/media/list?path=' + enc(p), {cache:'no-store'});
+    const j = await r.json();
+    if (j.error) { $('#mediastat').textContent = '读取失败: ' + j.error; return; }
+    /* 目录优先，其余按名称倒序（新的在前） */
+    j.entries.sort((a, b) => b.dir - a.dir || b.name.localeCompare(a.name));
+    $('#grid').innerHTML = j.entries.map((e, i) => {
+      const full = p.replace(/\/$/, '') + '/' + e.name;
+      if (e.dir) return `<div class="item dir" onclick="loadDir('${esc(full)}')">
+        <img src="" alt=""><div class="nm">&#128193; ${esc(e.name)}</div></div>`;
+      if (isImg(e.name)) return `<div class="item" onclick="lbOpen('${esc(full)}')">
+        <img loading="lazy" src="/api/media/file?path=${enc(full)}">
+        <div class="nm">${esc(e.name)}</div></div>`;
+      if (isAud(e.name)) return `<div class="item" onclick="lbOpen('${esc(full)}', true)">
+        <div class="badge">${e.name.toLowerCase().endsWith('.mp3') ? 'MP3' : '音频'}</div>
+        <img src="" alt=""><div class="nm">&#127925; ${esc(e.name)}</div>
+        <div class="nm muted">${fmtSize(e.size)}</div></div>`;
+      if (isAvi(e.name)) return `<div class="item" onclick="pvOpen('${esc(full)}')">
+        <div class="badge">AVI</div>
+        <img src="" alt=""><div class="nm">&#9654; ${esc(e.name)}</div>
+        <div class="nm muted">${fmtSize(e.size)}</div></div>`;
+      return `<div class="item" style="cursor:default">
+        <img src="" alt=""><div class="nm">${esc(e.name)}</div>
+        <div class="nm muted">${fmtSize(e.size)}</div></div>`;
+    }).join('');
+    $('#mediastat').textContent = `${j.entries.length} 项`;
+  } catch (e) {
+    $('#mediastat').textContent = '读取失败';
+  }
+}
+
+/* ---------- 照片灯箱 / 音频播放（浏览器原生解码，零设备 CPU） ---------- */
+function lbOpen(path, audio) {
+  const img = $('#lb-img'), a = $('#lb-audio');
+  if (audio) {
+    img.style.display = 'none';
+    a.style.display = 'block';
+    a.src = '/api/media/file?path=' + enc(path);
+  } else {
+    a.style.display = 'none';
+    img.style.display = 'block';
+    img.src = '/api/media/file?path=' + enc(path);
+  }
+  $('#lb-cap').textContent = path;
+  $('#lightbox').classList.add('on');
+}
+function lbClose() {
+  const a = $('#lb-audio');
+  a.pause();
+  a.removeAttribute('src');
+  a.load();                       /* 释放网络连接 */
+  $('#lightbox').classList.remove('on');
+  $('#lb-img').src = '';
+}
+
+/* ---------- AVI 流式播放器（§74 补充 5） ----------
+ * 批量取帧（8 帧/请求）+ 双缓冲预取：显示第 i 帧的同时后台拉后续批次，
+ * 网络延迟彻底移出播放回路，按目标 fps 匀速出帧（不再越播越慢）。
+ * 按钮状态机：文案严格跟 playing 走；任何异常必复位；播完自动循环。 */
+let pv = { path:'', info:null, cur:-1, playing:false, url:'' };
+let pvBuf = [];                     /* ArrayBuffer 帧队列 */
+let pvBufHead = 0;                  /* pvBuf[0] 对应的帧号 */
+let pvFetchBusy = false;
+let pvFetchErr = '';
+
+function pvSetBtn() {
+  $('#pv-play').textContent = pv.playing ? '暂停' : '播放';
+}
+
+async function pvOpen(path) {
+  pvStop();
+  pv.path = path; pv.info = null; pv.cur = -1;
+  $('#player').classList.add('on');
+  $('#pv-img').src = '';
+  $('#pv-play').disabled = true;
+  $('#pv-play').textContent = '播放';
+  $('#pv-info').innerHTML = '<span class="spin"></span> 读取视频信息…';
+  try {
+    const r = await fetch('/api/media/info?path=' + enc(path), {cache:'no-store'});
+    const j = await r.json();
+    if (j.error) { $('#pv-info').textContent = '读取失败: ' + j.error; return; }
+    pv.info = j;
+    const sl = $('#pv-slider');
+    sl.max = Math.max(0, j.total_frames - 1);
+    sl.value = 0;
+    $('#pv-info').textContent =
+      `${j.width}x${j.height} · ${(j.fps_x100/100).toFixed(1)} fps · ${j.total_frames} 帧`
+      + `（无声，设备录像本就不含音轨）`;
+    $('#pv-play').disabled = false;
+    await pvShowFrame(0);           /* 先出第一帧，立即有画面 */
+  } catch (e) {
+    $('#pv-info').textContent = '读取失败';
+  }
+}
+
+async function pvShowFrame(idx) {
+  const r = await fetch(`/api/media/frame?path=${enc(pv.path)}&frame=${idx}`);
+  if (!r.ok) return false;
+  const b = await r.blob();
+  pvSetUrl(b);
+  $('#pv-slider').value = idx;
+  pv.cur = idx;
+  return true;
+}
+
+function pvSetUrl(data) {
+  if (pv.url) URL.revokeObjectURL(pv.url);
+  pv.url = URL.createObjectURL(data instanceof Blob ? data
+                                                     : new Blob([data], {type:'image/jpeg'}));
+  $('#pv-img').src = pv.url;
+}
+
+/* 后台补货：队列少于 8 帧就拉下一批（不阻塞显示回路） */
+async function pvEnsure() {
+  if (pvFetchBusy || !pv.info) return;
+  if (pvBufHead + pvBuf.length >= pv.info.total_frames) return;   // 全部在库
+  if (pvBuf.length >= 8) return;
+  pvFetchBusy = true;
+  try {
+    const from = pvBufHead + pvBuf.length;
+    const cnt = Math.min(8, pv.info.total_frames - from);
+    const r = await fetch(`/api/media/frames?path=${enc(pv.path)}&from=${from}&count=${cnt}`);
+    if (!r.ok) throw new Error('http ' + r.status);
+    const ab = await r.arrayBuffer();
+    const dv = new DataView(ab);
+    let off = 0;
+    while (off + 4 <= ab.byteLength) {
+      const len = dv.getUint32(off); off += 4;
+      if (len === 0 || off + len > ab.byteLength) break;   // 短批/损坏即止
+      pvBuf.push(ab.slice(off, off + len)); off += len;
+    }
+  } catch (e) {
+    pvFetchErr = '取帧失败（网络中断）';
+  }
+  pvFetchBusy = false;
+}
+
+function pvStop() {
+  pv.playing = false;
+  pvBuf = []; pvBufHead = 0; pvFetchErr = '';
+  pvSetBtn();
+}
+
+async function pvToggle() {
+  if (!pv.info) return;
+  pv.playing = !pv.playing;
+  pvSetBtn();
+  if (pv.playing) {
+    playLoop();                     // fire-and-forget：循环自己管状态
+  }
+}
+
+async function playLoop() {
+  const fps = Math.max(1, pv.info.fps_x100 / 100);
+  const interval = 1000 / fps;
+  let nextT = performance.now();
+  while (pv.playing) {
+    if (pvFetchErr) {               // 任何取帧错误：复位按钮并报错
+      pvStop();
+      $('#pv-info').textContent = pvFetchErr;
+      return;
+    }
+    if (pvBuf.length === 0) {
+      if (pvBufHead >= pv.info.total_frames) {
+        // 播完自动循环：清缓冲从第 0 帧再来
+        pvBuf = []; pvBufHead = 0; pv.cur = -1;
+        $('#pv-slider').value = 0;
+      }
+      await pvEnsure();
+      if (!pv.playing) return;
+      if (pvBuf.length === 0) { await new Promise(r => setTimeout(r, 40)); continue; }
+    }
+    const data = pvBuf.shift();
+    const idx = pvBufHead; pvBufHead++;
+    pvSetUrl(data);
+    $('#pv-slider').value = idx;
+    $('#pv-info').textContent =
+      `${pv.info.width}x${pv.info.height} · ${(pv.info.fps_x100/100).toFixed(1)} fps · ` +
+      `第 ${idx + 1}/${pv.info.total_frames} 帧（无声）`;
+    pvEnsure();                     // 异步补货，不 await
+    nextT += interval;
+    const wait = nextT - performance.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    else if (wait < -500) nextT = performance.now();   // 落后太多重新对表
+  }
+}
+
+$('#pv-slider').oninput = async e => {
+  const wasPlaying = pv.playing;
+  pvStop();                          // 拖动 = 暂停 + 清缓冲
+  pvBufHead = +e.target.value;
+  pv.cur = -1;
+  try { await pvShowFrame(pvBufHead); } catch (err) {}
+  if (wasPlaying) {                  // 拖完继续播
+    pv.playing = true;
+    pvSetBtn();
+    playLoop();
+  }
+};
+
+function pvClose() {
+  pvStop();
+  $('#player').classList.remove('on');
+  if (pv.url) URL.revokeObjectURL(pv.url);
+  pv.url = '';
+}
+
+/* ---------- 壁纸 / 音乐管理（§75 补充 2） ----------
+ * 上传 = XHR 原始二进制 POST（文件名走 query，进度条走 upload.onprogress）；
+ * 设壁纸 = POST /api/wallpaper/set（设备端异步解码 + 渐变切换）；
+ * 删除 = DELETE /api/file（服务端目录+文件名双重白名单）。 */
+function upload(file, dir, statSel, after) {
+  const st = $(statSel);
+  if (file.size > 24 * 1048576) { st.textContent = '文件超过 24MB 上限'; return; }
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?dir=' + dir + '&name=' + enc(file.name));
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable)
+      st.textContent = '上传中 ' + Math.round(e.loaded * 100 / e.total) + '%';
+  };
+  xhr.onload = () => {
+    let j = {};
+    try { j = JSON.parse(xhr.responseText); } catch (err) {}
+    if (j.ok) { st.textContent = '完成'; if (after) after(); }
+    else if (j.error === 'not_800x480_jpeg') st.textContent = '被拒收：不是 800×480 JPEG';
+    else st.textContent = '失败: ' + (j.error || ('HTTP ' + xhr.status));
+  };
+  xhr.onerror = () => { st.textContent = '网络错误'; };
+  st.textContent = '开始上传…';
+  xhr.send(file);
+}
+$('#wp-file').onchange = e => {
+  if (e.target.files[0]) upload(e.target.files[0], 'wallpaper', '#wp-up', loadManage);
+  e.target.value = '';
+};
+$('#mu-file').onchange = e => {
+  if (e.target.files[0]) upload(e.target.files[0], 'music', '#mu-up', loadManage);
+  e.target.value = '';
+};
+
+async function delFile(dir, name) {
+  const r = await fetch(`/api/file?dir=${enc(dir)}&name=${enc(name)}`,
+                        {method: 'DELETE', cache: 'no-store'});
+  return r.json();
+}
+async function wpSet(name) {
+  try {
+    const r = await fetch('/api/wallpaper/set?name=' + enc(name),
+                          {method: 'POST', cache: 'no-store'});
+    const j = await r.json();
+    $('#wp-cur').textContent = j.ok ? '切换请求已发送：' + name
+                                    : '失败: ' + (j.error || '');
+  } catch (e) { $('#wp-cur').textContent = '网络错误'; }
+}
+async function wpDel(name) {
+  if (!confirm('删除壁纸 ' + name + '？')) return;
+  const j = await delFile('wallpaper', name);
+  if (!j.ok) alert('删除失败: ' + (j.error || ''));
+  loadManage();
+}
+async function muDel(name) {
+  if (!confirm('删除音乐 ' + name + '？')) return;
+  const j = await delFile('music', name);
+  if (!j.ok) alert('删除失败: ' + (j.error || ''));
+  loadManage();
+}
+
+async function loadManage() {
+  /* 壁纸池 */
+  try {
+    const r = await fetch('/api/wallpaper/list', {cache: 'no-store'});
+    const j = await r.json();
+    $('#wp-cur').textContent = j.current ? '当前：' + j.current : '当前：兜底图';
+    $('#wp-grid').innerHTML = (j.files || []).map(f => `
+      <div class="item">
+        <img loading="lazy" src="/api/media/file?path=${enc('/sdcard/wallpaper/' + f.name)}">
+        <div class="nm">${esc(f.name)}</div>
+        <div style="display:flex; gap:4px; padding:6px;">
+          <button style="flex:1; padding:6px 0; border-radius:6px; border:none;
+            background:var(--acc); color:#fff; font-size:12px;"
+            onclick="wpSet('${esc(f.name)}')">设为壁纸</button>
+          <button style="padding:6px 10px; border-radius:6px; border:1px solid var(--line);
+            background:transparent; color:var(--bad); font-size:12px;"
+            onclick="wpDel('${esc(f.name)}')">删</button>
+        </div>
+      </div>`).join('') || '<div class="muted">池为空 — 先上传</div>';
+  } catch (e) { $('#wp-cur').textContent = '读取失败'; }
+  /* 音乐列表 */
+  try {
+    const r = await fetch('/api/media/list?path=' + enc('/sdcard/music'),
+                          {cache: 'no-store'});
+    const j = await r.json();
+    const rows = (j.entries || []).filter(x => !x.dir && /\.(mp3|wav)$/i.test(x.name));
+    $('#mu-list').innerHTML = rows.map(x => `
+      <div class="evt">
+        <div style="flex:1">&#127925; ${esc(x.name)}
+          <span class="muted">${fmtSize(x.size)}</span></div>
+        <button style="padding:5px 12px; border-radius:6px; border:1px solid var(--line);
+          background:transparent; color:var(--bad); font-size:12px;"
+          onclick="muDel('${esc(x.name)}')">删除</button>
+      </div>`).join('') || '<div class="muted">无音乐文件 — 先上传或用设备录音</div>';
+  } catch (e) { $('#mu-list').innerHTML = '<div class="muted">读取失败</div>'; }
+}
+</script>
+</body>
+</html>

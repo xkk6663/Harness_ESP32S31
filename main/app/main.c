@@ -31,11 +31,13 @@
 #include "middleware/periph/button_service.h"
 #include "middleware/net/wifi_manager.h"
 #include "middleware/net/net_time_service.h"
+#include "middleware/net/web_server.h"      /* ★ §74 网页管理端 */
 #include "middleware/camera/camera_service.h"
 #include "middleware/camera/capture_service.h"       /* ★ S2a 拍照 */
 #include "middleware/camera/viewfinder.h"            /* ★ 取景器（2026-09-28 起按需分配） */
 #include "middleware/media/record_video_service.h"   /* ★ S2b 录像 */
 #include "middleware/media/file_mgr_service.h"       /* ★ S4 文件管理（预览/播放缓冲） */
+#include "middleware/media/wallpaper_service.h"      /* ★ §75 壁纸池（SD /wallpaper + 10min 轮换） */
 #include "middleware/camera/face_recog_service.h"    /* ★ S8-0 MFN 可行性自检 */
 #include "middleware/face_db/face_db.h"              /* ★ S8-1 人脸库（特征索引落盘） */
 #include "middleware/camera/punch_service.h"         /* ★ S8-2b 打卡落盘（开机复位一次状态） */
@@ -895,6 +897,18 @@ void app_main(void)
     capture_service_init();
     record_video_service_init();
     MEM_STAGE(TAG, "after capture/record_video service init");
+    /* ★ §74：网页管理端（httpd:80；AP 热点 http://192.168.4.1 与局域网
+     *   http://<STA-IP> 均可访问；只读 SD + 打卡事件轮询）。放在 punch/
+     *   camera/media 各服务之后 —— 订阅 punch 完成回调要求其已 init。 */
+    web_server_init();
+    MEM_STAGE(TAG, "after web_server_init");
+    /* ★ §75：壁纸服务（SD /wallpaper 池 + 10min 随机轮换 + NVS 断电记忆 +
+     *   双缓冲解码）。位置两头的约束：
+     *   · 必须在 fs_service_init() 之后 —— file_buffer 被借用为双缓冲之一；
+     *   · 必须在 Page_Splash 装载之前 —— 开机要在这里同步解码"上次壁纸"
+     *     （SD 读 + JPEG 解码几百 ms），splash 粒子层与下拉浮层都直接消费结果。 */
+    wallpaper_service_init();
+    MEM_STAGE(TAG, "after wallpaper_service_init");
     /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
 
     /* UI framework */

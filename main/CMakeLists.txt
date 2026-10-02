@@ -13,6 +13,8 @@ idf_component_register(SRCS
                         "middleware/periph/safe_reboot.c"
                         "middleware/net/wifi_manager.c"
                         "middleware/net/net_time_service.c"
+                        ## ---- §74：网页管理端（APSTA 热点/局域网浏览器管理）----
+                        "middleware/net/web_server.c"
                         "middleware/periph/fs_service.c"
                         "middleware/periph/sdcard_service.c"
                         "middleware/periph/led_service.c"
@@ -35,6 +37,7 @@ idf_component_register(SRCS
                         "middleware/media/avi_mjpeg_demuxer.c"
                         "middleware/media/file_mgr_service.c"
                         "middleware/media/record_video_service.c"
+                        "middleware/media/wallpaper_service.c"
                         "3rd/ringbuf/ringbuf.c"
                         "ui/ui_manager/page_manager.c"
                         "ui/overlay_manager.c"
@@ -50,7 +53,6 @@ idf_component_register(SRCS
                         "ui/tab_sys_entry.c"
                         "ui/overlay_wallpaper.c"
                         "ui/page_wifi.c"
-                        "ui/page_bluetooth.c"
                         "ui/page_rgb.c"
                         "ui/page_system.c"
                         ## ---- S8-1：人脸库管理页（SYS 页入口，页栈子页）----
@@ -69,8 +71,10 @@ idf_component_register(SRCS
                                     "middleware/periph"
                                     "middleware/face_db"
                                     "middleware/camera"
+                      ## ---- §74：管理端单页 HTML 内嵌（符号 _binary_web_index_html_*）----
+                      EMBED_FILES "web/index.html"
                       PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
-                                    esp_http_client cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1
+                                    esp_http_client esp_http_server cjson mbedtls zlib esp_video esp_cam_sensor esp32_s31_korvo_1
                                     esp_driver_jpeg
                                     ## ★ §73.27：esp_crt_bundle.h 在 esp-tls（点歌搜索 TLS 验证）
                                     ## ---- §60 异族模型（vendor 本地组件，SDCARD 模式）----

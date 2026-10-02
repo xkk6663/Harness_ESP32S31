@@ -182,6 +182,18 @@ void punch_service_get_last(punch_record_t *out);
 void punch_service_clear_last(void);
 
 /**
+ * @brief 注册"打卡事务完成"回调（§74：网页管理端 SSE 实时推送用）。
+ *
+ * ★ 在 punch_task 的 finish 末尾（结果槽已更新、busy 已清）以任务上下文调用；
+ *   回调里**只许**拷贝快照 / 入队，绝不能阻塞（会拖慢下一次打卡）。
+ * ★ 打卡、清空、删除、对账、清人五类操作**都会**触发 —— 订阅方按
+ *   rec->clear_op / err 自行过滤。
+ * ★ 幂等：重复注册覆盖旧回调；传 NULL 注销。
+ */
+typedef void (*punch_done_cb_t)(const punch_record_t *rec, void *ctx);
+void punch_service_set_done_cb(punch_done_cb_t cb, void *ctx);
+
+/**
  * @brief 读打卡流水（**最后 max 条**，按文件顺序，最新的在数组末尾）。
  *
  * ★ 只读、不解码、不分配 —— 结果写进调用方给的数组。

@@ -4,26 +4,23 @@
 
 /**
  * @file overlay_wp_particles.c
- * @brief Static wallpaper (xwkkk.jpg) + floating particles overlay.
+ * @brief Wallpaper (wallpaper_service 双缓冲当前图) + floating particles overlay.
  *        RGB888 canvas, PSRAM double-buffer style: copy base frame, draw dots.
+ *        §75：底图不再自持拷贝，直接借用 wallpaper_service 当前 buffer（省 1.15MB）。
  */
 
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_jpeg_dec.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 
 #include "overlay_wp_particles.h"
 #include "middleware/periph/fs_service.h"
+#include "middleware/media/wallpaper_service.h"
 
 static const char *TAG = "WP_PART";
 
-#define WALLPAPER_PATH   FS_MNT_PATH"/xwkkk.jpg"
 #define PARTICLE_COUNT   24
 #define TICK_MS           30
 
@@ -37,11 +34,12 @@ typedef struct {
 static lv_obj_t   *s_canvas;
 static lv_timer_t *s_timer;
 static uint8_t    *s_buf;     /* displayed canvas (RGB888) */
-static uint8_t    *s_base;    /* decoded static wallpaper copy */
+static uint8_t    *s_base;    /* decoded static wallpaper (借用 service 当前 buffer，只读) */
 static particle_t s_p[PARTICLE_COUNT];
 static uint16_t s_w, s_h;
 static size_t   s_pixels;
 static int32_t  s_touch_x = -1, s_touch_y = -1;
+static uint32_t s_wp_gen_seen;
 
 static uint32_t rnd_state = 20240912;
 static uint32_t rnd(void) {
@@ -59,52 +57,6 @@ static void spawn(particle_t *p, bool random_y)
     p->r = 180 + (rnd() % 60);
     p->g = 210 + (rnd() % 40);
     p->b = 255;
-}
-
-/* Decode xwkkk.jpg into s_base (RGB888) */
-static bool decode_base(void)
-{
-    struct stat st;
-    if (stat(WALLPAPER_PATH, &st) != 0) {
-        ESP_LOGE(TAG, "wallpaper not found: %s", WALLPAPER_PATH);
-        return false;
-    }
-    size_t fsize = st.st_size;
-    uint8_t *jpeg_buf = heap_caps_malloc(fsize, MALLOC_CAP_SPIRAM);
-    if (!jpeg_buf) jpeg_buf = malloc(fsize);
-    if (!jpeg_buf) return false;
-
-    int fd = open(WALLPAPER_PATH, O_RDONLY);
-    if (fd < 0) { free(jpeg_buf); return false; }
-    read(fd, jpeg_buf, fsize);
-    close(fd);
-
-    jpeg_dec_handle_t dec = NULL;
-    jpeg_dec_header_info_t info = {0};
-    jpeg_dec_io_t io = { .inbuf = jpeg_buf, .inbuf_len = (int)fsize, .outbuf = s_base };
-    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB888;
-
-    bool ok = false;
-    if (jpeg_dec_open(&cfg, &dec) == JPEG_ERR_OK &&
-        jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK) {
-        if (jpeg_dec_process(dec, &io) == JPEG_ERR_OK) {
-            s_w = info.width; s_h = info.height;
-            s_pixels = (size_t)s_w * s_h;
-            /* JPEG RGB888 output is BGR; swap R/B to match LVGL */
-            for (size_t i = 0; i < s_pixels; i++) {
-                uint8_t *p = &s_base[i * 3];
-                uint8_t t = p[0]; p[0] = p[2]; p[2] = t;
-            }
-            ESP_LOGI(TAG, "wallpaper decoded %dx%d RGB888", s_w, s_h);
-            ok = true;
-        }
-    } else {
-        ESP_LOGE(TAG, "jpeg decode failed");
-    }
-    if (dec) jpeg_dec_close(dec);
-    free(jpeg_buf);
-    return ok;
 }
 
 static inline void put_px(size_t idx, uint8_t r, uint8_t g, uint8_t b)
@@ -143,7 +95,25 @@ static void wp_touch_cb(lv_event_t *e)
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
-    memcpy(s_buf, s_base, s_pixels * 3);
+    /* §75：代际号轮询（splash 生命周期短、30ms 一拍代价可忽略）——
+     * service 换图后把 s_base 指针切到新 buffer 即可（零拷贝），下一拍
+     * memcpy 自然带出新图。splash 粒子层叠在底图上，跳变不可见，不做 crossfade。
+     * ★ 只在 LVGL 线程切指针（本回调），与 service 任务写"另一块 buffer"无竞争。 */
+    uint32_t gen = wallpaper_service_get_gen();
+    if (gen != s_wp_gen_seen) {
+        s_wp_gen_seen = gen;
+        uint8_t *b = wallpaper_service_get_buffer(wallpaper_service_get_current());
+        if (b) {
+            s_base = b;
+            ESP_LOGI(TAG, "base switched to service buf%d (gen=%u)",
+                     wallpaper_service_get_current(), (unsigned)gen);
+        }
+        wallpaper_service_commit();     /* splash 不播动画，看完立即归还 */
+    }
+
+    if (s_base) {
+        memcpy(s_buf, s_base, s_pixels * 3);
+    }
     for (int i = 0; i < PARTICLE_COUNT; i++) {
         particle_t *p = &s_p[i];
         /* repel from touch point */
@@ -178,16 +148,18 @@ lv_obj_t *overlay_wp_particles_build(lv_obj_t *parent)
     s_pixels = (size_t)s_w * s_h;
     size_t buflen = s_pixels * 3;
 
-    s_base = heap_caps_malloc(buflen, MALLOC_CAP_SPIRAM);
     s_buf  = heap_caps_malloc(buflen, MALLOC_CAP_SPIRAM);
-    if (!s_base || !s_buf) {
+    if (!s_buf) {
         ESP_LOGE(TAG, "psram alloc fail");
         return NULL;
     }
-    memset(s_base, 0, buflen);
 
-    if (!decode_base()) {
-        /* fallback: dark blue base */
+    /* §75：底图借用 wallpaper_service 当前 buffer（开机时 service 已同步解码
+     * 上次壁纸/兜底图，此处零解码零拷贝）。service 异常未就绪时退深蓝纯色。 */
+    s_base = wallpaper_service_get_buffer(wallpaper_service_get_current());
+    s_wp_gen_seen = wallpaper_service_get_gen();
+    if (!s_base) {
+        ESP_LOGW(TAG, "service buffer unavailable -> solid dark blue base");
         for (size_t i = 0; i < s_pixels; i++) put_px(i, 10, 20, 40);
     }
 
@@ -200,7 +172,9 @@ lv_obj_t *overlay_wp_particles_build(lv_obj_t *parent)
     lv_obj_set_clickable(s_canvas, true);
 
     for (int i = 0; i < PARTICLE_COUNT; i++) spawn(&s_p[i], true);
-    memcpy(s_buf, s_base, buflen);
+    if (s_base) {
+        memcpy(s_buf, s_base, buflen);
+    }
 
     s_timer = lv_timer_create(tick_cb, TICK_MS, NULL);
     ESP_LOGI(TAG, "particles running %dx%d", s_w, s_h);

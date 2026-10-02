@@ -32,6 +32,7 @@
 #include "middleware/audio/media_player_service.h"
 #include "middleware/periph/sdcard_service.h"
 #include "middleware/camera/viewfinder.h"   /* ★ 2026-09-28 按需化：预览/播放借它的解码缓冲 */
+#include "middleware/media/wallpaper_service.h"   /* ★ §75 补充 1：壁纸池手动切换 */
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -48,6 +49,7 @@ static void rebuild_list(void);
 static void apply_mode_visibility(void);
 static void enter_browse_mode(void);
 static void post_browse(const char *path);
+static bool pv_path_in_pool(void);      /* §75 补充 1：SET WALLPAPER 可见性 */
 
 /* 拷路径：显式判长 + memcpy。不用 snprintf("%s") —— 目的缓冲比源缓冲小时
  * GCC 的 -Werror=format-truncation 会保守报错（实参上界相加必然超），这里
@@ -87,9 +89,13 @@ static lv_obj_t *s_pv_canvas;       /* 预览/播放画布 640x360 */
 static lv_obj_t *s_pv_hint;         /* "tap to exit"（画在画布上层） */
 static lv_obj_t *s_prog;            /* 播放进度条（画布上层叠加） */
 static lv_obj_t *s_mp_stop_btn;     /* MP3 播放态的大 STOP 按钮（画布中心） */
+static lv_obj_t *s_wp_set_btn;      /* §75 补充 1：预览态"SET WALLPAPER"按钮 */
 static lv_timer_t *s_timer;         /* 事件排空 30ms */
 static lv_timer_t *s_tick_timer;    /* 50ms：帧上画布/倒计时/按钮态（必须可删） */
 static QueueHandle_t s_evt_q;
+
+/* 当前预览的完整路径（§75 补充 1：SET WALLPAPER 按钮据此判定可见性/取文件名） */
+static char s_pv_path[FM_PATH_MAX + FM_NAME_MAX + 2];
 
 /* ---- 状态 ---- */
 static bool     s_active;
@@ -220,6 +226,7 @@ static void open_path(const char *name, bool is_dir)
         apply_mode_visibility();
         lv_label_set_text_static(s_status, "Decoding...");
         lv_obj_set_style_text_color(s_status, COL_SUBTEXT, 0);
+        path_copy(s_pv_path, sizeof(s_pv_path), full);   /* §75 补充 1：记录预览路径 */
         file_mgr_cmd_t cmd = { .id = FMC_PREVIEW };
         path_copy(cmd.path, sizeof(cmd.path), full);
         file_mgr_post_cmd(&cmd);
@@ -349,6 +356,9 @@ static void apply_mode_visibility(void)
     lv_obj_set_hidden(s_prog, s_mode != MODE_PLAY || !s_pv_shown);
     /* MP3 态：无视频帧，画布保持隐藏，中央给一个大 STOP 按钮 */
     lv_obj_set_hidden(s_mp_stop_btn, s_mode != MODE_MP3);
+    /* §75 补充 1：SET WALLPAPER 仅在"预览壁纸池内的图"时出现 */
+    lv_obj_set_hidden(s_wp_set_btn,
+                      !(s_mode == MODE_PREVIEW && s_pv_shown && pv_path_in_pool()));
 }
 
 /* MP3 播放态的退出（画布中央 STOP 按钮） */
@@ -357,6 +367,42 @@ static void mp_stop_btn_cb(lv_event_t *e)
     (void)e;
     media_player_service_stop();
     /* 模式回切在 refresh 轮询里做（is_playing()==false → 回浏览态） */
+}
+
+/* ---- §75 补充 1：预览态"SET WALLPAPER" ---- */
+
+/** 当前预览路径是否在壁纸池内（决定按钮可见性）。
+ *  ★ 目录段必须**精确等于**池目录——池内子目录的图不算（服务端按池根
+ *    文件名校验，子目录图必然被拒，按钮就不该出现）。 */
+static bool pv_path_in_pool(void)
+{
+    const char *slash = strrchr(s_pv_path, '/');
+    if (!slash) return false;
+    size_t dlen = (size_t)(slash - s_pv_path);
+    return dlen == strlen(WALLPAPER_POOL_DIR) &&
+           strncmp(s_pv_path, WALLPAPER_POOL_DIR, dlen) == 0;
+}
+
+/** 点击：请求把该图设为当前壁纸（异步——解码在 wp_svc 任务，完成后
+ *  经代际号轮询自动 crossfade，NVS 随之更新；名字合法性由服务端校验）。 */
+static void wp_set_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *name = strrchr(s_pv_path, '/');
+    if (!name || name[1] == '\0') return;
+    name++;                                     /* 跳过 '/' 取纯文件名 */
+
+    esp_err_t err = wallpaper_service_request_set(name);
+    if (err == ESP_OK) {
+        lv_label_set_text_fmt(s_status, "WP switch: %s", name);
+        lv_obj_set_style_text_color(s_status, COL_GREEN, 0);
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        lv_label_set_text_static(s_status, "WP service unavailable");
+        lv_obj_set_style_text_color(s_status, COL_RED, 0);
+    } else {
+        lv_label_set_text_static(s_status, "WP busy - try again");
+        lv_obj_set_style_text_color(s_status, COL_RED, 0);
+    }
 }
 
 static void enter_browse_mode(void)
@@ -649,6 +695,21 @@ void tab_files_build(lv_obj_t *screen, lv_group_t *group)
     lv_obj_center(mp_lb);
     lv_obj_set_hidden(s_mp_stop_btn, true);
 
+    /* ---- §75 补充 1：预览态"SET WALLPAPER"（左下角，hint 在底中互不叠） ---- */
+    s_wp_set_btn = lv_btn_create(screen);
+    lv_obj_set_size(s_wp_set_btn, 200, 44);
+    lv_obj_align(s_wp_set_btn, LV_ALIGN_BOTTOM_LEFT, 0, -8);
+    lv_obj_set_style_radius(s_wp_set_btn, 22, 0);
+    lv_obj_set_style_bg_color(s_wp_set_btn, COL_CYAN, 0);
+    lv_obj_set_style_border_width(s_wp_set_btn, 0, 0);
+    lv_obj_add_event_cb(s_wp_set_btn, wp_set_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *wp_lb = lv_label_create(s_wp_set_btn);
+    lv_label_set_text_static(wp_lb, LV_SYMBOL_IMAGE "  SET WALLPAPER");
+    lv_obj_set_style_text_color(wp_lb, COL_DARK, 0);
+    lv_obj_set_style_text_font(wp_lb, UI_FONT, 0);
+    lv_obj_center(wp_lb);
+    lv_obj_set_hidden(s_wp_set_btn, true);
+
     /* ---- 事件队列 + 定时器 ---- */
     s_evt_q = xQueueCreate(EVT_Q_DEPTH, sizeof(file_mgr_evt_t));
     s_timer = lv_timer_create(evt_drain_cb, 30, NULL);
@@ -696,6 +757,7 @@ void tab_files_destroy(void)
     s_del_btn = NULL; s_del_label = NULL;
     s_title = NULL; s_status = NULL;
     s_pv_canvas = NULL; s_pv_hint = NULL; s_prog = NULL;
+    s_mp_stop_btn = NULL; s_wp_set_btn = NULL;
     s_sel_btn = NULL; s_sel_idx = -1;
     s_evt_q = NULL;
     s_active = false; s_mode = MODE_BROWSE; s_del_armed = false; s_pv_shown = false;

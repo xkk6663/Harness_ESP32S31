@@ -7,7 +7,7 @@
 /**
  * @file tab_sys_entry.c
  * @brief SYS tab: volume slider + direct entry rows to the four resource
- *        sub-pages (WIFI / Bluetooth / RGB / System).
+ *        sub-pages (WIFI / RGB / System).
  */
 
 #include <stdint.h>
@@ -21,7 +21,6 @@
 #include "ui_common.h"
 #include "page_manager.h"
 #include "page_wifi.h"
-#include "page_bluetooth.h"
 #include "page_rgb.h"
 #include "page_system.h"
 #include "page_face.h"                  /* ★ S8-1：人脸库管理页 */
@@ -34,7 +33,6 @@ static lv_timer_t *s_vol_timer;
 /* sub-page row ids */
 enum {
     ROW_WIFI = 0,
-    ROW_BLUETOOTH,
     ROW_RGB,
     ROW_SYSTEM,
     ROW_FACE,                           /* ★ S8-1 */
@@ -75,9 +73,6 @@ static void row_click_cb(lv_event_t *e)
     switch (id) {
     case ROW_WIFI:
         PageManager_Load(&Page_Wifi);
-        break;
-    case ROW_BLUETOOTH:
-        PageManager_Load(&Page_Bluetooth);
         break;
     case ROW_RGB:
         PageManager_Load(&Page_Rgb);
@@ -145,7 +140,6 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
 
     /* Resource sub-page entries（★ S8-1：加 FACE 一行，见上面 vol 卡的竖直预算） */
     ui_common_setting_row(screen, LV_SYMBOL_WIFI, "WIFI", row_click_cb, (void *)(uintptr_t)ROW_WIFI);
-    ui_common_setting_row(screen, LV_SYMBOL_BLUETOOTH, "Bluetooth", row_click_cb, (void *)(uintptr_t)ROW_BLUETOOTH);
     ui_common_setting_row(screen, LV_SYMBOL_IMAGE, "RGB LED", row_click_cb, (void *)(uintptr_t)ROW_RGB);
     ui_common_setting_row(screen, LV_SYMBOL_LIST, "Face DB", row_click_cb, (void *)(uintptr_t)ROW_FACE);
     ui_common_setting_row(screen, LV_SYMBOL_SETTINGS, "System", row_click_cb, (void *)(uintptr_t)ROW_SYSTEM);

@@ -83,6 +83,10 @@ _Static_assert(PUNCH_ROOTBUF >= sizeof(SDCARD_MNT_PATH) + sizeof(PUNCH_DIR_NAME)
 static volatile bool s_busy = false;        /* 有一次性任务在跑（写或清） */
 static punch_record_t s_last;               /* 最近一次结论 */
 
+/* ★ §74：事务完成回调（网页管理端 SSE 订阅用；punch_task 上下文调用） */
+static punch_done_cb_t s_done_cb;
+static void           *s_done_ctx;
+
 /** 挂起事务（由 begin 填，任务读） */
 static bool      s_pend_valid;
 static recog_result_t s_pend_who;           /* 只用到 id/name/matched/score */
@@ -887,6 +891,11 @@ finish:
     s_op_purge   = false;   /* §73.25 */
     s_busy       = false;
 
+    /* ★ §74：结果槽就位后上抛完成事件（回调只许快拷/入队，不许阻塞） */
+    if (s_done_cb) {
+        s_done_cb(&res, s_done_ctx);
+    }
+
     /* ★★ §73.9（用户验收标准："cam 里面的 PSRAM 按需分配、即用即释放"）：
      *   帧缓冲（172,800 B）+ JPEG 输出（64 KB）旧版一旦分配就**常驻到断电**
      *   —— CAM 会话结束后这两块还挂在账上，挤压 VIDEO/取景器的连续块。
@@ -1058,6 +1067,12 @@ void punch_service_get_last(punch_record_t *out)
 void punch_service_clear_last(void)
 {
     memset(&s_last, 0, sizeof(s_last));
+}
+
+void punch_service_set_done_cb(punch_done_cb_t cb, void *ctx)
+{
+    s_done_cb  = cb;
+    s_done_ctx = ctx;
 }
 
 int punch_service_log_read(punch_log_t *out, int max)

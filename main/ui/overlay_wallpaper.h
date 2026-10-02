@@ -18,13 +18,9 @@
 extern "C" {
 #endif
 
-/**
- * @brief Build a fullscreen wallpaper container + decoded JPEG canvas.
- *        Shared by page_splash and the main pull-down overlay.
- * @param parent Container parent.
- * @return Wallpaper container object.
- */
-lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent);
+/* §75 注：原 overlay_wallpaper_build() 已收回本模块内部（static）——
+ * 图片内容由 wallpaper_service 双缓冲提供，本文件只做 canvas 装配与 crossfade，
+ * 不再有独立的外部构建入口。 */
 
 /**
  * @brief Create the pull-down wallpaper on lv_layer_top() and bind the main
