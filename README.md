@@ -13,6 +13,43 @@
 [![Language](https://img.shields.io/badge/C-C99-yellow)](https://en.cppreference.com/w/c)
 [![RTOS](https://img.shields.io/badge/FreeRTOS-SMP-purple)](https://www.freertos.org/)
 
+![UI](https://img.shields.io/badge/UI-LVGL_v9-2EA3DD?logo=lvgl&logoColor=white)
+![USB](https://img.shields.io/badge/USB_副屏-TinyUSB_HS_扩展屏-6E4B9E)
+![BT](https://img.shields.io/badge/蓝牙-A2DP_Source_+_Sink-0064B5?logo=bluetooth&logoColor=white)
+![Net](https://img.shields.io/badge/网络-WiFi_STA_+_UDP_对讲-3F8E3D?logo=wifi&logoColor=white)
+![OTA](https://img.shields.io/badge/升级-A/B_双槽_WiFi_OTA-D63822)
+![Storage](https://img.shields.io/badge/存储-LittleFS_+_SD-8A6A2E)
+![PC](https://img.shields.io/badge/PC端-PySide6_/_C#_Agent-512BD4?logo=.net&logoColor=white)
+![Windows](https://img.shields.io/badge/驱动-签名_IDD_(Win10/11)-0078D4?logo=windows&logoColor=white)
+
+</div>
+
+---
+
+## 📸 功能展示
+
+<div align="center">
+
+<table>
+  <tr>
+    <th width="50%">🔌 USB 扩展屏（Windows 认作真显示器，SET 键一键切换）</th>
+    <th width="50%">🖥 PC NOW 音乐副屏（局域网推送封面 / 歌词 / 进度 / 媒体控制）</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/showcase_uext_windows.jpg" alt="USB 扩展屏：Windows 扩展显示 + 设备 800x480 副屏" width="100%"/></td>
+    <td><img src="docs/images/showcase_pcnow_lan.jpg" alt="PC NOW：网易云播放态局域网推送到设备副屏" width="100%"/></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <th width="50%">🔵 蓝牙音箱（A2DP Sink，手机推歌 + 实时歌词）</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/showcase_btsink_lyrics.jpg" alt="SINK 模式：蓝牙接收播放并显示三行歌词" width="100%"/></td>
+  </tr>
+</table>
+
 </div>
 
 ---
