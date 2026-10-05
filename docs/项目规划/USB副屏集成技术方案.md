@@ -191,7 +191,8 @@ storage,  data, littlefs, 0xD00000, 0x300000,    # ★ 缩容 5.875MB → 3MB
 ```
 display_audio_photo/                 # main 固件（现有工程，不动结构）
 uext_screen/                         # ★ 独立 IDF 工程（副屏固件源码），
-                                     #   实际位于 Desktop/esp32/uext_screen/（本仓库外）；
+                                     #   开源仓库 github.com/xkk6663/uext_screen
+                                     #   （本地工作副本在 Desktop/esp32/uext_screen/）；
                                      #   预编译烧录包已入库 display_audio_photo/firmware/uext_screen/
                                      #   （uext_screen.bin + Windows 签名驱动 + 烧录说明）
 ├── CMakeLists.txt / sdkconfig.defaults / partitions.csv（同 main）
@@ -281,7 +282,8 @@ main 重启后走正常启动流程（splash → 上滑 → 主界面，D3 拍�
 
 - 首次/升级一律 USB（uext 无 OTA 服务）：
   ```
-  cd Desktop/esp32/uext_screen && idf.py build   # ★ 只 build，绝不 idf.py flash（见下方警告）
+  cd <uext_screen 工程目录> && idf.py build   # ★ 只 build，绝不 idf.py flash（见下方警告）；
+                                              # 源码仓库 github.com/xkk6663/uext_screen
   python -m esptool -p COMx write-flash 0xA20000 build/uext_screen.bin
   ```
   不维护源码的使用者直接用仓库内预编译包：`display_audio_photo/firmware/uext_screen/`

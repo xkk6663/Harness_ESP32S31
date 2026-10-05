@@ -2,7 +2,7 @@
 
 本目录存放 **USB 扩展屏固件（uext_screen）的预编译产物**，供**不维护源码、只要快速点亮副屏**的使用者直接烧录。
 
-> 源码工程不在本仓库内，位于 `Desktop/esp32/uext_screen/`（独立 IDF 工程，含 7 个离线 vendor 组件）。
+> 源码仓库：**https://github.com/xkk6663/uext_screen**（独立 IDF 工程，含 7 个离线 vendor 组件）。
 > 构建细节见 [`docs/项目规划/USB副屏集成技术方案.md`](../../docs/项目规划/USB副屏集成技术方案.md)。
 
 ## 包内文件

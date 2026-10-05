@@ -1,6 +1,6 @@
 <div align="center">
 
-# Harness ESP32-S31 · AI Agent 闭环开发终端
+# 基于 ESP32-S31-Korvo-1 的多功能智能音箱
 
 **基于 ESP32-S31-Korvo-1 的多功能智能音箱固件：蓝牙音箱 / PC 音乐副屏 / 局域网对讲 / 录音回放 / 音乐视频播放 / WiFi-OTA / USB 扩展屏**
 <br>
@@ -39,14 +39,13 @@
     <td><img src="docs/images/showcase_uext_windows.jpg" alt="USB 扩展屏：Windows 扩展显示 + 设备 800x480 副屏" width="100%"/></td>
     <td><img src="docs/images/showcase_pcnow_lan.jpg" alt="PC NOW：网易云播放态局域网推送到设备副屏" width="100%"/></td>
   </tr>
-</table>
-
-<table>
   <tr>
-    <th width="50%">🔵 蓝牙音箱（A2DP Sink，手机推歌 + 实时歌词）</th>
+    <th>🔵 蓝牙音箱（A2DP Sink，手机推歌 + 实时歌词）</th>
+    <th>⛅ 天气时钟（SNTP 校时 + 和风天气实时仪表盘）</th>
   </tr>
   <tr>
     <td><img src="docs/images/showcase_btsink_lyrics.jpg" alt="SINK 模式：蓝牙接收播放并显示三行歌词" width="100%"/></td>
+    <td><img src="docs/images/showcase_weather_clock.jpg" alt="天气时钟：时间日期 + 广州天气湿度风力日出日落" width="100%"/></td>
   </tr>
 </table>
 
@@ -257,7 +256,7 @@ idf.py -p COM9 storage-flash     # 首次烧录 / littlefs 素材变更后，刷
 
 ### B. 想改副屏固件源码
 
-源码在 `Desktop/esp32/uext_screen/`（独立 IDF 工程，含 7 个离线 vendor 组件；架构与坑见 [`docs/项目规划/USB副屏集成技术方案.md`](docs/项目规划/USB副屏集成技术方案.md)）。只 `idf.py build`，**绝不 `idf.py flash`**，产物定点烧 `0xA20000`。
+源码仓库：**[xkk6663/uext_screen](https://github.com/xkk6663/uext_screen)**（独立 IDF 工程，含 7 个离线 vendor 组件；架构与坑见 [`docs/项目规划/USB副屏集成技术方案.md`](docs/项目规划/USB副屏集成技术方案.md)）。只 `idf.py build`，**绝不 `idf.py flash`**，产物定点烧 `0xA20000`。
 
 ### C. 画质调优
 
