@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"          /* OTA 自证定时器（esp_timer_create / start_once） */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -29,10 +30,12 @@
 #include "middleware/audio/record_service.h"
 #include "middleware/network/net_time_service.h"
 #include "middleware/network/pcnow_service.h"
+#include "middleware/network/ota_service.h"
 #include "middleware/bluetooth/bt_audio_service.h"
 #include "middleware/bluetooth/bt_push_service.h"
 #include "middleware/bluetooth/bt_sink_service.h"
 #include "ui/common/ui_binfont.h"
+#include "ui/overlays/overlay_uext.h"
 
 static const char *TAG = "main";
 
@@ -91,6 +94,16 @@ static void on_volume_change(int volume)
     audio_service_post_cmd(&cmd);
 }
 
+/* ★ USB 副屏切换（方案 V1.1 §4.4）：SET 单击 → 确认浮层（2s 倒计时，二次 SET 确认）。
+   回调在 iot_button 任务上下文 —— 只允许置 volatile（overlay_uext_notify_set_click
+   内部如此），绝不碰 LVGL（F44 线程纪律）。全工程 SET 键此前无任何消费者（已核实）。 */
+static void on_button_evt(btn_id_t id, btn_evt_t evt)
+{
+    if (id == BTN_ID_SET && evt == BTN_EVT_SINGLE_CLICK) {
+        overlay_uext_notify_set_click();
+    }
+}
+
 /* Wi-Fi status -> main-interface RGB LED (red / blue breathe / green) */
 static void on_wifi_evt(wifi_evt_t evt, const char *info)
 {
@@ -129,6 +142,16 @@ static void stack_hwm_timer_cb(lv_timer_t *timer)
     UBaseType_t words = uxTaskGetStackHighWaterMark(NULL);
     ESP_LOGI(TAG, "[stack-hwm] taskLVGL high-water = %u words (%u bytes)",
              (unsigned)words, (unsigned)words * (unsigned)sizeof(StackType_t));
+}
+
+/* ★ OTA 自证（防砖核心，方案 §3.1-6）：新固件跑满 30s 且 WiFi 正常才 mark_valid；
+   否则 bootloader 下次启动自动回滚旧槽。放在 app_main 尾部，等各服务都起好。
+   回调跑在 esp_timer 任务上下文 —— ota_service 内部只读分区状态 + 调 IDF API，
+   不碰 LVGL，安全。 */
+static void ota_selftest_timer_cb(void *arg)
+{
+    (void)arg;
+    ota_service_mark_valid_if_pending();
 }
 
 void app_main(void)
@@ -230,6 +253,8 @@ void app_main(void)
     BOOT_DIAG("after button_service_init");
     /* 音量统一出口：硬件键 + UI 滑块 → 蓝牙（已连）/ 本地 codec */
     button_service_set_vol_out_cb(on_volume_change);
+    /* SET 单击 → USB 副屏切换确认（覆盖式回调槽，全工程仅此一处消费者） */
+    button_service_set_evt_cb(on_button_evt);
     BOOT_DIAG("after vol_out_cb set");
 
     /* ★ 顺序有讲究：先注册 wifi 事件回调，再 wifi_manager_init()（后者内部就 esp_wifi_start()
@@ -252,6 +277,20 @@ void app_main(void)
        必须在 link_manager_init() 之后（observer 槽位/对端学习依赖它）。 */
     pcnow_service_init();
     BOOT_DIAG("after pcnow_service_init");
+    /* WiFi 局域网 OTA：必须在 link_manager_init() 之后（注册其 JSON 回调槽）。 */
+    ota_service_init();
+    BOOT_DIAG("after ota_service_init");
+    /* 自证定时器：30s 一次性。若本固件是 OTA 上来的（PENDING_VERIFY），
+       这一枪决定"转正"还是"下次启动回滚"。非 OTA 启动时函数立即返回，零开销。 */
+    esp_timer_create_args_t ota_st_args = {
+        .callback = ota_selftest_timer_cb,
+        .name = "ota_selftest",
+    };
+    esp_timer_handle_t ota_st = NULL;
+    if (esp_timer_create(&ota_st_args, &ota_st) == ESP_OK) {
+        esp_timer_start_once(ota_st, 30ULL * 1000 * 1000);   /* 30s */
+    }
+    BOOT_DIAG("after ota selftest timer armed");
     /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
 
     /* UI framework */

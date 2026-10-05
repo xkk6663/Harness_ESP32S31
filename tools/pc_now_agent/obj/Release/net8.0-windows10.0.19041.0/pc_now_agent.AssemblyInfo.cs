@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("pc_now_agent")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c1a62adb3d28bbd3771b83985c5e6d63e751311a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+90d38e94b48277ad9a3b18991852ad3674fcbfe3")]
 [assembly: System.Reflection.AssemblyProductAttribute("pc_now_agent")]
 [assembly: System.Reflection.AssemblyTitleAttribute("pc_now_agent")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

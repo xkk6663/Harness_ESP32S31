@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_app_desc.h"   /* esp_app_get_description()：fw_ver 真实化（组件 esp_app_format） */
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "link_manager.h"
@@ -27,6 +28,7 @@ static struct sockaddr_in s_peer;
 static bool s_online;
 static int64_t s_last_heartbeat_us;
 static link_evt_cb_t s_observers[LINK_MAX_OBSERVERS];
+static link_json_cb_t s_json_cb;   /* 单槽：通用 JSON 分发（OTA 等），见 .h 说明 */
 
 static void link_task(void *arg);
 static void notify_observers(link_evt_t evt, const char *ip);
@@ -65,6 +67,11 @@ void link_manager_add_evt_cb(link_evt_cb_t cb)
         }
     }
     xSemaphoreGive(s_mux);
+}
+
+void link_manager_set_json_cb(link_json_cb_t cb)
+{
+    s_json_cb = cb;   /* 单槽，无锁：init 期注册一次，之后只读 */
 }
 
 bool link_manager_is_online(void)
@@ -157,8 +164,14 @@ static void link_task(void *arg)
                     s_last_heartbeat_us = esp_timer_get_time();
                     xSemaphoreGive(s_mux);
                     char ack[192];
+                    /* ★ fw_ver 真实化：PC 的版本比对与 OTA"升级成功/已回滚"判定
+                       全靠这个字段。原来硬编码 "phase2" ⇒ 升完级 PC 看不出变化，
+                       会误判成"回滚了"。取编译期烧进镜像的描述符（esp_app_format）。 */
+                    const esp_app_desc_t *desc = esp_app_get_description();
                     snprintf(ack, sizeof(ack),
-                             "{\"type\":\"HEARTBEAT_ACK\",\"ver\":1,\"proto_ver\":1,\"sample_rate\":16000,\"fw_ver\":\"phase2\"}");
+                             "{\"type\":\"HEARTBEAT_ACK\",\"ver\":1,\"proto_ver\":1,"
+                             "\"sample_rate\":16000,\"fw_ver\":\"%s\"}",
+                             desc ? desc->version : "unknown");
                     sendto(s_sock, ack, strlen(ack), 0, (struct sockaddr *)&from, from_len);
                     if (!was_online) {
                         ESP_LOGI(TAG, "ONLINE peer=%s", ip);
@@ -174,6 +187,12 @@ static void link_task(void *arg)
                     ESP_LOGI(TAG, "sig SESSION_STOP -> voice tx+rx off");
                     udp_voice_post_cmd(VOICE_CMD_TX_OFF);
                     udp_voice_post_cmd(VOICE_CMD_RX_OFF);
+                }
+                /* ★ 通用 JSON 分发（末端）：OTA_* 等上层订阅的消息。
+                   放在 HEARTBEAT/SESSION_* 这些"本文件认识的"分支之后，
+                   不认识的和认识的都能到达订阅者。订阅方自行 strstr 判 type。 */
+                if (s_json_cb) {
+                    s_json_cb(packet);
                 }
             }
         }

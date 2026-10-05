@@ -1,0 +1,821 @@
+# WiFi 局域网 OTA — 逐功能逐步骤验收手册
+
+> 版本 **V2**（2026-09-29）· 对应改动记录 **§61 + §61b**、ICD **V1.4**
+> 方案 `docs/项目规划/WiFi局域网OTA升级实施方案.md`
+> 分支：**main**
+>
+> 本手册的写法：**每个功能 = 一个独立验收项**，每项给出
+> ① 怎么操作 ② **预期 PC 日志** ③ **预期设备日志（可 grep）** ④ 内存三元组基线 ⑤ 判据。
+> 出问题时查 §9 排错表和 §10 日志关键字速查。
+
+---
+
+## 0. 一分钟速览
+
+```
+PC: pc_now_agent.exe --ota build\display_audio_photo.bin
+        │
+        ├─ SemVer 比对（设备旧才继续）
+        ├─ UDP 50003: OTA_OFFER
+        │
+设备:   ├─ 6 条校验链 → OTA_ACCEPT
+        ├─ HTTP :50005 GET /firmware.bin（支持 Range 续传）
+        ├─ 边收边写备用槽 + 每 256KB 段哈希落 nvs
+        ├─ OTA_PROGRESS ×N → esp_ota_end → 段数校验 → set_boot_partition
+        ├─ OTA_RESULT{ok:1} → 1s → esp_restart
+        │
+        └─ 30s 自证（WiFi 已连 + link 在线）→ mark VALID
+           （不自证 ⇒ bootloader 下次启动自动回滚旧槽）
+```
+
+**零新增端口**：控制面 = 既有 UDP 50003；数据面 = 设备作 HTTP 客户端拉 PC 的 :50005。
+
+---
+
+## 1. 前置检查（升级前必做，5 项）
+
+### 1.1 固件尺寸必须装得进备用槽 ⚠
+
+main 分支分区表：
+
+| 分区 | 偏移 | 大小 |
+|---|---|---|
+| `ota_0` | 0x20000 | **5 MB** (0x500000 = 5,242,880 B) |
+| `ota_1` | 0x520000 | **5 MB** |
+| `storage` | 0xA20000 | 5.875 MB |
+
+```bash
+ls -la build/display_audio_photo.bin          # 必须 < 5,242,880
+```
+
+> ⚠ **`build/` 若残留其他分支的产物，尺寸会不符**。实测遇到：人脸识别分支的
+> bin = 6,837,312 B（6.52 MB），**装不进 5MB 槽** → 设备回 `OTA_REJECT reason=space`。
+> ⇒ **OTA 前先确认在 main 分支且 `build/` 是本次构建的**（最稳：`idf.py fullclean` 后重建）。
+
+### 1.2 两侧同一 WiFi、防火墙放行
+
+- PC 与设备连**同一路由器同网段**（路由器不能开 AP 隔离）；
+- Windows 防火墙放行 **UDP 50003 / TCP 50005**（首次运行弹窗勾"专用网络"）。
+- ⚠ **PC 上 Clash(7890) TUN 会劫持设备→PC 的 LAN 入站 HTTP**（回 502 文本 ⇒ 设备端解析失败）。
+  测试前给私有网段 `DIRECT`，或临时关 TUN。
+
+### 1.3 关闭 PC 旧实例（端口冲突）
+
+`tools/pc_now_agent`（C#）与 `pc_host`（PySide6，桌面 `ESP32_Voice_Host.bat`）
+**都占 50004/50005，二选一**。OTA 前先关掉 PySide6 上位机。
+
+### 1.4 设备不在"忙"状态
+
+录音中 / 通话中 / 推流中 / 已有升级在进行 → 设备回 `OTA_REJECT reason=busy`。
+
+### 1.5 设备不在 30s 自证窗口内
+
+设备刚被 OTA 上来、还没跑满 30s → 回 `OTA_REJECT reason=pending`。等 30s 重发。
+
+---
+
+## 2. 编译与首次烧录
+
+### 2.1 编译设备端
+
+```bash
+cd C:\Users\xiao1\Desktop\esp32\display_audio_photo
+idf.py reconfigure     # ★ 必须先做：新 Kconfig 符号 + esp_app_format 新依赖
+idf.py build
+```
+
+**构建后核对**：
+
+```bash
+grep "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y" sdkconfig   # 应输出该行
+ls -la build/display_audio_photo.bin                        # < 5,242,880
+```
+
+### 2.2 首次 USB 全量烧录（铺底）
+
+OTA 的前提是设备**已有一个能起来且带 OTA 服务的固件**：
+
+```bash
+idf.py flash                   # app + bootloader + 分区表
+idf.py storage-flash           # 素材镜像（littlefs，含壁纸/字库）
+```
+
+> 单 app 槽布局下 **回滚的兜底永远是 USB 全量烧录**（无 factory 分区）。
+
+### 2.3 确认设备联网
+
+屏幕进主界面；串口出现：
+
+```
+LINK: ONLINE peer=192.168.1.xx
+```
+
+> ★ **排障纪律**：烧固件前先关 PC 上位机 —— PC 端周期心跳会把一次性崩溃放大成崩溃循环。
+
+---
+
+## 3. 启动 PC 端 OTA 服务
+
+```bash
+cd C:\Users\xiao1\Desktop\esp32\display_audio_photo\tools\pc_now_agent
+set DOTNET_ROOT=C:\Users\xiao1\.workbuddy\binaries\dotnet
+C:\Users\xiao1\.workbuddy\binaries\dotnet\dotnet.exe build -c Release   # 改过代码才需要
+
+bin\Release\net8.0-windows10.0.19041.0\pc_now_agent.exe --ota C:\...\build\display_audio_photo.bin
+```
+
+### PC 端命令行开关全表
+
+| 开关 | 作用 | 用于验收项 |
+|---|---|---|
+| `--ota <bin>` | 进入 OTA 模式并推送该固件 | 全部 |
+| `--ota-limit N` | 只发前 N%（1..99） | **8.2 续传** |
+| `--ota-corrupt` | 流中点翻 1 bit | **8.3 坏固件** |
+| `--force` | 忽略 SemVer 比对 | **8.5 同版本重刷** |
+| `--device <ip>` | 直接单播（跳过广播发现） | 排障 |
+
+### PC 端退出码（脚本判定用）
+
+| 码 | 含义 |
+|---|---|
+| 0 | ✅ 升级成功且**版本核对一致** |
+| 2 | 设备未上线（20s 超时） |
+| 3 | 设备 `OTA_REJECT`（看 reason） |
+| 4 | 3 次 OFFER 未收到 ACCEPT |
+| 5 | 重启后 60s 未回心跳（可能已回滚） |
+| 6 | 设备上报 `OTA_RESULT{ok:0}` |
+| 7 | 下载/校验阶段 180s 超时 |
+| 8 | **版本未提升**（设备 ≥ 固件，未加 `--force` 时拒发） |
+| 9 | 设备回来了但 **fw_ver ≠ 期望**（疑似回滚） |
+| 130 | Ctrl-C 主动中止 |
+
+---
+
+## 4. 验收总表（7 大功能 / 18 个步骤）
+
+| # | 功能 | 步骤 | 一键判据 |
+|---|---|---|---|
+| A | **正常升级闭环** | 4.1 ~ 4.5 | PC 退出码 0 |
+| B | **LVGL 升级浮层（M3）** | 5.1 ~ 5.4 | 屏幕出现进度卡片 |
+| C | **自证与回滚** | 6.1 ~ 6.3 | `marked VALID` / 第二次重启回旧槽 |
+| D | **6 条校验链（拒绝路径）** | 7.1 ~ 7.5 | `OTA_REJECT reason=...` |
+| E | **断点续传（M2）** | 8.1 ~ 8.4 | Range 206 + `RESUME from` |
+| F | **坏固件注入（M2）** | 8.3 | `esp_ota_end failed` |
+| G | **PC 掉线主动中止（M2）** | 8.6 | `OTA_ABORT` + `aborted by peer` |
+| H | **内存纪律与三元组** | 9.1 ~ 9.2 | `OTA_MEM` 基线不劣化 |
+
+---
+
+## 5. 【A】正常升级闭环（5 步）
+
+### A-1. 启动采集串口
+
+```bash
+idf.py monitor          # 另开一个终端；先按 Ctrl+] 退出后可用
+# 或把日志重定向到文件便于 grep
+```
+
+### A-2. 启动 PC 端
+
+```bash
+pc_now_agent.exe --ota build\display_audio_photo.bin
+```
+
+**预期 PC 输出**：
+
+```
+http listening on :50005 (/cover/<hash>.jpg, /lyrics.json?k=<hash>, /firmware.json, /firmware.bin[+Range])
+OTA 模式启动：a1b2c3d (4,980,000 B)
+
+================== OTA 升级会话 ==================
+  固件    : C:\...\build\display_audio_photo.bin
+  版本    : a1b2c3d  (display_audio_photo, build 22:45:11)
+  大小    : 4980000 B (4.75 MB)
+  SHA256  : 3f8a...c21e
+  下载 URL: http://<本机>:50005/firmware.bin
+==================================================
+[ota] 等待设备心跳.....
+[ota] 设备在线: 192.168.1.23
+[ota] 设备当前版本: 9f3e21a                 ← ★ 改 §61b 新增：显示设备现有版本
+[ota] 通告 URL: http://192.168.1.100:50005/firmware.bin
+```
+
+> ✅ **A-2 判据**：出现了 `设备当前版本: <hex>`（非 `(未上报)`）。
+> 若显示 `(未上报)` ⇒ 设备固件还是老版本（`HEARTBEAT_ACK` 无 `fw_ver`），
+> 本次仍可继续，但**升级后的版本核对会跳过**。
+
+### A-3. OFFER / ACCEPT
+
+**PC 预期**：
+
+```
+[ota] 发送 OTA_OFFER（第 1/3 次）
+[ota] 设备已接受，开始下载...
+```
+
+**设备预期（`grep OTA_DIAG`）**：
+
+```
+OTA: [OTA_DIAG] OTA_OFFER 到达          (由 link_manager 分发)
+OTA: [OTA_DIAG] OFFER received: ver=a1b2c3d size=4980000 sha=3f8a... url=http://192.168.1.100:50005/firmware.bin
+OTA: [OTA_DIAG] check#1 link_manager offline        ← 不应出现
+OTA: [OTA_DIAG] check#2 record active ...           ← 不应出现
+OTA: [OTA_DIAG] check#3 session mode=...            ← 不应出现
+OTA: [OTA_DIAG] check#4 already active              ← 不应出现
+OTA: [OTA_DIAG] check#5 running slot ... PENDING    ← 不应出现
+OTA: [OTA_DIAG] check#6 ...                          ← 不应出现
+OTA: [OTA_DIAG] all 6 checks passed -> target slot ota_1 (5242880 B free)
+OTA: [OTA_DIAG] OTA_ACCEPT sent -> downloading
+OTA: [OTA_MEM] before-download want=4980000 INT free=... largest=...
+OTA: [OTA_MEM] before download INT free=... largest=... | DMA free=... | PSRAM free=...
+OTA: [OTA_MEM] http-init-ok want=0 INT free=... largest=... | DMA largest=...
+```
+
+> ✅ **A-3 判据**：设备出现 `all 6 checks passed -> target slot ota_1`，
+> 且**目标槽 = 当前槽的对侧**（当前 ota_0 ⇒ 目标 ota_1）。
+
+### A-4. 下载与进度
+
+**PC 预期**（进度条原地刷新）：
+
+```
+[ota] [########------------------------------]  17%  398 KB/s
+...
+[ota] [######################################] 100%  412 KB/s
+[ota] 设备上报：升级成功，正在重启…
+```
+
+**设备预期（关键日志）**：
+
+```
+OTA: [OTA_DIAG] http status=200 content-length=4980000 (expect 200, or 206 when Range)
+OTA: [OTA_DIAG] download start: offset=0 / 4980000 (0%), seg_done=0
+OTA: [OTA_MEM] ota-begin-ok want=4980000 INT free=... largest=... | DMA largest=...
+OTA: [OTA_RESUME] seg 1 flushed (262144 B), next_offset=262144, digest=1a2b3c4d5e6f7788...
+OTA: [OTA_RESUME] seg 2 flushed (262144 B), next_offset=524288, digest=...
+...
+OTA: [OTA_DIAG] progress 2% (99584 B, 398 KB/s)
+OTA: [OTA_DIAG] progress 4% (199168 B, 400 KB/s)
+...
+OTA: [OTA_DIAG] progress 100% (4980000 B, 412 KB/s)
+```
+
+> ✅ **A-4 判据**：
+> 1. `http status=200`（首次整包）；
+> 2. 段 flush 日志**每 256KB 一条**，`next_offset` 单调递增到 `size`；
+> 3. `progress` 到 100%。
+
+> ★ **排错提示**：若出现 `[OTA_ERR] http read error (-28672) ...`（`-ESP_ERR_HTTP_EAGAIN`），
+> 那是**旧版本代码**的表现 —— 本版已单独分支处理该重试信号（不会误杀）。
+> 若仍见错误，查 PC 是否被 Clash TUN 劫持（§1.2）。
+
+### A-5. 校验、切槽、重启、转正
+
+**设备预期**：
+
+```
+OTA: [OTA_DIAG] download complete, verifying (esp_ota_end)...
+OTA: [OTA_RESUME] tail seg 20 flushed (fill=65536 B), digest=...      ← 尾巴段
+OTA: [OTA_DIAG] esp_ota_end OK (image header + segment CRC valid)
+OTA: [OTA_RESUME] digest chain: seg_count=20 (expect 20), path=FULL
+OTA: [OTA_RESUME] seg[0]=1a2b3c4d...
+OTA: [OTA_RESUME] seg[1]=...
+...
+OTA: [OTA_RESUME] whole-sha expected=3f8a...c21e (段链已覆盖)
+OTA: [OTA_DIAG] set_boot_partition(ota_1) OK
+OTA: [OTA_RESUME] cleared                                          ← 成功 → 断点作废
+OTA: [OTA_DIAG] OTA OK, rebooting in 1000 ms
+```
+
+**重启后（约 30s）**：
+
+```
+OTA: [OTA_DIAG] init done: running=ota_1 next_update=ota_0 pending_verify=1
+...
+OTA: [OTA_DIAG] self-test OK: app marked VALID (rollback cancelled), run=ota_1
+```
+
+**PC 预期**：
+
+```
+[ota] 设备已回来，IP=192.168.1.23，fw_ver=a1b2c3d
+[ota] ★ 版本核对: 期望 a1b2c3d / 实际 a1b2c3d → 升级成功 ✅
+```
+
+> ✅ **A-5 判据（4 个必须全中）**：
+> 1. `esp_ota_end OK`；
+> 2. `digest chain: seg_count=N (expect N)` **两数相等**；
+> 3. `set_boot_partition(ota_X) OK` 且 X 已换到对侧；
+> 4. 重启后 30s 内 `self-test OK: app marked VALID`，PC 显示 `升级成功 ✅`（退出码 0）。
+
+---
+
+## 6. 【B】LVGL 升级浮层（M3 浮层，4 步）
+
+浮层 = 全屏 70% 遮罩 + 居中卡片 560×300：
+标题「固件升级」/ 版本行 `vA -> vB` / 青色进度条 / 状态文本 / 红字「请勿断电、勿断网」。
+
+### B-1. 浮层出现
+
+**观察**：设备屏上**在收到 `OTA_ACCEPT` 后立即出现**遮罩卡片。
+
+**设备预期（`grep OTA_UI`）**：
+
+```
+OTA_UI: [OTA_UI] card built (mask 800x480, box 560x300), hidden
+OTA_UI: [OTA_UI] init done (evt_cb subscribed, tick=300ms)
+OTA_UI: [OTA_UI] evt=0 pct=0 detail='ota_1'
+OTA_UI: [OTA_UI] overlay SHOWN
+```
+
+> ✅ **B-1 判据**：`card built`（开机时）+ `overlay SHOWN`（升级开始时）。
+
+### B-2. 版本行正确
+
+**观察**：卡片第二行显示 `<当前版本>  ->  <OFFER 版本>`，例如 `9f3e21a  ->  a1b2c3d`。
+
+> ✅ **B-2 判据**：箭头左侧是**设备当前**版本（`ota_service_get_running_version`），
+> 右侧是**本次 OFFER** 的 ver（`ota_service_get_offer_version`）。两者应不同。
+
+### B-3. 进度条 + 警示语闪烁
+
+**观察**：
+1. 进度条随 PC 端同步增长；
+2. 状态文本变化：`已接受请求，开始下载…` → `下载中 42%` → `校验固件完整性…` → `升级成功，正在重启…`；
+3. 红字「请勿断电、勿断网」在**下载中闪烁**（300ms 相位）。
+
+> ✅ **B-3 判据**：进度条百分比与 PC 端 `--ota` 进度条**同步**（浮层略滞后 ≤0.3s）。
+
+### B-4. 触摸被拦截 + 失败自动收摊
+
+**操作**：升级过程中点击屏幕任意位置。
+
+> ✅ **B-4 判据**：
+> 1. 点击**不穿透**（不切 tab、不触发底层按钮）；
+> 2. 若升级失败/中止 → 浮层显示 `升级失败，断点已保留` / `升级已取消`，
+>    **约 3.6s 后自动隐藏**，日志出现 `overlay HIDDEN`。
+
+> ★ **线程纪律验证**：浮层刷新全部在 `lv_timer`（taskLVGL）；
+> `ota_task` 只写 `s_pending_*`。若出现 **LVGL 断言 / 花屏 / TaskWDT**，
+> 第一嫌疑就是有人在 `evt_cb` 里碰了 LVGL —— 查 `overlay_ota.c` 的 `ota_ui_evt_cb()` 是否只有赋值语句。
+
+---
+
+## 7. 【C/D】自证、回滚 与 校验链拒绝路径
+
+### C-1. 自证成功（正常路径）
+
+见 A-5。**补充判据**：自证后再手动按复位键一次，**应仍进 ota_1**（不回滚）。
+
+```
+OTA: [OTA_DIAG] init done: running=ota_1 ... pending_verify=0     ← 转正后为 0
+```
+
+### C-2. 自证失败 → 自动回滚（★ 防砖核心验证）
+
+**构造坏固件**（在 `main.c` 里把自证定时器注释掉）：
+
+```c
+// 临时改：删掉 esp_timer_start_once(ota_st, 30ULL * 1000 * 1000);
+```
+
+编译后 USB 烧进 **ota_0**（当前槽），然后 `--force --ota <该bin>` 推到 ota_1。
+
+**预期时间线**：
+
+```
+[第一次重启] running=ota_1  pending_verify=1
+             （30s 内没有任何 mark VALID）
+             ↓ 手动按复位
+[第二次重启] bootloader 自动回滚 → running=ota_0
+             fw_ver 变回旧值
+```
+
+**设备预期（`grep rollback`）**：
+
+```
+boot: ... Rollback: current app is not verified, switching to ota_0
+```
+
+> ✅ **C-2 判据**：第二次重启后 `esp_ota_get_running_partition()` 回到 **ota_0**，
+> PC 收到的心跳 `fw_ver` 是**旧版本**。
+
+> ⚠ **这个测试必须做一次**：它是"OTA 不会变砖"的唯一硬证据。
+> 做完记得**把自证定时器改回来**并重烧。
+
+### C-3. 自证条件严格性（link 在线）
+
+**操作**：升级成功后，**断开 PC 端**（设备失去 link 对端），然后在 30s 窗口内观察。
+
+**设备预期**：
+
+```
+OTA: [OTA_DIAG] PENDING_VERIFY but wifi=1 link=0 -> NOT marking valid
+     (bootloader will roll back on next boot)
+```
+
+> ✅ **C-3 判据**：`wifi=1 link=0` ⇒ **不转正**。说明自证条件（WiFi 已连 **且** link 在线）
+> 两个都真的生效（M3 增强点）。
+
+### D-1 ~ D-5. 6 条校验链（拒绝路径）
+
+逐个构造，每次 PC 端应打印 `OTA_REJECT` 与 reason：
+
+| 步骤 | 制造方法 | 期望 reason | 设备日志 |
+|---|---|---|---|
+| **D-1** | 设备录音中（REC tab 按一次）发 OFFER | `busy` | `check#2 record active` |
+| **D-2** | 设备通话/推流中发 OFFER | `busy` | `check#3 session mode=N` |
+| **D-3** | 升级进行中再发一次 OFFER | `busy` | `check#4 already active` |
+| **D-4** | OTA 成功后**不等 30s** 立即再推 | `pending` | `check#5 running slot ota_1 is PENDING_VERIFY` |
+| **D-5** | 推 6MB 的 bin（人脸分支残留物） | `space` | `check#6 image 6837312 > slot 5242880` |
+| **D-6** | 关掉 PC 端 link 或拔设备网 | `network` | `check#1 link_manager offline` |
+
+**设备预期（统一格式）**：
+
+```
+OTA: [OTA_DIAG] REJECT reason=busy
+```
+
+**PC 预期**：
+
+```
+[ota] 设备拒绝: {"type":"OTA_REJECT","reason":"busy"}
+       reason 含义: busy=录音/通话中  pending=待自证  space=槽不够  network=离线  badargs/badjson=参数问题
+```
+
+> ✅ **D 判据**：每条都命中**对应** reason（不是别的）。
+
+---
+
+## 8. 【E/F/G】断点续传、坏固件、主动中止（M2 三项新能力）
+
+### E-1. 制造"下不完"（`--ota-limit 40`）
+
+```bash
+pc_now_agent.exe --ota build\display_audio_photo.bin --ota-limit 40
+```
+
+PC 会只发 40% 的字节，且 `OTA_OFFER.size` 与 `/firmware.json` 都报**截断长度**。
+
+**PC 预期**：
+
+```
+  ★ 测试开关: --ota-limit 40% → 只发 1992000 B
+...
+[ota] 设备上报：升级失败 → {"type":"OTA_RESULT","ok":0,"detail":"failed"}
+```
+
+**设备预期**：
+
+```
+OTA: [OTA_DIAG] OFFER received: ver=... size=1992000 ...
+OTA: [OTA_DIAG] all 6 checks passed -> target slot ota_1 (...)
+OTA: [OTA_RESUME] fresh download (resume rec magic=0x00000000 size=0 off=0)
+OTA: [OTA_RESUME] seg 1 flushed (262144 B), next_offset=262144, ...
+...
+OTA: [OTA_ERR] size mismatch: got 1992000, expect 1992000 (offset kept for resume)
+```
+
+> ⚠ 注意：**`--ota-limit` 的 size 是截断后的**，所以设备端 `total == expect_size` 会成立，
+> 失败点会落到 **`esp_ota_end`（镜像不完整）**，而不是 size mismatch：
+> ```
+> OTA: [OTA_ERR] esp_ota_end failed (image invalid: 镜像头/段 CRC 不过)
+> ```
+> 两种表现都正确 —— **关键是断点被保留**：
+
+```
+OTA: [OTA_RESUME] keeping resume record for retry (next_offset=1992000)
+```
+
+### E-2. 立即重推（不带 limit）→ 应续传
+
+```bash
+pc_now_agent.exe --ota build\display_audio_photo.bin
+```
+
+**设备预期（★ 本项核心）**：
+
+```
+OTA: [OTA_RESUME] found: total=4980000 done=1992000 seg_done=7 sha=3f8a...c21e
+OTA: [OTA_RESUME] RESUME from 1835008 B (seg_done=7, rollback from 1992000 for hash)
+OTA: [OTA_DIAG] http status=206 content-length=3146992 (expect 200, or 206 when Range)
+OTA: [OTA_DIAG] download start: offset=1835008 / 4980000 (36%), seg_done=7
+OTA: [OTA_RESUME] seg 8 flushed (262144 B), next_offset=2097152, ...
+...
+OTA: [OTA_DIAG] set_boot_partition(ota_1) OK
+```
+
+**PC 预期**：
+
+```
+[ota] http /firmware.bin GET range=1835008- (status=206, len=3146992)
+[ota] served firmware.bin: 3146992 B (offset=1835008, full) 请求 #2
+```
+
+> ✅ **E-2 判据（4 个必须全中）**：
+> 1. `found: total=... done=...`（nvs 断点被读到）；
+> 2. `RESUME from <段边界> B (seg_done=N, rollback from <旧offset>)` —— **回退到段边界**；
+> 3. **PC 回 `206` + `Content-Range`**（`status=206`）；
+> 4. `download start: offset=<段边界>` 且进度从 ~36% 起（**不是 0%**）。
+
+### E-3. 段边界回退的数学正确性
+
+**验证**：`RESUME from` 的偏移应等于 `seg_done × 262144`。
+
+```
+seg_done=7 → 7 × 262144 = 1835008   ✅ 与日志一致
+```
+
+> ✅ **E-3 判据**：`start_off == seg_done × OTA_SEG_SIZE`。
+> 这是"**只重算 ≤256KB 尾巴**"的依据 —— 若回退量 > 256KB，说明段逻辑有 bug。
+
+### E-4. 服务端不支持 Range 时自动降级
+
+**构造**：把 PC 端 Range 分支临时注释（模拟老服务端），或用一个只回 200 的简易 HTTP 服务。
+
+**设备预期**：
+
+```
+OTA: [OTA_DIAG] http status=200 content-length=4980000 (expect 200, or 206 when Range)
+OTA: [OTA_RESUME] server ignored Range (200) -> downgrade to FULL download
+OTA: [OTA_DIAG] download start: offset=0 / 4980000 (0%), seg_done=0
+```
+
+> ✅ **E-4 判据**：**降级整包**（offset 归 0），不会出现"槽内容错位"导致的
+> `esp_ota_end failed`。
+
+### F-1. 坏固件注入（`--ota-corrupt`）
+
+```bash
+pc_now_agent.exe --ota build\display_audio_photo.bin --ota-corrupt
+```
+
+**PC 预期**：
+
+```
+  ★ 测试开关: --ota-corrupt → 流中点翻 1 bit
+...
+[ota] ★ CORRUPT injected at stream offset 2490000 (1 bit flipped) —— 预期设备端 esp_ota_end / 段哈希报错
+```
+
+**设备预期（二选一，都算正确）**：
+
+```
+# 路径 1：镜像段 CRC 不过（最常见）
+OTA: [OTA_ERR] esp_ota_end failed (image invalid: 镜像头/段 CRC 不过)
+
+# 路径 2：段数一致性校验拦截
+OTA: [OTA_ERR] segment count mismatch: got N expect M
+```
+
+> ✅ **F-1 判据**：**升级必须失败**，且设备**仍运行在旧槽**（不变砖）。
+> PC 端应显示 `升级失败`（退出码 6）。
+>
+> ★ 这条验证的是 `esp_ota_end` 的镜像校验**真的在起作用**。
+
+### G-1. PC 掉线 → 设备主动中止？（实为 PC 主动发 ABORT）
+
+**构造**：升级进行中，**在设备侧拔掉网线 / 关 WiFi**（设备心跳停）。
+
+**PC 预期**：
+
+```
+[ota] 设备 OFFLINE (ack timeout)
+[ota] ★ 设备心跳丢失 >8s，已发送 OTA_ABORT（设备应立即停手）
+```
+
+> ⚠ 设备已断网，收不到 ABORT —— 这条测试的真实价值是**验证 PC 侧的检测与发包逻辑**。
+
+### G-2. 中止真的生效（★ 在设备侧构造）
+
+**构造**：升级中，从**设备侧**触发 ABORT（或用 `--device <ip>` + 手动发 UDP 包）：
+
+```python
+# 在 PC 上模拟"对端主动中止"
+import socket, json
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(json.dumps({"type":"OTA_ABORT","reason":"test"}).encode(), ("192.168.1.23", 50003))
+```
+
+**设备预期**：
+
+```
+OTA: [OTA_DIAG] OTA_ABORT received -> s_abort=1 (effective at next chunk)
+OTA: [OTA_DIAG] abort flag seen at 1234567 B -> stop reading
+OTA: [OTA_DIAG] esp_ota_abort called (slots left untouched)
+OTA: [OTA_DIAG] OTA ABORTED at 24% (stayed on ota_0)
+```
+
+**浮层预期**：显示 `升级已取消` / `设备未改动`，3.6s 后隐藏。
+
+> ✅ **G-2 判据（3 个必须全中）**：
+> 1. `OTA_ABORT received -> s_abort=1`（**立即置标志**）；
+> 2. `abort flag seen at <offset> B -> stop reading`（**块边界真停了**，不是等下载完）；
+> 3. `stayed on ota_0`（**当前槽未变**）。
+>
+> ★ 关键区分点：`abort flag seen at` 的偏移应**明显小于**总大小（例如 24% 处就停）。
+
+### G-3. 中止后断点是否保留
+
+**设备预期**：
+
+```
+OTA: [OTA_RESUME] ABORT → 断点保留与否？
+```
+
+> 设计决策：**ABORT 属用户主动取消**，本版**不打印 `keeping resume record`**
+> （`if (!ok && !s_abort)` 条件），但 nvs 里的段边界记录**仍在**（最后一次 `resume_save`）。
+> ⇒ 下次同版本 OFFER 仍可续传。这是**可接受的**（省一次重下），如需彻底清断点
+> 可调 `ota_service_clear_resume()`。
+
+---
+
+## 9. 【H】内存纪律与三元组基线（2 步）
+
+### H-1. 三元组打点位置（本版共 7 处）
+
+所有 `[OTA_MEM]` 行格式：
+
+```
+OTA: [OTA_MEM] <label> want=<N> INT free=<N> largest=<N> | DMA largest=<N>
+OTA: [OTA_MEM] <label> INT free=<N> largest=<N> | DMA free=<N> | PSRAM free=<N>
+```
+
+| 打点 | label | 时机 | 关注 |
+|---|---|---|---|
+| 1 | `after ota_service_init` | 初始化后 | 常驻开销（应为 0，仅建任务+队列） |
+| 2 | `before-download want=<size>` | 下载前 | **want = 固件大小**（说明不是一次性分配！） |
+| 3 | `before download` | 同上（五元） | 基线 |
+| 4 | `http-init-ok` / `http-init-FAIL` | HTTP 客户端创建 | 失败必有 FAIL 行 |
+| 5 | `ota-begin-ok` / `ota-begin-FAIL want=<size>` | `esp_ota_begin` | 失败必打 **want** |
+| 6 | `after-download` | 结束后 | 应回到基线 |
+| 7 | `after download (back to IDLE)` | 同上（五元） | **对比 #3，验证零泄漏** |
+
+**另有失败路径的三元组**（规范 A4）：
+
+```
+OTA: [OTA_ERR] OFFER copy alloc failed: want=NNN INT free=... largest=... | PSRAM free=... largest=...
+```
+
+> ✅ **H-1 判据**：`after download (back to IDLE)` 的 `INT free` / `largest`
+> 应 ≈ `before download` 的值（**差值 < 2KB**）。若差很多 ⇒ 有泄漏，查 `goto out` 路径。
+
+### H-2. 内存纪律检查清单（代码级，对照 13 号文档）
+
+| 规范条 | 本实现 | 怎么验 |
+|---|---|---|
+| **S1 静态池** | 4KB 读缓冲 `s_rd_buf[4096]` 走 `.bss` | `nm build/display_audio_photo.elf \| grep s_rd_buf`（应在 `.bss`） |
+| **C1 默认 PSRAM** | OFFER JSON 拷贝走 `heap_caps_malloc(SPIRAM)` | 代码审查（`ota_service.c:259`） |
+| **C3 栈外置 WithCaps** | `xTaskCreatePinnedToCoreWithCaps(..., MALLOC_CAP_SPIRAM\|8BIT)` | 代码审查（`:298`） |
+| **C5 caps 配 caps** | `heap_caps_free(cmd.json)`（不是 `free()`） | 代码审查（`:877`） |
+| **T5 外置栈失败点名** | 失败日志含 `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` | 代码审查（`:302`） |
+| **A2 运行期禁 assert** | 下载/校验全走 `goto out` | 只有 `ota_service_init()` 有 `assert`（初始化期，允许） |
+| **A3 用户可见功能必降级** | 失败回 IDLE，不 abort 系统 | 见 F-1 / G-2 |
+| **A4 alloc 失败打三元组** | 3 处失败路径 | 见 H-1 |
+| **L1 生命周期** | `resume_clear()` on success；`esp_ota_abort` on failure | 见 A-5 / G-2 |
+
+### H-3. BOOT_DIAG 对照（开机内存账单）
+
+`main.c` 的 `[boot-diag]` 仍逐阶段打印。**关注两条新增**：
+
+```
+main: [boot-diag] after ota_service_init        internal free=... largest=...
+main: [boot-diag] after ota selftest timer armed internal free=... largest=...
+```
+
+> ✅ **H-3 判据**：`after ota_service_init` 相对 `after pcnow_service_init` 的
+> 内部 RAM 消耗应为 **~0**（只多了 1 个任务栈在 PSRAM + 1 个 4 项队列 + 1 个 12KB 静态结构）。
+> ★ 但注意 **`s_resume`（`ota_resume_t` ≈ 24+32 段摘要 = 800 B）走 `.bss`**，
+> 会从内部 RAM 切走 —— 属"缩 .bss 才能加堆"的口径，量很小（<1KB）。
+
+---
+
+## 10. 日志关键字速查（★ 排错主场）
+
+```bash
+# 设备端（idf.py monitor 输出重定向到文件后）
+grep "OTA_DIAG"   ota.log     # 分阶段进度 + 校验链 + 三元组五元
+grep "OTA_ERR"    ota.log     # 所有错误（含错误码/偏移/槽名）
+grep "OTA_MEM"    ota.log     # 纯内存打点
+grep "OTA_RESUME" ota.log     # 断点/段/Range/摘要链
+grep "OTA_UI"     ota.log     # 浮层（卡片/显隐/事件消费）
+grep "rollback"   ota.log     # bootloader 回滚
+grep "boot-diag"  ota.log     # 开机内存账单
+```
+
+| 关键字 | 一行示例 | 看到它说明 |
+|---|---|---|
+| `OTA_DIAG` | `all 6 checks passed -> target slot ota_1` | 校验通过、开始下载 |
+| `OTA_DIAG` | `progress 42% (2097152 B, 400 KB/s)` | 下载中（每 2%） |
+| `OTA_DIAG` | `set_boot_partition(ota_1) OK` | 已切槽 |
+| `OTA_DIAG` | `self-test OK: app marked VALID` | 转正成功 |
+| `OTA_ERR` | `esp_ota_end failed (image invalid...)` | 镜像校验不过（坏固件/截断） |
+| `OTA_ERR` | `segment count mismatch: got N expect M` | 段数不符（size 与内容不符） |
+| `OTA_RESUME` | `RESUME from 1835008 B (seg_done=7, ...)` | 续传生效 |
+| `OTA_RESUME` | `server ignored Range (200) -> downgrade to FULL` | 服务端不支持 Range，降级 |
+| `OTA_UI` | `evt=1 pct=42 detail=''` | 浮层消费了一个进度事件 |
+| `OTA_UI` | `overlay SHOWN` | 卡片已显示 |
+| `rollback` | `Rollback: current app is not verified...` | bootloader 自动回滚 |
+
+---
+
+## 11. 排障速查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| PC 卡在"等待设备心跳" | 不同网段 / 防火墙 / 设备未联网 | 查设备 `LINK: ONLINE`；放行 UDP 50003 |
+| PC 立即报版本未提升（rc=8） | 设备 `fw_ver >=` 固件版本 | 加 `--force`，或给固件提版本号 |
+| `OTA_REJECT reason=busy` | 设备在录音/通话/推流 | 停掉对应功能重发 |
+| `OTA_REJECT reason=pending` | 设备上电未满 30s（自证窗口内） | 等 30s 重发 |
+| `OTA_REJECT reason=space` | bin 超 5MB 槽 | 确认 build 是 main 分支的（`idf.py fullclean` 重建） |
+| `OTA_REJECT reason=network` | link 未在线 | 等设备联网 |
+| `http status=502` / 设备解析失败 | **PC 上 Clash TUN 劫持 LAN 入站** | 私有网段 `DIRECT` 或关 TUN |
+| PC 回 200 而非 206（期望续传） | PC 端代码未更新 / 简易服务端 | 重新 `dotnet build`；见 E-4 |
+| 下载中断后 PC 重跑但设备从 0% 起 | nvs 断点被 size/sha 不匹配作废 | 正常（换了固件）；同固件应续传 |
+| 浮层不出现 | `overlay_ota_init()` 未调用 / 无事件 | 查 `OTA_UI: init done`；查 `evt=` 日志 |
+| 浮层出现但进度不动 | `lv_timer` 未创建 / taskLVGL 被饿死 | 查 `tick=300ms`；查是否 LVGL 线程被长任务占住 |
+| 出现 LVGL 断言 / 花屏 | ★ **有人在 `evt_cb` 碰了 LVGL** | 查 `overlay_ota.c:ota_ui_evt_cb()` 是否只有赋值 |
+| 设备重启后 60s 未回心跳 | 可能已回滚 / 未起来 | 查串口 `rollback`；兜底 USB 重烧 |
+| `keeping resume record` 反复出现 | 固件本身有问题（每次都在同一偏移失败） | 检查 PC 侧文件完整性（`sha256sum`） |
+
+---
+
+## 12. 常见问题
+
+**Q：能降级吗？**
+能，但**默认会拦**。PC 端用 SemVer 粗比：设备版本 ≥ 固件版本时**拒发**（rc=8）。
+要降级/同版本重刷 → 加 `--force`。
+
+**Q：OTA 时能听歌吗？**
+能。本地/蓝牙放歌不写内部 Flash，OTA 期间只是可能卡顿（预期）。
+但**同时录音不行**（`OTA_REJECT busy`，两者抢 flash）。
+
+**Q：升级失败会变砖吗？**
+不会。**四道防线**：
+① `esp_ota_end` 做镜像头 + 段 CRC 校验；
+② 段摘要链 + 段数一致性硬校验；
+③ 30s 自证（WiFi + link）+ bootloader 自动回滚；
+④ 最坏情况 USB 全量重刷（单 app 槽布局的兜底）。
+
+**Q：断电了怎么办？**
+断点（nvs）已落盘到**最近 256KB 段边界**。重新上电后同版本 OFFER
+会自动 `RESUME from <段边界>`，最多重下 256KB。**这是 M2 的核心价值**。
+
+**Q：`storage` 分区会被 OTA 覆盖吗？**
+不会。OTA 只写 app 槽（ota_0/ota_1 对侧），`storage`/`nvs` 完全不碰。
+
+**Q：怎么给固件起版本号？**
+改 `main/CMakeLists.txt` 的 `project(... VERSION x.y.z)`；当前是 git 短 hash。
+版本号烧进 `esp_app_desc_t.version`，也是 `HEARTBEAT_ACK.fw_ver` 的来源。
+
+**Q：怎么清掉断点？**
+正常流程成功切槽会自动清（`[OTA_RESUME] cleared`）。
+调试时可临时调 `ota_service_clear_resume()`（已导出）。
+
+**Q：`--ota-limit` 到底测什么？**
+测**断点保留 + 续传**。它让 PC 少发字节，设备必然在 `esp_ota_end` 失败 ⇒
+关键是失败后 nvs 断点**不被清**，重推时能从段边界续上。
+
+---
+
+## 13. 里程碑现状（M1~M4）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **M1** | 闭环（OFFER/ACCEPT、HTTP 拉取、SHA256、切槽、自证） | ✅ 已完成（§61） |
+| **M2** | `OTA_ABORT` 真中断 + HTTP Range 续传 + 256KB 分段哈希 + 断点保留 | ✅ 已完成（§61b） |
+| **M3** | LVGL 升级浮层 + 自证增强（WiFi **且** link） + PC 破坏性开关 | ✅ 已完成（§61b） |
+| **M4** | `firmware/` 版本归档 + PySide6 OTA Tab + 多设备批量 | ⏳ 未开工 |
+
+---
+
+## 14. 一键验收脚本（可选）
+
+把常用检查串起来（在 ESP-IDF 终端跑）：
+
+```bash
+#!/bin/bash
+# 前提：当前在 main 分支，且刚 idf.py build 过
+set -e
+
+echo "── 1. 回滚开关 ──"
+grep "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y" sdkconfig
+
+echo "── 2. 固件尺寸（必须 < 5242880）──"
+ls -la build/display_audio_photo.bin
+
+echo "── 3. 固件版本（esp_app_desc_t.version @ 0x30）──"
+python -c "b=open('build/display_audio_photo.bin','rb').read(256);print(b[0x30:0x50].split(b'\x00')[0].decode())"
+
+echo "── 4. 固件 SHA256（与 PC 端 --ota 打印值核对）──"
+sha256sum build/display_audio_photo.bin
+
+echo "── 5. 分区表确认 ota_0/ota_1 各 5MB ──"
+python -c "import re;[print(l.rstrip()) for l in open('partitions.csv') if 'ota' in l]"
+```
+
+---
+
+> **改动记录**：§61（M1）+ §61b（M2/M3）
+> **协议**：`docs/项目规划/通信接口规范_ICD.md` §8（V1.4）
+> **内存纪律**：`docs/工程规范/13_内存管理规范.md` + `14_堆管理宝贵经验.md`

@@ -2,7 +2,7 @@
 
 # Harness ESP32-S31 · AI Agent 闭环开发终端
 
-**基于 ESP32-S31-Korvo-1 V1.1 的设备 ↔ PC 双通道低延迟语音传声机固件**
+**基于 ESP32-S31-Korvo-1 的多功能智能音箱固件：蓝牙音箱 / PC 音乐副屏 / 局域网对讲 / 录音回放 / 音乐视频播放 / WiFi-OTA / USB 扩展屏**
 <br>
 **不只是代码，更是一套 AI Agent 可读规范 → 写代码 → 烧录 → 抓日志 → 反复验证的智能开发闭环**
 
@@ -19,15 +19,43 @@
 
 ## 📡 这是什么
 
-一台 ESP32-S31 设备，通过 Wi-Fi 与 PC 双向对讲：
+一台 ESP32-S31 设备 = **蓝牙音箱 + PC 歌词副屏 + 局域网对讲机 + 录音笔 + 音视频播放器**，主界面 7 个 Tab：
 
-| 模式 | 协议 | 端口 | 用途 |
-|---|---|---|---|
-| 🎙 **UDP 实时通话** | UDP | 50000 / 50001 | 全双工对讲，端到端 ≤100 ms |
-| 🎧 **TCP 整段录音** | TCP | 50002 | 整段落盘 WAV，零丢帧 |
-| 📢 **信令通道** | UDP 广播 | 50003 | 模式切换、设备发现 |
+| Tab | 功能 | 说明 |
+|---|---|---|
+| 🎙 **CALL** | 局域网实时对讲 | UDP 50000/50001 全双工语音，端到端 ≤100 ms（16 kHz/16 bit/mono） |
+| 💾 **REC** | 本地录音 | 一键开录 → 存 SD 卡 WAV → FILES 页回放 |
+| 🎵 **AUDIO** | 音乐播放中心 | SD 卡音乐（esp_player 硬解）；顶部切换 LOCAL 板载扬声器 / BT PUSH 蓝牙耳机推流 |
+| 🔵 **SINK** | 蓝牙音箱 | A2DP Sink：手机推歌到本机播放，AVRCP 取歌名/进度显示 |
+| 🎬 **VIDEO** | 视频播放 | 播放 SD 卡 MJPEG AVI，硬件 JPEG 解码 + PPA 缩放，全屏 800×480 |
+| 🖥 **PC** | PC 音乐副屏 | 局域网接收 PC"正在播放"（网易云等）：旋转封面 + 三行滚动歌词（1.25 s 提前量补偿）+ 媒体控制键 |
+| ⚙ **SYS** | 系统入口 | RGB 灯 / WiFi / 蓝牙信息 / OTA 升级等监视与设置卡 |
 
-音频参数：**16 kHz / 16 bit / mono**，20 ms = **640 B/帧**。
+系统级能力：
+
+| 能力 | 说明 |
+|---|---|
+| 🔄 **WiFi OTA** | 设备端 `ota_service` + LVGL 升级覆盖层，A/B 双槽轮替（ota_0 ⇄ ota_1），见 [`docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`](docs/项目规划/WiFi_OTA_烧录验收与使用流程.md) |
+| 🖥 **USB 扩展屏**（uext） | 另一套独立固件：本机变 Windows 的 800×480 USB 副屏（TinyUSB HS 收 JPEG → 硬解直写屏），主固件内**SET 键一键切换**，详见下文 |
+| ⛅ **下拉仪表盘** | SNTP 校时 + 和风天气壁纸实时刷新 |
+| 🔊 **音频仲裁** | `audio_service` 命令队列模型，UI 不直接碰 codec；播放/录音/对讲互斥调度 |
+
+---
+
+## 🔀 双固件架构（主固件 ⇄ 副屏固件）
+
+```
+                    ┌─────────────────────────────────────────┐
+   16 MB Flash      │  ota_0(5M) ⇄ ota_1(5M)   uext(ota_2)    │
+                    │   主固件 A/B OTA 轮替     USB 副屏固件    │
+                    └─────────────────────────────────────────┘
+   SET 键单击（主固件）→ 倒计时确认卡 → 重启进副屏
+   SET 键单击（副屏）  → 回写引导标志  → 重启回主固件
+```
+
+- **主固件**（本仓库源码）：LVGL 全功能界面，OTA 只在 ota_0/ota_1 间轮替，**永不覆盖 uext 槽**（`ota_service.c: ota_pick_update_slot()` 显式锁槽，该补丁勿删）。
+- **副屏固件**（预编译包在本仓库 `firmware/uext_screen/`）：源码为独立 IDF 工程（不在本仓库），USB Type-A 口直连 PC，Windows 端装 Espressif 官方签名 IDD 驱动后即成扩展显示器。画质参数：JPEG 质量 9 / 单帧上限 450 KB。
+- ⚠️ 副屏固件**只能定点烧写 `0xA20000`**，对它跑 `idf.py flash` 会覆盖主固件。
 
 ---
 
@@ -54,8 +82,8 @@ Agent 读日志：panic? 功能日志? 静默?
 ```
 
 - **[`skills/esp-idf-closed-loop.md`](skills/esp-idf-closed-loop.md)** —— 闭环 SOP，Agent 每次开发前必读；
-- **[`docs/工程规范/`](docs/工程规范/)** —— 分层架构、命名、模块模板、CheckList（01~10 + 附录）；
-- **[`docs/项目规划/`](docs/项目规划/)** —— 需求文档、todolist、改动记录。
+- **[`docs/工程规范/`](docs/工程规范/)** —— 分层架构、命名、模块模板、CheckList（01~11 + 附录）；
+- **[`docs/项目规划/`](docs/项目规划/)** —— 需求文档、todolist、改动记录（§编号制）、各专项实施方案、ICD 接口规范。
 
 ### 🚫 红线（Agent 写代码时必须遵守）
 
@@ -66,7 +94,6 @@ Agent 读日志：panic? 功能日志? 静默?
 - `#include` 必须写从 `main/` 根开始的**完整路径**，禁止裸文件名（见 F25）；
 - 高频音频链路（每 20 ms）禁止 `ESP_LOGI`。
 
-
 ---
 
 ## 🛠 硬件平台
@@ -75,14 +102,15 @@ Agent 读日志：panic? 功能日志? 静默?
 |---|---|
 | 开发板 | **ESP32-S31-Korvo-1 V1.1**（官方） |
 | MCU | ESP32-S31 双核 RISC-V @ 320 MHz，512 KB SRAM |
-| 存储 | 16 MB Flash + 16 MB Octal PSRAM |
+| 存储 | 16 MB Flash + 16 MB Octal PSRAM @ 200 MHz |
 | Codec | ES8389（I2C 0x20，**MCLK=GPIO42 未连 → `use_mclk=false`**） |
 | 音频 I/O | 双 MEMS 麦 + 双 NS4150B 功放 |
-| 屏幕 | 4.3" RGB 800×480 ST7262E43 + 电容触摸 |
+| 屏幕 | 4.3" RGB 800×480 ST7262E43，**16-bit RGB565 总线**（GDMA 自动刷新）+ 电容触摸（GT1151） |
+| USB | Type-A = USB 2.0 OTG HS（副屏数据口，对外 500 mA）；Type-C = 板载 UART 桥（烧录/日志口） |
 | ESP-IDF | **v6.1.0**（`IDF_TARGET=esp32s31`） |
-| 烧录端口 | COM9 |
-| 分区表 | nvs 24K / phy 4K / otadata 8K / **ota_0 3M / ota_1 3M** / **storage littlefs 9.87M**（无 factory，A/B OTA） |
-| 文件系统 | LittleFS（挂载点 `/littlefs`，素材/录音/壁纸同盘分目录） |
+| 烧录端口 | COM9（以设备管理器为准） |
+| 分区表 | nvs 24K / phy 4K / otadata 8K / **ota_0 5M / ota_1 5M** / **uext(ota_2) 2.875M** / **storage littlefs 3M**（无 factory，A/B OTA + 副屏槽） |
+| 文件系统 | LittleFS（挂载点 `/littlefs`）；录音/音乐存 SD 卡 |
 
 ---
 
@@ -91,51 +119,50 @@ Agent 读日志：panic? 功能日志? 静默?
 ```
 display_audio_photo/
 ├── main/
-│   ├── app/main.c                # app_main() 初始化顺序 + 上滑自动播开机提示音
+│   ├── app/main.c                # app_main() 初始化顺序 + SET 键事件分发
 │   ├── middleware/               # 硬件业务，不 include LVGL
 │   │   ├── audio/                # audio_service / record_service / udp_voice / session_manager
-│   │   ├── bluetooth/            # bt_audio_service（A2DP+AVRCP）/ bt_push_service / link_manager
-│   │   ├── network/              # wifi_manager / net_time_service（SNTP + 和风天气）
+│   │   ├── bluetooth/            # bt_audio_service(A2DP Source) / bt_sink_service / bt_push_service / link_manager
+│   │   ├── network/              # wifi_manager / pcnow_service / ota_service / net_time_service
 │   │   └── system/               # button_service / led_service / fs_service / sdcard_service
 │   ├── ui/                       # LVGL 界面（PageManager 栈式导航）
-│   │   ├── ui_manager/           # page_manager.c/h 页面注册/切换/返回栈
+│   │   ├── ui_manager/           # page_manager 页面注册/切换/返回栈
 │   │   ├── pages/                # page_splash / page_main / page_wifi / page_bluetooth
 │   │   │                         #   page_system / page_rgb / page_wav_player
-│   │   ├── tabs/                 # tab_call / tab_record / tab_sys_entry / tab_music
-│   │   │                         #   tab_btpush / tab_video
+│   │   ├── tabs/                 # tab_call / tab_record / tab_audio / tab_btsink
+│   │   │                         #   tab_video / tab_pcnow / tab_sys_entry
 │   │   ├── overlays/             # overlay_manager / overlay_wallpaper / overlay_wp_particles
+│   │   │                         #   overlay_ota(WiFi升级) / overlay_uext(副屏切换确认卡)
 │   │   ├── common/               # ui_common（控件工厂）+ ui_theme.h（颜色/字体宏唯一来源）
-│   │   └── assets/               # fonts/ 字体 + icons/ 图标（生成物，勿手改）
+│   │   └── assets/               # fonts/ bin 字体 + icons/ 图标（生成物，勿手改）
 │   └── 3rd/ringbuf/              # 第三方纯 C 环形缓冲
+├── pc_host/                      # PySide6 PC 上位机（对讲 + 录音 + PC NOW 推流；入口 start_all.bat）
+├── tools/pc_now_agent/           # C# 轻量替代：SMTC 抓取 → UDP 推流到设备（与 pc_host 二选一）
+├── firmware/uext_screen/         # ★ USB 副屏固件预编译烧录包（bin + Windows 驱动 + 烧录说明）
 ├── docs/
 │   ├── 工程规范/                 # Agent 写代码前必读（01~11 + 附录）
-│   ├── 项目规划/                 # 需求文档 / todolist / 改动记录 / ICD
+│   ├── 项目规划/                 # 需求 / todolist / 改动记录 / ICD / 各专项方案
 │   └── _serial_capture.py        # 替代 idf.py monitor
 ├── skills/
 │   └── esp-idf-closed-loop.md   # 闭环 SOP：build→flash→抓日志→定位→再改
-├── littlefs_content/             # LittleFS 素材（xwkkk.jpg / boot_tone.wav）
-├── components/esp_littlefs/      # 本地组件（registry 403，Git 拉取）
-├── partitions.csv                # OTA 双 3MB + storage littlefs
+├── littlefs_content/             # LittleFS 素材（壁纸 / 开机提示音）
+├── components/                   # 本地组件（esp_littlefs / cjson）
+├── partitions.csv                # V1.3：ota_0/ota_1 各 5M + uext(ota_2) + storage 3M
 └── CMakeLists.txt
 ```
 
 > 分层规则、各目录职责与归位判断见 [`docs/工程规范/01_工程分层架构.md`](docs/工程规范/01_工程分层架构.md)。
 
-
 ---
 
-## 🚀 快速开始
+## 🚀 快速开始（主固件）
 
 ### 1. 安装 ESP-IDF（用 EIM 一键管理）
 
 **EIM（Espressif IDF Manager）** 是乐鑫官方的 IDF 版本管理器，图形界面，免去手动装 Python / 工具链。
 
 - 下载：[https://idf.espressif.com/](https://idf.espressif.com/)
-- GitHub：[https://github.com/espressif/idf-im-ui](https://github.com/espressif/idf-im-ui)
-- 教程：
-  - 官方文档：[Get Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/index.html)
-  - B站/EIM 视频教程搜索"乐鑫 EIM"
-  - 本仓库用 **v6.1.0**，安装时在 EIM 里选 v6.1.x 即可
+- 本仓库用 **v6.1.0**，安装时在 EIM 里选 v6.1.x 即可
 
 安装完后 EIM 会自动配好 Python venv、交叉编译工具链、OpenOCD、CMake。
 
@@ -150,19 +177,17 @@ cd <本仓库根>
 
 成功标志：看到 `IDF_PATH: C:\esp\v6.1\esp-idf` 等。
 
-### 3. 编译
+### 3. 编译 + 烧录（COM9）
 
 ```powershell
 idf.py build
-```
-
-### 4. 烧录（COM9）
-
-```powershell
 idf.py -p COM9 flash
+idf.py -p COM9 storage-flash     # 首次烧录 / littlefs 素材变更后，刷 storage 分区
 ```
 
-### 5. 看日志
+> ⚠️ 改过 `partitions.csv` 后必须 `fullclean` 重编 + 重跑 `storage-flash`。
+
+### 4. 看日志
 
 非交互终端跑 `idf.py monitor` 会报 TTY 错误，用本仓库脚本：
 
@@ -174,53 +199,71 @@ idf.py -p COM9 flash
 
 ---
 
+## 🖥 USB 副屏固件烧录（uext）
+
+**三种场景对号入座：**
+
+### A. 只想用副屏（不碰源码）—— 直接用预编译包
+
+仓库自带 [`firmware/uext_screen/`](firmware/uext_screen/)（含 `uext_screen.bin` + Windows 已签名驱动 + 详细说明）：
+
+1. 主固件先按上面流程烧好（分区表必须带 uext 槽）；
+2. IDF 终端定点烧写（COM 口以设备管理器为准）：
+   ```powershell
+   python -m esptool -p COM9 write-flash 0xA20000 firmware/uext_screen/uext_screen.bin
+   ```
+3. 主界面**单击 SET 键 → 倒计时确认卡点确认**，重启进入副屏模式；
+4. PC 端双击 `firmware/uext_screen/xfz1986_usb_graphic_250224_rc_sign.exe` 装官方签名 IDD 驱动；
+5. USB Type-A 口连 PC → 设备管理器出现 `USB\VID_303A&PID_2986` 复合设备 → `Win+P` 设为"扩展这些显示器"→ 出现 800×480 扩展屏；
+6. 触摸可用，需在 Windows"平板设置"里做屏幕映射；
+7. **切回主固件：副屏模式下单击 SET 键**，自动重启回主固件（无需重烧）。
+
+### B. 想改副屏固件源码
+
+源码在 `Desktop/esp32/uext_screen/`（独立 IDF 工程，含 7 个离线 vendor 组件；架构与坑见 [`docs/项目规划/USB副屏集成技术方案.md`](docs/项目规划/USB副屏集成技术方案.md)）。只 `idf.py build`，**绝不 `idf.py flash`**，产物定点烧 `0xA20000`。
+
+### C. 画质调优
+
+改 `uext_screen` 工程的 `CONFIG_USB_EXTEND_SCREEN_JPEG_QUALITY`（当前 9，上限 10）与 `CONFIG_USB_EXTEND_SCREEN_FRAME_LIMIT_B`（当前 450000）。注意：落屏格式是 RGB565（16-bit 屏总线），**没有 RGB888 可开**——JPEG 质量与帧上限是仅有的两个真实画质旋钮。
+
+---
+
+## 🖥 PC 端（PC NOW 副屏推流 / 对讲）
+
+设备 PC Tab 与 CALL Tab 需要局域网内一台 PC 配合，二选一：
+
+| 端 | 技术 | 说明 |
+|---|---|---|
+| [`pc_host/`](pc_host/) | PySide6 GUI | 全功能：对讲 / 录音 / PC NOW 推流（网易云 debug 端口 9222 抓取播放态 → 歌词/封面/进度）。启动：桌面 `ESP32_Voice_Host.bat` 或 `pc_host/start_all.bat`（幂等） |
+| [`tools/pc_now_agent/`](tools/pc_now_agent/) | C# 单体 | 轻量：Windows SMTC 直接抓"正在播放"推 UDP。与 pc_host 的推流端口冲突，**同一时间只跑一个** |
+
+协议细节见 [`docs/项目规划/通信接口规范_ICD.md`](docs/项目规划/通信接口规范_ICD.md)。
+
+---
+
 ## 🧠 如何让 AI Agent 接管开发
 
 1. 把本仓库喂给 Agent（豆包 / Claude / Cursor 等）；
 2. 让 Agent 先 `Read skills/esp-idf-closed-loop.md`；
 3. 再 `Read docs/工程规范/01~11`；
 4. 给任务（例如"实现 wifi_manager.c 按 STA 模式连指定 SSID"）；
-5. Agent 会自己：
-   - 按 07 章模板写代码；
-   - 注册 `main/CMakeLists.txt` 的 `SRCS`；
-   - `idf.py build`；
-   - `idf.py -p COM9 flash`；
-   - 跑 `docs/_serial_capture.py` 看启动日志；
-   - 遇到 panic 自己定位、改代码、再烧录；
-   - 完成后在 `docs/项目规划/改动记录.md` 追加记录。
-
----
-
-## 🔗 乐鑫官方仓库参考
-
-| 仓库 | 用途 |
-|---|---|
-| [espressif/esp-idf](https://github.com/espressif/esp-idf) | ESP-IDF 官方框架（本仓库基于 v6.1.0） |
-| [espressif/esp-bsp](https://github.com/espressif/esp-bsp) | 板级支持包（Korvo-1 BSP 来源） |
-| [espressif/esp-adf](https://github.com/espressif/esp-adf) | 音频开发框架 |
-| [espressif/esp-sr](https://github.com/espressif/esp-sr) | 语音识别 / AFE 音频前端 |
-| [espressif/esp32-camera](https://github.com/espressif/esp32-camera) | 摄像头驱动（本工程保留了依赖） |
-| [espressif/idf-im-ui](https://github.com/espressif/idf-im-ui) | EIM 官方源码 |
-| [espressif/esp-jpeg_dec](https://github.com/espressif/idf-extra-components/tree/master/jpeg_dec) | JPEG 硬件解码（开屏壁纸用） |
+5. Agent 会自己：按模板写代码 → 注册 `SRCS` → build → flash → 抓日志 → 定位修复 → 在 `docs/项目规划/改动记录.md` 追加 §记录。
 
 ---
 
 ## ✅ 当前进度
 
 - [x] M1 音频链路（ES8389 / I2S DMA / WAV 播放 / 本地录音）
-- [x] UI 骨架（CALL / REC / SYS 子页 + 开屏壁纸 + 上拉手势 + RGB / WiFi / System 监视卡）
-- [x] RGB LED 呼吸 + 4 路 ADC 分压按键（音量 ± / mode / set）
-- [x] Wi-Fi STA（扫描/连接/状态灯）
-- [x] 分区表 OTA 双 3MB + SPIFFS→LittleFS 迁移；开机提示音（16k/mono）
-- [x] 工程规范 11 篇 + 闭环 SOP（含分场景烧录、日志规范）
+- [x] UI 骨架（7 Tab + 开屏壁纸 + 上拉手势 + RGB / WiFi / System 监视卡）
+- [x] Wi-Fi STA（扫描/连接/状态灯）+ SNTP + 和风天气仪表盘
 - [x] M2 UDP 通话（link_manager + udp_voice + PC 端）
-- [x] 下拉壁纸实时天气仪表盘（SNTP + 和风天气）
-- [x] 阶段 A/B：SD 卡存储 + ESP-GMF 音频/视频播放（MUSIC / VIDEO tab）
-- [x] 蓝牙 A2DP Source 本地推流（方案 B2）+ 音量统一归蓝牙管
-- [x] **ui / middleware 目录分层重构（方案 A）**
-- [ ] M3 TCP 录音 + M3.5 远程文件管理/文件浏览器 + M4 多任务调度
-- [ ] M6 OTA A/B 升级
-
+- [x] 阶段 A/B：SD 卡存储 + 音频/视频播放（AUDIO HUB / VIDEO tab，MJPEG 硬解）
+- [x] 蓝牙双模式：A2DP Source 本地推流（AUDIO 页切换）+ A2DP Sink 蓝牙音箱（SINK tab）
+- [x] PC NOW 音乐副屏（封面旋转 + 全量 LRC 歌词 1.25s 补偿 + 媒体键），pc_host / pc_now_agent 双端
+- [x] M6 OTA：A/B 双槽 WiFi 升级（ota_service + LVGL 覆盖层 + PC 端烧录 agent）
+- [x] USB 扩展屏（uext 双固件架构：SET 键双向切换 + 预编译烧录包 `firmware/uext_screen/`）
+- [ ] M3 TCP 录音远端化 + M4 多任务调度深化
+- [ ] 小智 AI 对话接入（方案已定稿：[`docs/项目规划/小智AI对话接入实施方案.md`](docs/项目规划/小智AI对话接入实施方案.md)，未开工）
 
 详见 [`docs/项目规划/todolist.md`](docs/项目规划/todolist.md)。
 

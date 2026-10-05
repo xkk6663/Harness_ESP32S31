@@ -11,6 +11,8 @@
 
 #include "overlay_manager.h"
 #include "overlay_wallpaper.h"
+#include "overlay_ota.h"
+#include "overlay_uext.h"
 #include "esp_log.h"
 
 static const char *TAG = "OVERLAY";
@@ -23,6 +25,12 @@ static void invoke_hide(overlay_type_t type)
     case OVERLAY_WALLPAPER:
         overlay_wallpaper_hide();
         break;
+    case OVERLAY_OTA:
+        overlay_ota_hide();
+        break;
+    case OVERLAY_UEXT:
+        overlay_uext_hide();
+        break;
     default:
         break;
     }
@@ -33,6 +41,12 @@ static void invoke_show(overlay_type_t type)
     switch (type) {
     case OVERLAY_WALLPAPER:
         overlay_wallpaper_show();
+        break;
+    case OVERLAY_OTA:
+        overlay_ota_show();
+        break;
+    case OVERLAY_UEXT:
+        overlay_uext_show();
         break;
     default:
         break;

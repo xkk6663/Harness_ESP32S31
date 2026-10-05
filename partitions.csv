@@ -1,8 +1,17 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
 # Note: if you change the phy_init or app partition offset, make sure to change the offset in Kconfig.projbuild
+# ★ V1.3（USB副屏集成技术方案.md §3.1）：uext = ota_2（连续 OTA 子类型）。
+#   [V1.2 用 factory —— 已废弃：IDF 的 flash 工具链按"默认启动分区"选 app 落点，
+#   factory 优先 ⇒ main 的 idf.py flash 会把 main.bin 烧进 uext 槽、ota_0 永不更新。]
+#   ota_2 在连续计数内（app_count=3）：set_boot_partition(ota_2) / bootloader
+#   (seq-1)%app_count 全部走标准机制。main 的 OTA 轮替被 ota_service 的
+#   ota_pick_update_slot() 显式锁定在 ota_0<->ota_1（该补丁为必需品，勿删）。
+#   uext 槽由 USB 定点烧写（0xA20000），永不参与 main 的 OTA。
+#   storage 5.875MB -> 3MB；改表后必须重跑 `idf.py storage-flash`。]
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 otadata,  data, ota,     0x11000,  0x2000,
 ota_0,    app,  ota_0,   0x20000,  0x500000,
 ota_1,    app,  ota_1,   0x520000, 0x500000,
-storage,  data, littlefs, 0xA20000, 0x5E0000,
+uext,     app,  ota_2,   0xA20000, 0x2E0000,
+storage,  data, littlefs, 0xD00000, 0x300000,

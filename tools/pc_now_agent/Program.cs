@@ -22,6 +22,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Windows.Media.Control;
+using PcNowAgent;   /* OtaMode / FirmwareInfo / OtaSession（见 OtaMode.cs） */
 
 // ---------------- 常量（与 ICD V1.2/V1.3、设备端 pcnow_service.h 一致） ----------------
 const int HeartbeatPeriodMs = 200;
@@ -42,14 +43,39 @@ string[] LyricDirs =
 // --fake            不依赖真实播放器，合成一条"正在播放"的曲目（联调/自检用）
 // --device <ip>     跳过广播发现，直接向指定 IP 单播心跳（同机联调填 127.0.0.1）
 // --run-seconds <n> 运行 n 秒后自动退出（0=常驻）
+// --ota <bin路径>   进入 OTA 升级模式：推送该固件（与推流模式互斥执行）
+// --ota-limit <N>   OTA 破坏性测试：只发固件前 N%（1..99），验证设备端 size mismatch + 续传
+// --ota-corrupt     OTA 破坏性测试：固件流中点翻 1 bit，验证 esp_ota_end / 段哈希兜底
+// --force           OTA：忽略版本比对（同版本/降级也照发）
 bool FakeMode = args.Contains("--fake");
 string ForceDeviceIp = GetValue(args, "--device") ?? "";
 int RunSeconds = int.TryParse(GetValue(args, "--run-seconds"), out var rs) ? rs : 0;
+string OtaBin = GetValue(args, "--ota") ?? "";
+var OtaOpt = new OtaOptions
+{
+    LimitPercent = int.TryParse(GetValue(args, "--ota-limit"), out var ol)
+                   ? Math.Clamp(ol, 1, 99) : 0,
+    Corrupt = args.Contains("--ota-corrupt"),
+    Force = args.Contains("--force"),
+};
 
 static string? GetValue(string[] args, string name)
 {
     var i = Array.IndexOf(args, name);
     return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+}
+
+// 从一行 JSON 里取字符串字段（容错：解析失败返回 null，绝不抛）
+static string? TryGetJsonStr(string json, string key)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String)
+            return v.GetString();
+    }
+    catch { }
+    return null;
 }
 
 // ---------------- 全局状态 ----------------
@@ -442,6 +468,12 @@ async Task HeartbeatLoopAsync(CancellationToken ct)
                     _lastAck = DateTime.UtcNow;
                     _deviceOnline = true;
                 }
+                // ★ fw_ver：OTA 版本比对 + "升级成功/已回滚"判定全靠它
+                var ver = TryGetJsonStr(s, "fw_ver");
+                if (!string.IsNullOrEmpty(ver))
+                {
+                    OtaSession.DeviceFwVer = ver;
+                }
                 if (wasOffline) Log("device ONLINE at " + ra.Address);
             }
             else if (s.Contains("NOW_CMD"))
@@ -551,7 +583,9 @@ async Task HttpLoopAsync(CancellationToken ct)
 {
     var listener = new TcpListener(IPAddress.Any, HttpPort);
     listener.Start();
-    Log($"http listening on :{HttpPort} (/cover/<hash>.jpg, /lyrics.json?k=<hash>)");
+    Log($"http listening on :{HttpPort} (/cover/<hash>.jpg, /lyrics.json?k=<hash>"
+        + (OtaMode.Active is not null ? ", /firmware.json, /firmware.bin[+Range]" : "")
+        + ")");
     while (!ct.IsCancellationRequested)
     {
         var client = await listener.AcceptTcpClientAsync(ct);
@@ -565,12 +599,32 @@ void ServeOne(TcpClient client)
     {
         using var _ = client;
         using var stream = client.GetStream();
-        var buf = new byte[4096];
+        var buf = new byte[8192];
         int n = stream.Read(buf, 0, buf.Length);
         if (n <= 0) return;
-        var req = Encoding.UTF8.GetString(buf, 0, n).Split("\r\n")[0];   // "GET /path HTTP/1.1"
-        var path = req.Split(' ').ElementAtOrDefault(1) ?? "/";
+        var raw = Encoding.UTF8.GetString(buf, 0, n);
+        var lines = raw.Split("\r\n");
+        var req = lines[0];                                   // "GET /path HTTP/1.1"
+        var parts = req.Split(' ');
+        var method = parts.ElementAtOrDefault(0) ?? "GET";
+        var path = parts.ElementAtOrDefault(1) ?? "/";
         var url = Uri.UnescapeDataString(path);
+
+        // ★ Range 头解析（断点续传必需）：形如 "Range: bytes=<start>-"（也可能 -<end>）
+        long rangeStart = 0;
+        bool hasRange = method == "GET";
+        foreach (var h in lines.Skip(1))
+        {
+            var hh = h.Trim();
+            if (!hh.StartsWith("Range:", StringComparison.OrdinalIgnoreCase)) continue;
+            var v = hh[6..].Trim();
+            if (!v.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) continue;
+            var spec = v[6..].Split(',')[0].Trim();
+            var lo = spec.Split('-')[0];
+            if (long.TryParse(lo, out var s) && s > 0) rangeStart = s;
+            break;
+        }
+        if (rangeStart == 0) hasRange = false;
 
         byte[] body; string ctype;
         if (url.StartsWith("/cover/"))
@@ -587,11 +641,41 @@ void ServeOne(TcpClient client)
             var want = "";
             var qi = url.IndexOf("k=");
             if (qi >= 0) want = url[(qi + 2)..].Split('&')[0];
-            List<(int t, string text)> lines;
-            lock (Lock) { lines = want == _lrcHash ? _lrcLines : new(); }
-            var arr = lines.Select(l => new { t = l.t, text = l.text });
+            List<(int t, string text)> lines2;
+            lock (Lock) { lines2 = want == _lrcHash ? _lrcLines : new(); }
+            var arr = lines2.Select(l => new { t = l.t, text = l.text });
             body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { lines = arr }));
             ctype = "application/json";
+        }
+        else if (OtaMode.Active is not null && url.StartsWith("/firmware.json"))
+        {
+            body = OtaMode.Active.FirmwareJson();
+            ctype = "application/json";
+        }
+        else if (OtaMode.Active is not null && url.StartsWith("/firmware.bin"))
+        {
+            // ★ 固件是流式大文件：不走 body 缓冲，直接写头 + 分段流式输出（方案 §4.3）。
+            var fw = OtaMode.Active;
+            long total = fw.ServedSize;
+            // ★ Range 续传：设备带 "Range: bytes=N-" 来，必须回 206 + Content-Range，
+            //   否则设备端会把 200 视作"服务端不支持 Range"而降级整包重下。
+            long start = hasRange ? Math.Min(rangeStart, total) : 0;
+            bool isHead = method == "HEAD";
+            int status = hasRange ? 206 : 200;
+            var sb = new StringBuilder();
+            sb.Append($"HTTP/1.1 {status} {(status == 206 ? "Partial Content" : "OK")}\r\n");
+            sb.Append("Content-Type: application/octet-stream\r\n");
+            sb.Append($"Content-Length: {total - start}\r\n");
+            if (hasRange)
+                sb.Append($"Content-Range: bytes {start}-{total - 1}/{total}\r\n");
+            sb.Append("Accept-Ranges: bytes\r\n");
+            sb.Append("Connection: close\r\n\r\n");
+            var hdr = Encoding.UTF8.GetBytes(sb.ToString());
+            stream.Write(hdr, 0, hdr.Length);
+            Log($"[ota] http /firmware.bin {method} range={start}- "
+                + $"(status={status}, len={total - start})");
+            fw.ServeFirmwareBinary(stream, start, isHead);
+            return;
         }
         else
         {
@@ -641,6 +725,36 @@ async Task TrackWorkerAsync(CancellationToken ct)
 var ct = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; ct.Cancel(); };
 
+// ---- OTA 模式（--ota <bin>）：与推流模式互斥执行（方案 §4）----
+if (OtaBin.Length > 0)
+{
+    var fw = FirmwareInfo.Parse(OtaBin);
+    if (fw is null)
+    {
+        Log("OTA 模式：固件解析失败，退出（未注册任何路由）");
+        return 1;   // ★ 就绪才宣告：解析失败绝不继续
+    }
+    OtaMode.Active = new OtaSession(
+        fw, OtaOpt, HttpPort, SignalPort,
+        getDeviceIp: () => { lock (Lock) { return _deviceIp; } },
+        isDeviceOnline: () => { lock (Lock) { return _deviceOnline; } });
+
+    var hbOta = HeartbeatLoopAsync(ct.Token);
+    var httpOta = HttpLoopAsync(ct.Token);
+    Log($"OTA 模式启动：{fw.Version} ({fw.Size} B)");
+    int rc = 1;
+    try
+    {
+        rc = await OtaMode.Active.RunAsync(ct.Token);
+    }
+    catch (OperationCanceledException) { rc = 130; }
+    catch (Exception ex) { Log("OTA FATAL: " + ex); rc = 1; }
+    ct.Cancel();
+    try { await Task.WhenAll(hbOta, httpOta); } catch { /* 收尾 */ }
+    Log($"OTA 模式退出，rc={rc}");
+    return rc;   /* 顶层语句入口点：所有路径都要给 int */
+}
+
 Task fakeTask = Task.CompletedTask;
 if (FakeMode)
 {
@@ -679,3 +793,4 @@ catch (Exception ex)
 }
 ct.Cancel();
 Log("pc_now_agent exited.");
+return 0;

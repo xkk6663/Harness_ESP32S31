@@ -406,3 +406,90 @@ PC 端的**行号迟滞规则**（`pcnow/pusher.py::_stable_line`）：
 - NOW_LRC 单行推送保留为回退：全量歌词缺失/解析失败时仍可显示；
 - NOW_CMD（设备 → PC，经 50003）：`{"type":"NOW_CMD","cmd":"play_pause|next|prev|volume_up|volume_down"}`，
   本期为预留，PC 端仅打印。
+
+---
+
+## 8. V1.4 增量：WiFi 局域网 OTA（OTA_*，2026-09-29）
+
+> 方案出处：`docs/项目规划/WiFi局域网OTA升级实施方案.md` §2。
+> 设计要点：**控制面复用 UDP 50003 既有 JSON 通道（零新增端口）**，
+> **数据面由设备主动 HTTP 拉取 PC 的 :50005**（与封面/歌词拉取同构：
+> 设备是 HTTP 客户端、PC 是服务端）。
+
+### 8.1 消息（UDP 50003，`type` 字段区分，cJSON）
+
+| type | 方向 | 字段 | 说明 |
+|---|---|---|---|
+| `OTA_OFFER` | PC→设备 | `ver`(string) `size`(number) `sha256`(hex64 string) `url`(string) | 升级提议；`url` 是设备可直接 GET 的完整地址 |
+| `OTA_ACCEPT` | 设备→PC | `size`(number) | 校验通过，即将开始拉取 |
+| `OTA_REJECT` | 设备→PC | `reason`(string) | 拒绝原因，见下表 |
+| `OTA_PROGRESS` | 设备→PC | `percent`(0-100) `speed`(KB/s) | 每 2% 一条 |
+| `OTA_RESULT` | 设备→PC | `ok`(0/1) `detail`(string) | ok=1 后设备 1s 内重启 |
+| `OTA_ABORT` | PC→设备 | `reason`(string, 可选) | 中止；**M2 起真正生效**：设备下载循环每 4KB 块边界检查标志，立即停手（不写完当前块） |
+
+**`OTA_REJECT.reason` 取值语义**：
+
+| reason | 含义 |
+|---|---|
+| `busy` | 录音中 / 通话或推流中 / 已在升级（三选一） |
+| `pending` | 运行槽处于 PENDING_VERIFY（自证窗口内，IDF 规定不能再写另一槽） |
+| `space` | 备用槽装不下该 size |
+| `network` | link_manager 未在线 |
+| `badargs` / `badjson` | OFFER 字段缺失 / JSON 解析失败 |
+
+### 8.2 HTTP 路由（PC :50005 新增两条）
+
+| 路由 | 响应 |
+|---|---|
+| `GET /firmware.json` | 200 `{"ver":"...","size":N,"sha256":"hex64","full_size":M,"limit_percent":P}`（设备二次核对，防 UDP 丢包拿到错信息） |
+| `GET /firmware.bin` | **M2 支持 Range**：无 `Range` 头 → `200` + `Content-Length: N`；带 `Range: bytes=N-` → **`206 Partial Content`** + `Content-Range: bytes N-(M-1)/M` + `Accept-Ranges: bytes`，body 从偏移 N 起 |
+
+> 两条路由**仅在 `--ota` 会话期间存在**：固件解析成功才注册（"就绪才宣告"），
+> 解析失败则整个进程直接退出，绝不产出半成品路由。
+
+### 8.2.1 M2 断点续传契约（★ 跨层语义，改前必读）
+
+**分段哈希校验**：固件按 **256KB** 切"锚点段"（`OTA_SEG_SIZE`），设备端每段**独立**
+算 SHA256 并连同 `next_offset` 落 nvs（`ota` namespace / key `resume`）。
+
+| 项 | 契约 |
+|---|---|
+| 段大小 | 256 KB（`OTA_SEG_MAX=24` ⇒ 支持到 6 MB） |
+| 续传起点 | **回退到最近段边界**（`seg_done * 256KB`），最多重算 256KB 尾巴 |
+| 生效条件 | `total_size` 与 `sha256` 都与本次 OFFER 一致，且 `seg_done ≤ next_offset/256KB` |
+| Range 请求 | 设备发 `Range: bytes=<start>-`（start = 段边界） |
+| 服务端降级 | PC 回 **200**（不支持 Range）⇒ 设备**自动改整包重下**（避免槽内容错位） |
+| 完整性 | ① `esp_ota_end`（镜像头 + 段 CRC）；② 段摘要链；③ **段数一致性硬校验** `seg_done == ceil(size/256KB)` |
+| 断点保留 | 失败（非 ABORT）保留 nvs 断点供下次续传；成功切槽 → 清除 |
+
+> ★ **SHA-256 是流式哈希，跨重启无法从中途累积** —— 所以断点续传**不**做"整包 SHA 从偏移续算"，
+> 而是"段摘要链 + 镜像校验"双兜底。整包 SHA256 仅用于 **PC 侧自校验 / 从头下载的交叉核对**。
+
+### 8.3 端侧状态机
+
+```
+IDLE → (OTA_OFFER 校验通过) OFFERED → DOWNLOADING → VERIFY
+     → REBOOT_PENDING → [esp_restart] → PENDING_VERIFY
+     → (30s 自证: WiFi 已连) → VALID      （失败则 bootloader 自动回滚）
+```
+
+### 8.4 心跳字段联动（V1.3 已定，此处强调）
+
+`HEARTBEAT_ACK.fw_ver` 已由硬编码 `"phase2"` 改为 `esp_app_get_description()->version`
+（真实编译版本）。**版本三方一致是 OTA 判定"升级成功 / 已回滚"的唯一依据**：
+`bin 内 esp_app_desc_t.version` == `HEARTBEAT_ACK.fw_ver` == PC 侧解析值。
+
+### 8.5 PC 端版本策略与破坏性测试开关（M2/M3 新增）
+
+| 开关 | 语义 | 预期设备端反应 |
+|---|---|---|
+| `--ota-limit N` | 只发前 N%（1..99），`/firmware.json` 与 `OTA_OFFER.size` 均报**截断长度** | 设备端 `size mismatch` → 保留断点 → 续传可补齐 |
+| `--ota-corrupt` | 流中点翻 1 bit | `esp_ota_end` 失败（镜像段 CRC）/ 段摘要不符 |
+| `--force` | 忽略 SemVer 比对 | 同版本/降级也照发 |
+| （默认） | 设备 `fw_ver >=` 固件版本 ⇒ **拒发**（退出码 8） | 设备端不会收到 OFFER |
+
+**SemVer 粗比规则**：按 `.` 分 3 段数值比较；容忍 `v`/`V` 前缀；`-dirty`/`+build` 后缀不参与；
+缺位补 0。★ 仅用于"要不要升"的粗判，**不参与安全/完整性判定**（那是 SHA256 的事）。
+
+**在线判定与主动中止**：会话期（已 ACCEPT、未收到 RESULT）设备心跳丢失 > **8 s** ⇒
+PC 主动发 `OTA_ABORT{"reason":"peer_lost"}`。★ 这依赖 `DeviceOfflineMs=5000`（心跳超时）先置离线。

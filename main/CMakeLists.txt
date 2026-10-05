@@ -28,6 +28,8 @@ idf_component_register(SRCS
     "middleware/network/net_time_service.c"
     # pcnow_service = PC 音乐副屏数据服务（UDP 50004 + HTTP 拉封面/歌词）
     "middleware/network/pcnow_service.c"
+    # ota_service = WiFi 局域网 OTA（UDP 50003 信令 + HTTP 拉 /firmware.bin → 备用槽）
+    "middleware/network/ota_service.c"
 
     # ---- middleware / system：板级外设与存储 ----
     "middleware/system/button_service.c"
@@ -67,10 +69,12 @@ idf_component_register(SRCS
     "ui/tabs/tab_pcnow.c"
     "ui/tabs/tab_video.c"
 
-    # ---- ui / overlays：浮层（壁纸 / 粒子） ----
+    # ---- ui / overlays：浮层（壁纸 / 粒子 / OTA） ----
     "ui/overlays/overlay_manager.c"
     "ui/overlays/overlay_wallpaper.c"
     "ui/overlays/overlay_wp_particles.c"
+    "ui/overlays/overlay_ota.c"
+    "ui/overlays/overlay_uext.c"
 
     # ---- ui / assets：字体与图标资源 ----
     "ui/assets/fonts/lv_font_digital_96.c"
@@ -92,4 +96,5 @@ idf_component_register(SRCS
                                     esp_player esp_audio_render esp_extractor esp_audio_codec
                                     gmf_core gmf_audio gmf_io esp_codec_dev media_lib_sal
                                     esp_bt_audio
-                                    esp_video_render esp_video_codec esp_new_jpeg gmf_video lvgl__lvgl)
+                                    esp_video_render esp_video_codec esp_new_jpeg gmf_video lvgl__lvgl
+                                    app_update esp_partition esp_app_format)

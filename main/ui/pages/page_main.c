@@ -26,6 +26,8 @@
 #include "ui/tabs/tab_pcnow.h"
 #include "ui/tabs/tab_video.h"
 #include "ui/overlays/overlay_wallpaper.h"
+#include "ui/overlays/overlay_ota.h"
+#include "ui/overlays/overlay_uext.h"
 #include "page_wav_player.h"
 
 static const char *TAG = "PAGE_MAIN";
@@ -131,6 +133,15 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     /* Pull-down wallpaper overlay on lv_layer_top. */
     overlay_wallpaper_init(s_tab_btns);
 
+    /* ★ M3：OTA 升级浮层（事件驱动，隐藏态常驻）。
+       必须在 wallpaper 之后建 —— 升级时要压在壁纸之上（浮层内部还会
+       move_foreground 兜一次）。它同时订阅 ota_service 的 evt_cb。 */
+    overlay_ota_init();
+
+    /* ★ USB 副屏切换确认卡（SET 键驱动，2s 倒计时）。
+       与 OTA 浮层同级：wallpaper 之后建，保证能压在壁纸之上。 */
+    overlay_uext_init();
+
     /* Audio completion callbacks (re-enable buttons). */
     page_wav_player_register_audio_events();
 
@@ -149,6 +160,8 @@ static void main_destroy(lv_obj_t *page)
     tab_video_destroy();
     tab_pcnow_destroy();
     tab_sys_entry_destroy();
+    overlay_ota_deinit();
+    overlay_uext_deinit();
     overlay_wallpaper_deinit();
 
     if (s_group_call) {

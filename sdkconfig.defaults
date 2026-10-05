@@ -115,3 +115,10 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 ## bluedroid 自带代码在 -Werror 下报 strncpy truncation，关闭默认警告视为错误 ##
 CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
+
+## ---- WiFi 局域网 OTA（方案 docs/项目规划/WiFi局域网OTA升级实施方案.md §3.4）----
+## ★ 必须写进 defaults：只改 sdkconfig 的话 reconfigure 会掉回 n，且要到链接期才炸。
+## 开 ROLLBACK 后 bootloader 多一份 PENDING_VERIFY 逻辑：新固件不自证则下次启动回滚。
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+## 注：本方案用 esp_http_client + esp_ota_* 手动实现（非 esp_https_ota 组件），
+## 故无需 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP —— http:// 明文由 esp_http_client 直接支持。

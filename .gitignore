@@ -41,3 +41,7 @@ docs/_verbatim_build/
 tools/_probe_*.ps1
 tools/_run_idf.py
 tools/_runbuild.cmd
+
+# .NET（tools/pc_now_agent）
+tools/**/bin/
+tools/**/obj/

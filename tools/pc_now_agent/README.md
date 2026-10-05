@@ -60,6 +60,43 @@ dotnet run -c Release
 | `--fake` | **自检模式**：合成一首"正在播放"的歌（含假歌词/封面），不依赖任何真实播放器 | `pc_now_agent.exe --fake` |
 | `--device <ip>` | 跳过广播发现，直接向指定 IP 单播心跳 | `--device 192.168.1.23`；同机联调填 `127.0.0.1` |
 | `--run-seconds <n>` | 运行 n 秒后自动退出（0=常驻），用于自动化测试 | `--fake --run-seconds 10` |
+| `--ota <bin路径>` | **OTA 升级模式**：把该固件推给设备（自动切槽+重启） | `pc_now_agent.exe --ota build\display_audio_photo.bin` |
+| `--ota-limit <N>` | OTA 破坏性测试：只发固件前 **N%**（1..99），验证设备端断点保留 + **续传** | `--ota xxx.bin --ota-limit 40` |
+| `--ota-corrupt` | OTA 破坏性测试：固件流**中点翻 1 bit**，验证 `esp_ota_end` / 段哈希兜底 | `--ota xxx.bin --ota-corrupt` |
+| `--force` | OTA：**忽略版本比对**（同版本/降级也照发） | `--ota xxx.bin --force` |
+
+### `--ota` 升级模式（WiFi 局域网 OTA，详见方案 §4）
+
+```bash
+:: 一条命令完成：解析固件 → 版本比对 → 通报 → 设备拉取 → 校验 → 切槽 → 重启
+pc_now_agent.exe --ota C:\...\build\display_audio_photo.bin
+```
+
+`--ota` 与推流模式**互斥**（二选一执行）。该模式自动完成：
+
+1. **解析固件**：读 `esp_app_desc_t`（偏移 `0x20`，magic `0xABCD5432`）取版本号，
+   现算大小与 SHA256。**不是 app bin 会直接拒绝退出**（挡住误选 bootloader.bin /
+   partition-table.bin）；
+2. **HTTP 路由**：在既有 `:50005` 上加 `GET /firmware.json`（`{ver,size,sha256,...}`）
+   与 `GET /firmware.bin`（`Content-Length` + 64KB 分块流式输出，**支持 `Range` → 206**）；
+3. **版本比对**：设备 `fw_ver >=` 固件版本 ⇒ **拒发**（除非 `--force`）；
+4. **会话**：等设备心跳 → 发 `OTA_OFFER`（10s×3 重发）→ 设备 `OTA_ACCEPT` →
+   打印 `[####----] 42% 312 KB/s` 进度 → `OTA_RESULT{ok}`；
+5. **掉线保护**：会话期设备心跳丢失 > 8s ⇒ 主动发 `OTA_ABORT{reason:"peer_lost"}`；
+6. **判定**：`ok:1` 后等设备重启回来，核对 `HEARTBEAT_ACK.fw_ver` 是否等于新版本
+   （一致=升级成功；没变=已自动回滚）。
+
+退出码：`0` 成功且版本一致 / `2` 设备未上线 / `3` 设备拒绝 / `4` 无 ACCEPT /
+`5` 重启未回 / `6` 升级失败 / `7` 超时 / **`8` 版本未提升** / **`9` 版本不一致** /
+`130` Ctrl-C。
+
+> ⚠ **固件必须装得进备用槽**（main 分支 `ota_0`/`ota_1` 各 **5 MB**）。
+> 设备若回 `OTA_REJECT reason=space` 就是 bin 超槽——需先瘦身。
+> 也注意 `build/` 目录若残留其他分支的产物，bin 尺寸会不符（示例：人脸识别分支
+> 的 bin 6.52MB，装不进 main 的 5MB 槽）。
+
+> ★ 完整逐功能逐步骤验收流程见
+> `docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`（V2）。
 
 参数可组合。典型联调组合：
 

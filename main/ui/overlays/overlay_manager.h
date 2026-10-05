@@ -22,6 +22,8 @@ extern "C" {
 typedef enum {
     OVERLAY_NONE = 0,
     OVERLAY_WALLPAPER,   /* pull-down wallpaper layer  */
+    OVERLAY_OTA,         /* 固件升级浮层（事件驱动，抢占一切） */
+    OVERLAY_UEXT,        /* USB 副屏切换确认卡（SET 键驱动，2s 倒计时） */
 } overlay_type_t;
 
 /* Open an overlay (auto-closes the active one). */
