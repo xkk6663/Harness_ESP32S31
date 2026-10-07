@@ -25,7 +25,8 @@ CHUNK = 64 * 1024
 WAIT_ONLINE_S = 20
 OFFER_TRIES = 3
 ACCEPT_WAIT_S = 10
-DOWNLOAD_TIMEOUT_S = 180
+DOWNLOAD_TIMEOUT_S = 600        # ★ 绝对上限：5.2MB @ 20KB/s ≈ 262s（实测 29KB/s 跑满 180s 被误杀，2026-10-07）
+DOWNLOAD_IDLE_TIMEOUT_S = 120   # ★ 活动超时：120s 无 PROGRESS/RESULT 才判"设备死了"（慢而活着不算超时）
 PEER_LOST_ABORT_S = 8
 VERIFY_TIMEOUT_S = 60
 
@@ -242,6 +243,7 @@ class OtaSession:
         # 4) 下载/校验：收 PROGRESS / RESULT；心跳丢失 >8s 发 ABORT
         self._set_state("download")
         dl0 = time.monotonic()
+        last_progress = time.monotonic()
         last_seen = time.monotonic()
         while time.monotonic() - dl0 < DOWNLOAD_TIMEOUT_S:
             if self._stop.is_set():
@@ -251,12 +253,15 @@ class OtaSession:
                 last_seen = time.monotonic()
             elif not self._abort_sent and time.monotonic() - last_seen > PEER_LOST_ABORT_S:
                 self.stop("peer_lost")
+            if time.monotonic() - last_progress > DOWNLOAD_IDLE_TIMEOUT_S:
+                return self._finish(False, f"下载停滞（{DOWNLOAD_IDLE_TIMEOUT_S}s 无 PROGRESS）→ 判定失败")
             try:
                 msg = self._inbox.get(timeout=0.5)
             except queue.Empty:
                 continue
             t = str(msg.get("type", ""))
             if t == "OTA_PROGRESS":
+                last_progress = time.monotonic()   # ★ 有进度=设备活着，活动超时重置
                 self._emit("progress", percent=int(msg.get("percent", -1)),
                            speed=int(msg.get("speed", 0)))
             elif t == "OTA_RESULT":
