@@ -4,7 +4,10 @@
 
 /**
  * @file overlay_wp_particles.c
- * @brief Static wallpaper (xwkkk.jpg) + floating particles overlay.
+ * @brief Wallpaper (wallpaper_service 双缓冲当前图) + floating particles overlay.
+ *        §75：底图 s_base 不再自持/自解码 —— 借 service 当前 buffer（零拷贝），
+ *        gen 轮询发现新图后只切指针并 commit 归还，省 768KB PSRAM。
+ *        本文件的性能红线（RGB565 画布 / 局部失效 / 失效矩形上限）原样保留。
  *
  * ⚠⚠ 性能红线（改这个文件前务必读完，否则会踩 task_wdt 崩溃）⚠⚠
  *
@@ -36,21 +39,16 @@
  */
 
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_jpeg_dec.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
 
 #include "overlay_wp_particles.h"
-#include "middleware/system/fs_service.h"
+#include "middleware/media/wallpaper_service.h"
 
 static const char *TAG = "WP_PART";
 
-#define WALLPAPER_PATH   FS_MNT_PATH"/xwkkk.jpg"
 #define PARTICLE_COUNT   24
 #define TICK_MS          30
 
@@ -71,11 +69,12 @@ typedef struct {
 static lv_obj_t   *s_canvas;
 static lv_timer_t *s_timer;
 static uint16_t   *s_buf;     /* 显示用画布（RGB565，和屏幕同格式） */
-static uint16_t   *s_base;    /* 静态壁纸（RGB565） */
+static uint16_t   *s_base;    /* 静态壁纸（RGB565；§75：借 service 当前 buffer，只读） */
 static particle_t s_p[PARTICLE_COUNT];
 static uint16_t s_w, s_h;
 static size_t   s_pixels;
 static int32_t  s_touch_x = -1, s_touch_y = -1;
+static uint32_t s_wp_gen_seen;
 
 static lv_area_t s_dirty[DIRTY_MAX];
 static int32_t   s_dirty_cnt;
@@ -211,77 +210,10 @@ static void dirty_flush(void)
     s_dirty_cnt = 0;
 }
 
-/* ---------------------------------------------------------------- 壁纸解码 */
+/* ---------------------------------------------------------------- 壁纸底图（§75 借用） */
 
-/* Decode xwkkk.jpg into s_base (RGB565) */
-static bool decode_base(void)
-{
-    struct stat st;
-    if (stat(WALLPAPER_PATH, &st) != 0) {
-        ESP_LOGE(TAG, "wallpaper not found: %s", WALLPAPER_PATH);
-        return false;
-    }
-    size_t fsize = st.st_size;
-    uint8_t *jpeg_buf = heap_caps_malloc(fsize, MALLOC_CAP_SPIRAM);
-    if (!jpeg_buf) jpeg_buf = malloc(fsize);
-    if (!jpeg_buf) return false;
-
-    int fd = open(WALLPAPER_PATH, O_RDONLY);
-    if (fd < 0) { free(jpeg_buf); return false; }
-    int n = read(fd, jpeg_buf, fsize);
-    close(fd);
-    if (n <= 0) { free(jpeg_buf); return false; }
-
-    jpeg_dec_handle_t dec = NULL;
-    jpeg_dec_header_info_t info = {0};
-    jpeg_dec_io_t io = { .inbuf = jpeg_buf, .inbuf_len = (int)fsize, .outbuf = NULL };
-    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB888;
-
-    uint8_t *rgb = NULL;
-    bool ok = false;
-
-    if (jpeg_dec_open(&cfg, &dec) == JPEG_ERR_OK &&
-        jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK &&
-        info.width == BSP_LCD_H_RES && info.height == BSP_LCD_V_RES) {
-        size_t px = (size_t)info.width * info.height;
-        /* 解码缓冲只在初始化时用一次，解完立刻释放 */
-        rgb = heap_caps_malloc(px * 3, MALLOC_CAP_SPIRAM);
-        if (rgb) {
-            io.outbuf = rgb;
-            if (jpeg_dec_process(dec, &io) == JPEG_ERR_OK) {
-                /* ★ 通道顺序（2026-09-22 修颜色反转）：**不要想当然**。
-                 *
-                 * esp_new_jpeg 的 `JPEG_PIXEL_FORMAT_RGB888` 输出是
-                 * **R,G,B 依次存放**（`esp_jpeg_common.h:48` 原文：
-                 * "3-bytes red, green and blue components stored in memory from
-                 *  low to high address"）⇒ q[0]=R q[1]=G q[2]=B。
-                 *
-                 * 反过来，LVGL 的 `LV_COLOR_FORMAT_RGB888` 内存序是 B,G,R
-                 * （`lv_color.h:109-113`：`typedef struct { uint8_t blue, green, red; } lv_color_t;`）。
-                 * 所以 overlay_wallpaper.c 那段 `p[0]<->p[2]` 交换不是"把 BGR 修成 RGB"，
-                 * 而是**把解码器的 RGB 修成 LVGL 要的 BGR 内存序** —— 两边语义正好相反，
-                 * 我上一版就是抄错了这条注释，把 R/B 换反导致整屏红蓝颠倒。
-                 *
-                 * 本函数直接打 RGB565，所以**不需要任何交换**，按 q[0],q[1],q[2] 原序入参即可。 */
-                for (size_t i = 0; i < px; i++) {
-                    const uint8_t *q = &rgb[i * 3];
-                    s_base[i] = rgb565(q[0], q[1], q[2]);
-                }
-                ok = true;
-                ESP_LOGI(TAG, "wallpaper decoded %dx%d -> RGB565", info.width, info.height);
-            }
-        }
-    } else {
-        ESP_LOGE(TAG, "jpeg open/header fail or size mismatch (got %dx%d, want %dx%d)",
-                 (int)info.width, (int)info.height, BSP_LCD_H_RES, BSP_LCD_V_RES);
-    }
-
-    if (rgb) free(rgb);
-    if (dec) jpeg_dec_close(dec);
-    free(jpeg_buf);
-    return ok;
-}
+/* Decode xwkkk.jpg 的自解码路径已删（V2.1）：底图由 wallpaper_service 开机
+ * 同步解码并提供（见 build()），本文件只负责"gen 轮询 → 切指针 → commit"。 */
 
 /* ---------------------------------------------------------------- 绘制 */
 
@@ -310,6 +242,7 @@ static void draw_dot(const particle_t *p)
  */
 static void erase_dot(int32_t cx, int32_t cy, int32_t r)
 {
+    if (!s_base) return;            /* §75：service 未就绪降级态，无底图可回填 */
     if (r <= 0) return;
     int32_t x1 = cx - r, x2 = cx + r;
     int32_t y1 = cy - r, y2 = cy + r;
@@ -342,6 +275,24 @@ static void wp_touch_cb(lv_event_t *e)
 static void tick_cb(lv_timer_t *t)
 {
     (void)t;
+
+    /* §75：代际号轮询（30ms 一拍代价可忽略）—— service 换图后把 s_base
+     * 指针切到新 buffer（零拷贝），下一拍回填自然带出新图。splash 粒子层
+     * 叠在底图上，跳变不可见，不做 crossfade。
+     * ★ 只在 LVGL 线程切指针（本回调）；service 任务只写"另一块 buffer"，
+     *   且翻面后等 commit 才会再解码 ⇒ 读写永不重叠（§75 契约）。 */
+    uint32_t gen = wallpaper_service_get_gen();
+    if (gen != s_wp_gen_seen) {
+        s_wp_gen_seen = gen;
+        uint16_t *b = (uint16_t *)(void *)wallpaper_service_get_buffer(
+                          wallpaper_service_get_current());
+        if (b) {
+            s_base = b;
+            ESP_LOGI(TAG, "base switched to service buf%d (gen=%u)",
+                     wallpaper_service_get_current(), (unsigned)gen);
+        }
+        wallpaper_service_commit();     /* splash 不播动画，看完立即归还 */
+    }
 
     dirty_reset();
 
@@ -395,22 +346,30 @@ lv_obj_t *overlay_wp_particles_build(lv_obj_t *parent)
     s_w = BSP_LCD_H_RES;
     s_h = BSP_LCD_V_RES;
     s_pixels = (size_t)s_w * s_h;
-    /* RGB565: 800*480*2 = 768000 B（原来是 RGB888 的 1152000 B） */
+    /* RGB565: 800*480*2 = 768000 B（显示画布，必须与屏幕同格式） */
     size_t buflen = s_pixels * sizeof(uint16_t);
 
-    s_base = heap_caps_malloc(buflen, MALLOC_CAP_SPIRAM);
     s_buf  = heap_caps_malloc(buflen, MALLOC_CAP_SPIRAM);
-    if (!s_base || !s_buf) {
-        ESP_LOGE(TAG, "psram alloc fail (%u bytes x2)", (unsigned)buflen);
+    if (!s_buf) {
+        ESP_LOGE(TAG, "psram alloc fail (%u bytes)", (unsigned)buflen);
         return NULL;
     }
 
-    /* 先铺深蓝兜底色，decode 失败也不会是花屏/纯黑 */
-    for (size_t i = 0; i < s_pixels; i++) s_base[i] = rgb565(10, 20, 40);
-    if (!decode_base()) {
-        ESP_LOGW(TAG, "wallpaper unavailable, using fallback base color");
+    /* §75：底图借用 wallpaper_service 当前 buffer（app_main 已在 bsp_display_start
+     * 之前同步解码"上次壁纸/兜底图"，此处零解码零拷贝，同时省掉旧版自持的 768KB）。
+     * service 异常未就绪时退深蓝纯色（erase/回填路径已做 NULL 守卫）。 */
+    s_base = (uint16_t *)(void *)wallpaper_service_get_buffer(
+                 wallpaper_service_get_current());
+    s_wp_gen_seen = wallpaper_service_get_gen();
+    if (!s_base) {
+        ESP_LOGW(TAG, "service buffer unavailable -> solid dark blue base");
     }
-    memcpy(s_buf, s_base, buflen);
+
+    /* 先铺深蓝兜底色，service 异常时也不会是花屏/纯黑 */
+    for (size_t i = 0; i < s_pixels; i++) s_buf[i] = rgb565(10, 20, 40);
+    if (s_base) {
+        memcpy(s_buf, s_base, buflen);
+    }
 
     s_canvas = lv_canvas_create(parent);
     /* ⚠ 必须与屏幕帧缓冲同格式（RGB565）。用 RGB888 会让 LVGL 每帧走

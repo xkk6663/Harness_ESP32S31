@@ -1,6 +1,6 @@
 # SD 卡壁纸 + PC 壁纸管理 迁移实施方案
 
-> 版本 **V2（待评审，重写版）** · 2026-10-07 · 分支：**main**
+> 版本 **V2.1（决策已锁定，执行版）** · 2026-10-07 · 分支：**main**
 > 需求（用户原话）：复用端侧支线 **SD 卡页面 → wallpaper 文件夹 → 打开图片 → 设为浮窗壁纸/开屏壁纸**
 > 的逻辑功能；main 再加 **pc_host GUI 局域网上传/管理/设壁纸**。
 >
@@ -28,13 +28,15 @@
 ```
 service 任务：只往"空闲 buffer"解码 → 解完翻 s_cur、gen++ → 等 commit（UI 还旧图 / 5s 超时兜底）
 LVGL 线程  ：只读当前 buffer，tick 里轮询 gen 发现新图（零跨线程 LVGL 调用，F44 同源）
-buffer[0]  = 借 fs_service 的 file_buffer（不新增分配）
-buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
+buffer[0]  = 借 fs_service 的 file_buffer 前 768KB（main 该 buffer 为 1.15MB，够放）
+buffer[1]  = service 自分配 work buffer（全屏 RGB565 = 800×480×2 = 768KB PSRAM）
 
 恢复链：NVS wp_last（且文件在池中）→ SD 池随机 → littlefs xwkkk.jpg → 深蓝纯色（绝不黑屏）
 换图入口：10min 随机轮换 ＋ FILES 页手动 request_set（名字必须在池内，防路径注入）
-解码约束：池内一律 800×480（非整屏 JPEG 拒收）；RGB888 输出 + R/B 交换
-         （esp_jpeg_dec RGB888 输出实为 BGR 序，LVGL 按 RGB 读）
+解码约束：池内一律 800×480（非整屏 JPEG 拒收）
+         【V2.1 定稿】输出改 **RGB565**（用户拍板：硬件不支持全屏 RGB888 落屏），
+         解码配置借 main 现有 overlay_wp_particles 的 esp_jpeg_dec RGB565 cfg（**无 R/B swap**）；
+         两消费端 canvas 统一 LV_COLOR_FORMAT_RGB565
 ```
 
 ---
@@ -43,22 +45,22 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
 
 | # | 差异 | 影响 | 迁移动作 |
 |---|---|---|---|
-| 1 | **LV_COLOR_DEPTH：分支 16 / main 24** | main `fs_service.file_buffer` = `H×V×sizeof(lv_color_t)` = **恰好 1.15MB = 全屏 RGB888** ⇒ buf0 借用语义在 main 上**天然成立** | 直接沿用，无需改 fs_service |
-| 2 | main `overlay_wp_particles` canvas 是 **RGB565**（768KB），service 输出 RGB888 | 格式冲突 | wp_particles 改绑 RGB888 canvas（+384KB），与 overlay_wallpaper 统一；**释放它自持的 768KB 旧缓冲** —— 净内存账 ≈ **+0.38MB PSRAM**（16MB 充裕） |
-| 3 | main `overlay_wallpaper` 本来就是 RGB888 + R/B swap | 与 service 输出一致 | 用分支版改造（gen 轮询 + crossfade + commit），swap 只做一层 |
+| 1 | **像素格式定稿（V2.1）：全屏 RGB565**（用户拍板：硬件不支持全屏 RGB888 落屏；分支 16 位 / main LVGL depth 24 仅是内部处理精度，落屏一律 565） | 双缓冲从支线 1.15MB×2 RGB888 缩为 **768KB×2 RGB565**；buf0 仍借 `fs_service.file_buffer` 前 768KB（main 该 buffer 1.15MB ≥ 768KB） | service 解码输出改 RGB565，配置照抄 main `overlay_wp_particles` 现有 esp_jpeg_dec cfg（无 swap）；两消费端 canvas 统一 `LV_COLOR_FORMAT_RGB565` |
+| 2 | 净内存账（V2.1 重算） | buf1 自分配 768KB；main `overlay_wp_particles` 自持的 768KB RGB565 底图**释放**；wp_particles 原本还有约 0.77KB 的自解码开销删除 | **净增 ≈ +0（768KB − 768KB，基本持平）**，比 V2 的 +0.38MB 更省 |
+| 3 | main `overlay_wallpaper` 本来就是 RGB888 + R/B swap | 与新输出格式（RGB565 无 swap）不一致 | 用分支版改造（gen 轮询 + crossfade + commit），**去掉 swap**，canvas 改 RGB565 |
 | 4 | main `sdcard_service.h` **已有 `SDCARD_MNT_PATH "/sdcard"`** 宏 | 无 | 直接 include |
 | 5 | main `page_splash` 有自己的开屏壁纸逻辑（自解码） | 双份内存 | 改为 build 粒子浮层（同分支），开屏吃 service buffer，删自解码路径 |
-| 6 | main 无 `file_mgr_service` / `tab_files` | 见 §2 决策 ① | 二选一（整页搬 / 轻量入口） |
+| 6 | main 无 `file_mgr_service` / `tab_files` | 见 §2 决策 ① | **已拍板 ①A：整页搬** |
 | 7 | main 分区 littlefs 3MB | **无影响**：壁纸池在 SD 卡，littlefs 只留 xwkkk 兜底图 | 无 |
-| 8 | main 页序已定 7 tab（CALL/REC/AUDIO/SINK/VIDEO/PC/SYS） | FILES 页挂载方式 | 见 §2 决策 ① |
-| 9 | 分支 `web_server` 含浏览器上传 | 与 pc_host 功能重叠 | 见 §2 决策 ② |
+| 8 | main 页序已定 7 tab（CALL/REC/AUDIO/SINK/VIDEO/PC/SYS） | FILES 页挂载方式 | **已拍板：第 8 tab "FILES"（SYS 前插入）** |
+| 9 | 分支 `web_server` 含浏览器上传 | 与 pc_host 功能重叠 | **已拍板 ②路线 1：不搬 web_server** |
 | 10 | 跨分支搬运 | build 串味 | **切完源码 `idf.py fullclean`**（老规矩） |
 
 ---
 
-## 2. 请评审拍板的 3 个决策
+## 2. 三个决策（V2.1 已全部拍板 ✅）
 
-### ① SD 浏览入口：整页搬 vs 轻量入口
+### ① SD 浏览入口 → **拍板 A：整页搬 `tab_files` + `file_mgr_service`（约 +1,190 行）**
 
 - **A. 整页搬 `tab_files` + `file_mgr_service`（约 +1,190 行，推荐）**：
   原样复用支线 FILES 页——浏览/预览/SET WALLPAPER/删除/AVI 播放入口一次到位，
@@ -68,7 +70,7 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
   （内置简版扫描，不搬 file_mgr），点击 → 全屏预览 → SET WALLPAPER。
   快，但没有文件管理能力，后续做文件管理还得再搬一次 file_mgr。
 
-### ② PC 上传路线：pc_host 设备拉（推荐）vs 搬 web_server
+### ② PC 上传路线 → **拍板 路线 1：pc_host「设备拉」**（与 pc_host v0.3 的 OTA 完全同构）
 
 - **路线 1（推荐）：pc_host「设备拉」**——与 pc_host v0.3 的 OTA 完全同构：
   pc_host httpd 挂 `/wallpaper/<name>.jpg` 路由（就绪才宣告）→ UDP 50003 发
@@ -80,10 +82,7 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
   （上传壁纸 + 更多管理功能），但要动 wifi_manager/page_wifi、打静态资源包，
   工程量大且与 pc_host 重叠。可作为后续独立立项。
 
-### ③ 轮换策略保留与否
-
-支线是"10 分钟随机轮换 + NVS 记忆"。main 要不要保留轮换？
-- **推荐：保留**（现成代码，砍掉反而要改）；不想要 10min 可把间隔改成可配或拉长。
+### ③ 轮换策略 → **拍板：保留 10 分钟随机轮换 + NVS 记忆**（现成代码不改）
 
 ---
 
@@ -93,9 +92,9 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
 
 | 步骤 | 内容 | 量 |
 |---|---|---|
-| 1 | `wallpaper_service.{c,h}` 从 b590d31 提取 → `main/middleware/media/`；CMakeLists SRCS 登记 | 原样搬 |
-| 2 | 消费端改造：`overlay_wallpaper` / `overlay_wp_particles` / `page_splash` 换成分支版逻辑（gen 轮询 + crossfade + commit；wp_particles canvas RGB565→RGB888；删各处自解码与自持底图） | ~250 行 diff |
-| 3 | 入口：决策①A=搬 `tab_files`+`file_mgr_service` 挂第 8 tab；B=SYS 壁纸卡片（扫描 + 预览 + request_set） | A: ~1,190 行原样 / B: ~150 行新写 |
+| 1 | `wallpaper_service.{c,h}` 从 b590d31 提取 → `main/middleware/media/`；include 路径适配（periph→system）、`WALLPAPER_POOL_DIR` 用 main 的 `SDCARD_MNT_PATH`；**解码输出改 RGB565**（照抄 main `overlay_wp_particles` 的 esp_jpeg_dec cfg，无 swap）；MEM_STAGE 等分支私有宏替换；CMakeLists SRCS 登记 | ~80 行适配 |
+| 2 | 消费端改造：`overlay_wallpaper` / `overlay_wp_particles` / `page_splash` 换成分支版逻辑（gen 轮询 + crossfade + commit）；两 overlay canvas 统一 RGB565、**去 swap**；删各处自解码与自持底图（wp_particles 释放 768KB） | ~250 行 diff |
+| 3 | 入口：**拍板 ①A** = 搬 `tab_files`+`file_mgr_service`（file_mgr 去 camera viewfinder 依赖、tab_files 剥离 avi 播放）挂第 8 tab | ~1,190 行原样 + ~100 行适配 |
 | 4 | `idf.py fullclean` 重编 + 静态探针（`.workbuddy/probe_idf_syntax.py`） | — |
 
 ### M2：pc_host 壁纸管理（对应决策 ② 路线 1）
@@ -111,8 +110,9 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
 - `wallpaper_service` 属 middleware：**不 include lvgl.h**；
 - UI 侧只读 buffer + gen 轮询 + commit 归还，绝不跨线程调 LVGL（F44）；
 - fetch/导入任务栈**内部 RAM**（F35：碰 flash/SD IO）；解码缓冲全 PSRAM；
-- 解码 R/B swap 只做一层——警惕"分支换过一次 + main 再换一次"的双重交换（对照两分支
-  `decode_file_into` 逐字节核对后再合入）。
+- **RGB565 定稿（V2.1）**：解码输出与两 canvas 全链 RGB565、**无 R/B swap**——
+  合入前逐字节核对 main `overlay_wp_particles` 现行 cfg 与支线 `decode_file_into`，
+  警惕"分支换过一次 + main 再换一次"的双重交换（V2 原红线保留，语义改为"确认 swap 为 0 层"）。
 
 ---
 
@@ -128,14 +128,13 @@ buffer[1]  = service 自分配 work buffer（全屏 RGB888 = 1.15MB PSRAM）
 | F | 回退链 | 拔 SD 卡重启 | 依次降级：NVS 失效→池随机→xwkkk→深蓝，绝不黑屏（`fallback wallpaper (littlefs)`） |
 | G | 非法图 | 池内放 1600×960 / 500KB | `validate_file` 拒收，当前图不动 |
 | H | PC 上传 | pc_host 选图上传 | 30s 内设备换图，`WP_RESULT ok:1`；中途杀 pc_host → 失败且旧图不动 |
-| I | 内存 | 开机 BOOT_DIAG + 换图前后三元组 | 净增 ≈ +0.38MB PSRAM（buf1），无常驻泄漏 |
+| I | 内存 | 开机 BOOT_DIAG + 换图前后三元组 | 净增 ≈ **+0**（buf1 新增 768KB ≈ wp_particles 释放 768KB），无常驻泄漏 |
 
 ---
 
-## 5. 工作量汇总（拍板后）
+## 5. 工作量汇总（已拍板 ①A + 路线 1 + 保留轮换）
 
-| 方案组合 | 量 |
+| 组合 | 量 |
 |---|---|
-| M1 + 决策①A（整页搬） + M2 | 1.5~2 天（含真机验收） |
-| M1 + 决策①B（轻量入口） + M2 | 1~1.5 天 |
-| 路线 2（再搬 web_server） | 另加 1~2 天，建议独立立项 |
+| M1（service + 三消费端 + ①A 整页搬） + M2（路线 1） | 1.5~2 天（含真机验收） |
+| 路线 2（再搬 web_server） | 另加 1~2 天，建议独立立项（本次不做） |

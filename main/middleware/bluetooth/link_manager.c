@@ -28,7 +28,7 @@ static struct sockaddr_in s_peer;
 static bool s_online;
 static int64_t s_last_heartbeat_us;
 static link_evt_cb_t s_observers[LINK_MAX_OBSERVERS];
-static link_json_cb_t s_json_cb;   /* 单槽：通用 JSON 分发（OTA 等），见 .h 说明 */
+static link_json_cb_t s_json_cbs[LINK_MAX_JSON_OBSERVERS];   /* 多槽 JSON 分发，见 .h 说明 */
 
 static void link_task(void *arg);
 static void notify_observers(link_evt_t evt, const char *ip);
@@ -69,9 +69,23 @@ void link_manager_add_evt_cb(link_evt_cb_t cb)
     xSemaphoreGive(s_mux);
 }
 
-void link_manager_set_json_cb(link_json_cb_t cb)
+void link_manager_add_json_cb(link_json_cb_t cb)
 {
-    s_json_cb = cb;   /* 单槽，无锁：init 期注册一次，之后只读 */
+    if (!cb) {
+        return;
+    }
+    for (int i = 0; i < LINK_MAX_JSON_OBSERVERS; i++) {
+        if (s_json_cbs[i] == cb) {
+            return;     /* 幂等 */
+        }
+    }
+    for (int i = 0; i < LINK_MAX_JSON_OBSERVERS; i++) {
+        if (!s_json_cbs[i]) {
+            s_json_cbs[i] = cb;   /* init 期注册一次，之后只读（与 observers 同风格） */
+            return;
+        }
+    }
+    ESP_LOGE(TAG, "json cb slots full (%d), reject", LINK_MAX_JSON_OBSERVERS);
 }
 
 bool link_manager_is_online(void)
@@ -188,11 +202,14 @@ static void link_task(void *arg)
                     udp_voice_post_cmd(VOICE_CMD_TX_OFF);
                     udp_voice_post_cmd(VOICE_CMD_RX_OFF);
                 }
-                /* ★ 通用 JSON 分发（末端）：OTA_* 等上层订阅的消息。
+                /* ★ 通用 JSON 分发（末端）：OTA_* / WP_* 等上层订阅的消息。
                    放在 HEARTBEAT/SESSION_* 这些"本文件认识的"分支之后，
-                   不认识的和认识的都能到达订阅者。订阅方自行 strstr 判 type。 */
-                if (s_json_cb) {
-                    s_json_cb(packet);
+                   不认识的和认识的都能到达订阅者。订阅方自行 strstr 判 type，
+                   多槽各过滤各的，互不干扰。 */
+                for (int i = 0; i < LINK_MAX_JSON_OBSERVERS; i++) {
+                    if (s_json_cbs[i]) {
+                        s_json_cbs[i](packet);
+                    }
                 }
             }
         }

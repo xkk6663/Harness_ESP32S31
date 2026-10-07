@@ -1,13 +1,16 @@
-"""只读 HTTP :50005（设备→PC 拉封面/歌词/固件）。ThreadingHTTPServer 标准库实现。
+"""只读 HTTP :50005（设备→PC 拉封面/歌词/固件/壁纸）。ThreadingHTTPServer 标准库实现。
 
-路由（ICD V1.3 + §8 OTA，与 C# agent 一致）：
+路由（ICD V1.3 + §8 OTA + §76 壁纸）：
   GET /cover/<hash>.jpg    -> TrackStore 中的 JPEG 字节
   GET /lyrics.json?k=<hash>-> {"k","ver","lines":[{t,text}...]}
   GET /firmware.json       -> {"ver","size","sha256",...}   （★ 仅 OTA 会话活跃时）
   GET|HEAD /firmware.bin   -> 200/206 + Content-Length + 流式写出（支持 Range 续传）
                               （★ 仅 OTA 会话活跃时 —— "就绪才宣告"，永不给半成品）
+  GET /wallpaper/<name>    -> 本次上传的壁纸 JPEG 字节
+                              （★ 仅壁纸会话活跃时 —— WallpaperSession 生命周期控制）
 
 ★ OTA 路由由 OtaSession 生命周期控制：会话 start() 时 attach_ota()、结束 detach_ota()。
+★ 壁纸路由同理：WallpaperSession.start() attach、_run 收尾 detach。
 """
 from __future__ import annotations
 
@@ -24,11 +27,12 @@ _RANGE_RE = re.compile(r"bytes=(\d+)-", re.IGNORECASE)
 
 class NowHttpServer:
     def __init__(self, store=None, on_log=None) -> None:
-        """store 可为 None（--no-pcnow 模式：只为 OTA 提供服务，封面/歌词路由回 404）。"""
+        """store 可为 None（--no-pcnow 模式：只为 OTA/壁纸提供服务，封面/歌词路由回 404）。"""
         self.store = store
         self.on_log = on_log or (lambda s: None)
         self.port = HTTP_PORT
         self._ota = None                      # OtaSession | None（就绪才宣告）
+        self._wp = None                       # WallpaperSession | None（就绪才宣告）
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._handler = _make_handler(self)
@@ -42,6 +46,16 @@ class NowHttpServer:
         if self._ota is session:
             self._ota = None
             self.on_log("OTA 路由摘除")
+
+    # ---- §76 壁纸路由挂载/摘除（WallpaperSession 生命周期调用） ----
+    def attach_wallpaper(self, session) -> None:
+        self._wp = session
+        self.on_log(f"壁纸路由上线：/wallpaper/{session.name}")
+
+    def detach_wallpaper(self, session) -> None:
+        if self._wp is session:
+            self._wp = None
+            self.on_log("壁纸路由摘除")
 
     def start(self) -> bool:
         try:
@@ -120,11 +134,31 @@ def _make_handler(srv: NowHttpServer):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
+        def _send_wallpaper(self) -> None:
+            wp = srv._wp
+            if wp is None or not wp.active:
+                self._send(404, b'{"error":"wallpaper not ready"}', "application/json")
+                return
+            name = urlparse(self.path).path[len("/wallpaper/"):]
+            if not name or name != wp.name:       # 就绪才宣告 + 名字对账
+                self._send(404, b'{"error":"wallpaper not ready"}', "application/json")
+                return
+            try:
+                data = wp.path.read_bytes()
+            except OSError:
+                self._send(404, b'{"error":"wallpaper unreadable"}', "application/json")
+                return
+            self._send(200, data, "image/jpeg")
+            srv.on_log(f"壁纸已下发: {wp.name}（{len(data)} B）")
+
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             path = parsed.path
             if path == "/firmware.bin":
                 self._send_firmware(is_head=False)
+                return
+            if path.startswith("/wallpaper/"):
+                self._send_wallpaper()
                 return
             if path == "/firmware.json":
                 ota = srv._ota

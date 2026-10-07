@@ -1,4 +1,4 @@
-"""Korvo 统一上位机（pc_host v2）：通话对讲 + 录音库 + 音乐副屏 + 固件升级 + 系统。
+"""Korvo 统一上位机（pc_host v2）：通话对讲 + 录音库 + 音乐副屏 + 固件升级 + 壁纸 + 系统。
 
 用法：
   python -m pc_host.main                 # 广播自动发现设备（推荐）
@@ -9,6 +9,8 @@ v0.2（2026-09-23）：UI 重构为侧边栏多页框架（ui/），合并副屏
 link 支持广播发现；对讲/录音链路代码不变。
 v0.3（2026-10-07）：收编 OTA（pc_host/ota/）——固件升级页 + 50005 /firmware.* 路由；
 link.on_json 改为按 type 分发（NOW_CMD → 副屏控制，OTA_* → OTA 会话）。
+v0.4（2026-10-07）：收编壁纸上传（wallpaper.py，§76 设备拉）——系统页"壁纸管理"卡片
++ 50005 /wallpaper/<name> 路由 + WP_OFFER/WP_RESULT 信令。
 """
 from __future__ import annotations
 
@@ -57,6 +59,9 @@ class Ctx:
         self.ota_q: queue.Queue = queue.Queue(maxsize=1000)     # 会话事件 → OTA 页排空
         self.ota_session = None                                  # OtaSession | None
         self.on_now_cmd = None                                   # 副屏 NOW_CMD 回调（pcnow 注入）
+        # ---- 壁纸上传（v0.4 收编 §76，见 wallpaper.py）----
+        self.wp_q: queue.Queue = queue.Queue(maxsize=200)        # 会话事件 → 系统页排空
+        self.wp_session = None                                   # WallpaperSession | None
 
     def pcnow_log(self, s: str) -> None:
         line = f"[{__import__('time').strftime('%H:%M:%S')}] {s}"
@@ -135,6 +140,11 @@ def build_services(args) -> Ctx:
                 ctx.ota_session.feed(msg)
             else:
                 print(f"[ota] 收到 {t} 但无活跃会话，忽略", flush=True)
+        elif t.startswith("WP_"):
+            if ctx.wp_session is not None:
+                ctx.wp_session.feed(msg)
+            else:
+                print(f"[wp] 收到 {t} 但无上传会话，忽略", flush=True)
 
     ctx.link.on_json = dispatch_link_json
 
@@ -200,6 +210,10 @@ def build_services(args) -> Ctx:
     from .pcnow.http_server import NowHttpServer
     ctx.httpd = NowHttpServer(ctx.store, on_log=ctx.pcnow_log)
     ctx.httpd.start()
+
+    # ---- §76 壁纸上传会话（httpd /wallpaper 路由 + WP_OFFER/RESULT） ----
+    from .wallpaper import WallpaperSession
+    ctx.wp_session = WallpaperSession(ctx)
     return ctx
 
 

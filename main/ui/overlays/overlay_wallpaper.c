@@ -6,24 +6,22 @@
 
 /**
  * @file overlay_wallpaper.c
- * @brief Pull-down wallpaper overlay: JPEG decode + drag gestures + clock/weather widget.
+ * @brief Pull-down wallpaper overlay: drag gestures + clock/weather widget.
+ *        §75：壁纸内容不再自解码 —— 借 wallpaper_service 双缓冲（gen 轮询 +
+ *        crossfade + commit 归还），两个 canvas 分别绑 service 两个 buffer。
  */
 
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <stdlib.h>
 #include <time.h>
 
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
-#include "esp_jpeg_dec.h"
 
 #include "overlay_wallpaper.h"
 #include "overlay_manager.h"
 #include "ui/common/ui_theme.h"
-#include "middleware/system/fs_service.h"
+#include "middleware/media/wallpaper_service.h"
 #include "middleware/network/net_time_service.h"
 #include "middleware/network/wifi_manager.h"
 
@@ -42,7 +40,8 @@ LV_IMG_DECLARE(image_rain);
 
 static const char *TAG = "WP_OVERLAY";
 
-#define WALLPAPER_PATH   FS_MNT_PATH"/xwkkk.jpg"
+/* §75：壁纸池轮换 + crossfade 动画参数 */
+#define WP_FADE_MS       800    /* 渐进换图时长 */
 #define PULL_TOP_ZONE    60
 #define PULL_DOWN_OPEN   200
 #define PULL_ANIM_MS     220
@@ -56,8 +55,15 @@ static lv_obj_t *s_tab_btns;
 static int32_t   s_pull_start_y;
 static bool      s_pull_armed;
 
+/* ---- §75 双缓冲壁纸 canvas：[0]/[1] 分别绑 wallpaper_service 两个 buffer ---- */
+static lv_obj_t   *s_wp_cv[2];
+static uint32_t    s_wp_gen_seen;
+static bool        s_wp_fading;
+static lv_obj_t   *s_wp_fading_cv;   /* 正在淡入的 canvas（deinit 时删动画用） */
+
 /* ---- clock/weather widget on pull-down wallpaper ---- */
 static lv_obj_t *s_root;
+static lv_obj_t *s_clock_frame;     /* §75：crossfade 后把浮窗抬回最顶层用 */
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_wifi_label;
 static lv_obj_t *s_ip_label;
@@ -73,79 +79,72 @@ static lv_obj_t *s_aqi_label;
 static lv_obj_t *s_sun_label;
 static lv_timer_t *s_clock_timer;
 
-/* Decode xwkkk.jpg into PSRAM file_buffer and bind to canvas. */
-static void wallpaper_decode_into(lv_obj_t *canvas)
+/* ---- §75 crossfade：新图 0→255 淡入叠在旧图上，结束隐藏旧图并归还 service ---- */
+
+static void wp_fade_exec_cb(void *var, int32_t v)
 {
-    struct stat st;
-    if (stat(WALLPAPER_PATH, &st) != 0) {
-        ESP_LOGE(TAG, "wallpaper not found: %s", WALLPAPER_PATH);
-        return;
-    }
-    size_t fsize = st.st_size;
-    uint8_t *jpeg_buf = heap_caps_malloc(fsize, MALLOC_CAP_SPIRAM);
-    if (!jpeg_buf) {
-        jpeg_buf = malloc(fsize);
-    }
-    if (!jpeg_buf) {
-        ESP_LOGE(TAG, "no dma mem for jpeg buf");
-        return;
-    }
-
-    int fd = open(WALLPAPER_PATH, O_RDONLY);
-    if (fd < 0) {
-        free(jpeg_buf);
-        return;
-    }
-    read(fd, jpeg_buf, fsize);
-    close(fd);
-
-    jpeg_dec_handle_t dec = NULL;
-    jpeg_dec_header_info_t info = {0};
-    jpeg_dec_io_t io = {
-        .inbuf = jpeg_buf,
-        .inbuf_len = (int)fsize,
-        .outbuf = file_buffer,
-    };
-    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB888;
-
-    if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
-        ESP_LOGE(TAG, "jpeg_dec_open failed");
-        goto cleanup;
-    }
-    if (jpeg_dec_parse_header(dec, &io, &info) != JPEG_ERR_OK) {
-        ESP_LOGE(TAG, "jpeg header parse failed");
-        goto cleanup;
-    }
-    int out_len = 0;
-    jpeg_dec_get_outbuf_len(dec, &out_len);
-    if ((size_t)out_len > file_buffer_size) {
-        ESP_LOGE(TAG, "jpeg too large: %d > %u", out_len, (unsigned)file_buffer_size);
-        goto cleanup;
-    }
-    if (jpeg_dec_process(dec, &io) == JPEG_ERR_OK) {
-        size_t pixels = (size_t)info.width * info.height;
-        uint8_t *p = file_buffer;
-        for (size_t i = 0; i < pixels; i++) {
-            uint8_t t = p[0]; p[0] = p[2]; p[2] = t;
-            p += 3;
-        }
-        lv_canvas_set_buffer(canvas, file_buffer, info.width, info.height,
-                             LV_COLOR_FORMAT_RGB888);
-        lv_obj_center(canvas);
-        ESP_LOGI(TAG, "wallpaper %dx%d decoded", info.width, info.height);
-    } else {
-        ESP_LOGE(TAG, "jpeg decode failed");
-    }
-
-cleanup:
-    if (dec) {
-        jpeg_dec_close(dec);
-    }
-    free(jpeg_buf);
+    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
 }
 
-lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent)
+static void wp_fade_done_cb(lv_anim_t *a)
+{
+    lv_obj_t *old_cv = (lv_obj_t *)lv_anim_get_user_data(a);
+    if (old_cv) {
+        lv_obj_set_hidden(old_cv, true);
+    }
+    s_wp_fading = false;
+    s_wp_fading_cv = NULL;
+    wallpaper_service_commit();     /* 旧 buffer 已无人看，还给 service 当 work buffer */
+}
+
+/**
+ * 代际号轮询（clock_tick 每秒一拍）：发现 service 换图 → crossfade。
+ * 浮层打开时也照常生效（用户拍板：打开状态下能看到壁纸更换）。
+ */
+static void wallpaper_rotate_check(void)
+{
+    if (s_wp_fading || !s_wp_cv[0] || !s_wp_cv[1]) {
+        return;     /* 降级态（单 canvas）不做 fade：直接等下一轮重绑 */
+    }
+    uint32_t gen = wallpaper_service_get_gen();
+    if (gen == s_wp_gen_seen) {
+        return;
+    }
+    s_wp_gen_seen = gen;
+
+    int cur = wallpaper_service_get_current();
+    int old = 1 - cur;
+    lv_obj_t *new_cv = s_wp_cv[cur];
+    lv_obj_t *old_cv = s_wp_cv[old];
+
+    /* 新图垫底已在屏，先移到最上层再从全透明淡入。
+     * ★ move_foreground 会顶到全部兄弟之上（含时钟浮窗 frame——同一父容器），
+     *   紧接着必须把浮窗再抬回去，否则第一次 crossfade 后浮窗被新图永久盖住。 */
+    lv_obj_set_hidden(new_cv, false);
+    lv_obj_set_style_opa(new_cv, LV_OPA_TRANSP, 0);
+    lv_obj_move_foreground(new_cv);
+    if (s_clock_frame) {
+        lv_obj_move_foreground(s_clock_frame);
+    }
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, new_cv);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_time(&a, WP_FADE_MS);
+    lv_anim_set_exec_cb(&a, wp_fade_exec_cb);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_completed_cb(&a, wp_fade_done_cb);
+    lv_anim_set_user_data(&a, old_cv);
+    lv_anim_start(&a);
+
+    s_wp_fading = true;
+    s_wp_fading_cv = new_cv;
+    ESP_LOGI(TAG, "wallpaper crossfade -> buf%d (gen=%u)", cur, (unsigned)gen);
+}
+
+/* Build the pull-down wallpaper layer: two canvases over the service buffers. */
+static lv_obj_t *wallpaper_layer_build(lv_obj_t *parent)
 {
     lv_obj_t *layer = lv_obj_create(parent);
     lv_obj_set_size(layer, BSP_LCD_H_RES, BSP_LCD_V_RES);
@@ -155,10 +154,49 @@ lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent)
     lv_obj_set_style_pad_all(layer, 0, 0);
     lv_obj_set_scrollable(layer, false);
 
-    lv_obj_t *canvas = lv_canvas_create(layer);
-    lv_obj_center(canvas);
-    wallpaper_decode_into(canvas);
+    for (int i = 0; i < 2; i++) {
+        uint8_t *buf = wallpaper_service_get_buffer(i);
+        if (!buf) {
+            s_wp_cv[i] = NULL;      /* work buffer 降级态：单 canvas 运行 */
+            continue;
+        }
+        lv_obj_t *cv = lv_canvas_create(layer);
+        /* ★ canvas 格式必须 == service 缓冲格式（RGB565，V2.1 定稿）。
+         *   这是静态画布（只在 crossfade 时重绘），无 wp_particles 那种逐帧
+         *   全屏转换的 wdt 风险。 */
+        lv_canvas_set_buffer(cv, buf, BSP_LCD_H_RES, BSP_LCD_V_RES,
+                             LV_COLOR_FORMAT_RGB565);
+        lv_obj_center(cv);
+        s_wp_cv[i] = cv;
+    }
+
+    /* 当前张全透明度显示并置顶；另一张隐藏作 work buffer */
+    int cur = wallpaper_service_get_current();
+    for (int i = 0; i < 2; i++) {
+        if (!s_wp_cv[i]) {
+            continue;
+        }
+        if (i == cur) {
+            lv_obj_set_style_opa(s_wp_cv[i], LV_OPA_COVER, 0);
+            lv_obj_move_foreground(s_wp_cv[i]);
+        } else {
+            lv_obj_set_style_opa(s_wp_cv[i], LV_OPA_TRANSP, 0);
+            lv_obj_set_hidden(s_wp_cv[i], true);
+        }
+    }
+    s_wp_gen_seen = wallpaper_service_get_gen();
+    s_wp_fading = false;
+    s_wp_fading_cv = NULL;
+    ESP_LOGI(TAG, "wallpaper bound to service buffers (cur=buf%d, gen=%u)",
+             cur, (unsigned)s_wp_gen_seen);
     return layer;
+}
+
+lv_obj_t *overlay_wallpaper_build(lv_obj_t *parent)
+{
+    /* §75：原"自解码 JPEG"版本已废弃 —— 现在直接绑 service 双缓冲。
+     * 头文件 API 保留（splash 历史入口；现 splash 走粒子浮层）。 */
+    return wallpaper_layer_build(parent);
 }
 
 /* ================= clock/weather widget (pull-down layer only) ================= */
@@ -213,6 +251,7 @@ static void clock_widget_create(lv_obj_t *parent)
 
     /* main frame: semi-transparent dark blue rounded box */
     lv_obj_t *frame = lv_obj_create(parent);
+    s_clock_frame = frame;      /* §75：crossfade 抬顶用 */
     lv_obj_set_size(frame, 780, 460);
     lv_obj_align(frame, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(frame, COL_DARK, 0);
@@ -316,6 +355,10 @@ static void clock_tick(lv_timer_t *t)
 {
     (void)t;
     if (!s_root) return;
+
+    /* §75：代际号轮询（每秒一拍，代价可忽略）——发现新图即 crossfade。
+     * 放在时间有效性 return 之前：没校时也要照常换壁纸。 */
+    wallpaper_rotate_check();
 
     static int s_wifi_counter = 0;
 
@@ -546,7 +589,20 @@ void overlay_wallpaper_deinit(void)
         lv_timer_del(s_clock_timer);
         s_clock_timer = NULL;
     }
+
+    /* §75：淡入动画若在播，先删动画并归还 service（否则 service 侧只能靠
+     * 5s 超时兜底；显式归还让协议即时闭环）。lv_obj_del 之前做。 */
+    if (s_wp_fading && s_wp_fading_cv) {
+        lv_anim_del(s_wp_fading_cv, wp_fade_exec_cb);
+        s_wp_fading = false;
+        s_wp_fading_cv = NULL;
+        wallpaper_service_commit();
+    }
+    s_wp_cv[0] = NULL;
+    s_wp_cv[1] = NULL;
+
     s_root = NULL;
+    s_clock_frame = NULL;
     s_wifi_icon = NULL;
     s_wifi_label = NULL;
     s_ip_label = NULL;

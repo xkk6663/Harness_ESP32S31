@@ -24,6 +24,7 @@
 #include "ui/tabs/tab_audio.h"
 #include "ui/tabs/tab_btsink.h"
 #include "ui/tabs/tab_pcnow.h"
+#include "ui/tabs/tab_files.h"
 #include "ui/tabs/tab_video.h"
 #include "ui/overlays/overlay_wallpaper.h"
 #include "ui/overlays/overlay_ota.h"
@@ -34,6 +35,7 @@ static const char *TAG = "PAGE_MAIN";
 
 static lv_obj_t  *s_tabview;
 static lv_obj_t  *s_tab_btns;
+static int         s_files_tab_idx = -1;    /* FILES tab 序号（激活通知用） */
 static lv_group_t *s_group_call;
 static lv_group_t *s_group_rec;
 static lv_group_t *s_group_sys;
@@ -48,6 +50,11 @@ static void tab_changed_event(lv_event_t *e)
          * SINK 页只按当前角色**动态显示/隐藏**内容，切走/切来都不影响蓝牙。
          * 这里只做编码器输入设备的分组切换。 */
         page_main_refresh_group();
+
+        /* FILES 页激活通知：进页 BROWSE 最近目录，出页复位预览态
+         * （tab_files_set_active 幂等，重复同值调用直接 return）。 */
+        tab_files_set_active(lv_tabview_get_tab_active(s_tabview) ==
+                             (uint32_t)s_files_tab_idx);
     }
 }
 
@@ -93,6 +100,9 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     lv_obj_t *tab_snk  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_BLUETOOTH"  SINK");
     lv_obj_t *tab_vid  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_VIDEO"  VIDEO");
     lv_obj_t *tab_pc   = lv_tabview_add_tab(s_tabview, LV_SYMBOL_WIFI"  PC");
+    /* FILES：SD 卡文件管理（§75 壁纸入口：预览池内图 → SET WALLPAPER） */
+    lv_obj_t *tab_files = lv_tabview_add_tab(s_tabview, LV_SYMBOL_FILE"  FILES");
+    s_files_tab_idx = (int)lv_obj_get_index(tab_files);
     lv_obj_t *tab_sys  = lv_tabview_add_tab(s_tabview, LV_SYMBOL_SETTINGS"  SYS");
 
     /* Tab bar styling */
@@ -128,6 +138,7 @@ static lv_obj_t *main_create(lv_obj_t *parent)
     tab_btsink_build(tab_snk, NULL);
     tab_video_build(tab_vid, NULL);
     tab_pcnow_build(tab_pc, NULL);
+    tab_files_build(tab_files, NULL);
     tab_sys_entry_build(tab_sys, s_group_sys);
 
     /* Pull-down wallpaper overlay on lv_layer_top. */
@@ -159,6 +170,7 @@ static void main_destroy(lv_obj_t *page)
     tab_btsink_destroy();
     tab_video_destroy();
     tab_pcnow_destroy();
+    tab_files_destroy();
     tab_sys_entry_destroy();
     overlay_ota_deinit();
     overlay_uext_deinit();

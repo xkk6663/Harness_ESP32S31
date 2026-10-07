@@ -335,7 +335,7 @@ void ota_service_init(void)
     }
     assert(ok == pdPASS);
 
-    link_manager_set_json_cb(ota_on_json);
+    link_manager_add_json_cb(ota_on_json);
     resume_load();
 
     ESP_LOGI(TAG, "[OTA_DIAG] init done: running=%s next_update=%s pending_verify=%d",

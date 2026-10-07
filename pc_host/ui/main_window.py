@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(cls(ctx))
 
         side_lay.addStretch(1)
-        ver = QLabel("pc_host 0.3 · ICD v1.3")
+        ver = QLabel("pc_host 0.4 · ICD v1.5")
         ver.setObjectName("AppSub")
         side_lay.addWidget(ver)
 

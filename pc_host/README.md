@@ -46,11 +46,16 @@ C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe -m pc_host.main          
 | 录音库 | 设备录音自动上传后的本地库：列表/时长/删除/打开目录 | TCP 50002（分块+CRC16，断点续传） |
 | 音乐副屏 | 采集 Windows 正在播放（SMTC）→ 网易云歌词/封面 → 推送设备 | UDP 50004 推流 + TCP 50005 HTTP 拉取 |
 | 固件升级 | WiFi OTA：选 bin（解析 esp_app_desc_t + SHA256）→ OFFER → 进度条 → 自证版本核对；内置 --force / --ota-limit / --ota-corrupt 联调开关 | UDP 50003 OFFER + TCP 50005 /firmware.bin（Range 续传） |
-| 系统 | 固件版本/协议版本/设备 IP、本机环境自检、端口总表、OTA 入口 | UDP 50003 心跳 |
+| 系统 | 固件版本/协议版本/设备 IP、**壁纸管理（§76）**、本机环境自检、端口总表、OTA 入口 | UDP 50003 心跳 + WP_OFFER/WP_RESULT + TCP 50005 /wallpaper/<name> |
 
 > v0.3（2026-10-07）起 OTA 面板收编进本应用（`pc_host/ota/`），**C# agent 不再是唯一带 OTA 的端**；
 > 设备回包（OTA_ACCEPT/PROGRESS/RESULT）固定到 PC:50003（`link_manager_send_json` 端口覆写），
 > 本应用由 link 分发器路由给 OTA 会话——比 C# 版临时 UDP 口收包的写法更贴合设备语义。
+>
+> v0.4（2026-10-07）起壁纸上传收编进系统页（`wallpaper.py`，§76 设备拉模型）：
+> 选 800x480 JPEG（≤2MB）→ 本地预校验（SOF 解析）→ WP_OFFER×3 → 设备 HTTP 拉取
+> `/wallpaper/<name>`（就绪才宣告）→ 设备落池 + 自动设为当前 + crossfade → WP_RESULT。
+> 设备端回包同样固定 PC:50003，由 link 分发器路由（`WP_*` → 壁纸会话）。
 
 ## 依赖
 

@@ -31,6 +31,8 @@
 #include "middleware/network/net_time_service.h"
 #include "middleware/network/pcnow_service.h"
 #include "middleware/network/ota_service.h"
+#include "middleware/media/wallpaper_service.h"
+#include "middleware/media/file_mgr_service.h"
 #include "middleware/bluetooth/bt_audio_service.h"
 #include "middleware/bluetooth/bt_push_service.h"
 #include "middleware/bluetooth/bt_sink_service.h"
@@ -198,6 +200,15 @@ void app_main(void)
     BOOT_DIAG("after bt_sink early init");
     fs_service_init();          /* JPEG 输出缓冲 1.10MB（800*480*3，LV_DEPTH=24），显式 PSRAM（F30） */
     BOOT_DIAG("after fs_service_init");
+    /* §75 壁纸服务：借 file_buffer 前 768KB 当 buffer0 + 自分 768KB work buffer
+       （RGB565×2）。含开机同步解码"上次壁纸"（几百 ms），必须在 bsp_display_start
+       之前拿完大块（时序纪律见上）；且 splash 粒子层要借它的当前 buffer。 */
+    wallpaper_service_init();
+    BOOT_DIAG("after wallpaper_service_init");
+    /* SD 文件管理服务（FILES 页数据面）：预览双缓冲 2x450KB + 服务任务。
+       同样是大块缓冲，赶在 bsp_display_start 之前拿（时序纪律见上）。 */
+    file_mgr_init();
+    BOOT_DIAG("after file_mgr_init");
 
     /* ★ §28.31：taskLVGL 任务栈 7168 → 16384。
      * 两次 "Stack protection fault"（进 SINK / back to Main 整页重绘瞬间）都发生在
@@ -269,6 +280,10 @@ void app_main(void)
     BOOT_DIAG("after session_manager_init");
     link_manager_init();
     BOOT_DIAG("after link_manager_init");
+    /* §76 壁纸上传（设备拉）：注册 link JSON 槽 + 建 wp_fetch 任务（内部 RAM 栈）。
+       必须在 link_manager_init 之后、wallpaper_service_init 之后（幂等注册）。 */
+    wallpaper_service_fetch_init();
+    BOOT_DIAG("after wallpaper_service_fetch_init");
     udp_voice_init();
     BOOT_DIAG("after udp_voice_init");
     record_service_init();

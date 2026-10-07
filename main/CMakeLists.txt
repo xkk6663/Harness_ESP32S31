@@ -37,6 +37,11 @@ idf_component_register(SRCS
     "middleware/system/fs_service.c"
     "middleware/system/sdcard_service.c"
 
+    # ---- middleware / media：壁纸服务（§75：SD 池 + 双缓冲解码 + 10min 轮换 + NVS 记忆） ----
+    "middleware/media/wallpaper_service.c"
+    # file_mgr_service = SD 文件管理服务（浏览/删除/预览，§75 SET WALLPAPER 的数据面）
+    "middleware/media/file_mgr_service.c"
+
     # ---- 3rd：第三方组件 ----
     "3rd/ringbuf/ringbuf.c"
 
@@ -67,6 +72,8 @@ idf_component_register(SRCS
     "ui/tabs/tab_btsink.c"
     # tab_pcnow = PC 音乐副屏页（圆形封面旋转 + 进度 + v1.1 歌词三行窗）
     "ui/tabs/tab_pcnow.c"
+    # tab_files = SD 文件管理页（浏览/删除/预览/SET WALLPAPER，§75）
+    "ui/tabs/tab_files.c"
     "ui/tabs/tab_video.c"
 
     # ---- ui / overlays：浮层（壁纸 / 粒子 / OTA） ----

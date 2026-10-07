@@ -1,4 +1,4 @@
-# 设备 ↔ PC 通信接口控制文档（ICD）V1.3
+# 设备 ↔ PC 通信接口控制文档（ICD）V1.5
 
 > 本文件是设备端（ESP32-S31，C）与 PC 端（Python）必须共同遵守的**唯一通信契约**。
 > 双端常量、字节序、帧格式、状态语义必须严格一致；任何改动先改本文件再改代码。
@@ -493,3 +493,42 @@ IDLE → (OTA_OFFER 校验通过) OFFERED → DOWNLOADING → VERIFY
 
 **在线判定与主动中止**：会话期（已 ACCEPT、未收到 RESULT）设备心跳丢失 > **8 s** ⇒
 PC 主动发 `OTA_ABORT{"reason":"peer_lost"}`。★ 这依赖 `DeviceOfflineMs=5000`（心跳超时）先置离线。
+
+---
+
+## 9. V1.5 增量：PC 壁纸上传（WP_*，2026-10-07）
+
+> 方案出处：`docs/项目规划/SD卡壁纸与PC壁纸管理实施方案.md` V2.1（§76）。
+> 与 §8 同构：**控制面复用 UDP 50003 JSON 通道，数据面复用 TCP 50005**，零新增端口。
+> PC 端实现：pc_host v0.4（`wallpaper.py` + 系统页"壁纸管理"卡片 + httpd `/wallpaper/<name>` 路由）。
+
+### 9.1 信令（UDP 50003，JSON / UTF-8）
+
+| 方向 | 报文 | 字段 | 说明 |
+|---|---|---|---|
+| PC → 设备 | `WP_OFFER` | `name`（池内纯文件名）、`size`（字节）、`sha256`（**保留字段，设备端忽略**）、`url`（`http://<pc>:50005/wallpaper/<name>`） | PC 本地已预校验：≤2MB + JPEG SOF = 800x480 |
+| 设备 → PC | `WP_RESULT` | `ok`（0/1）、`name`、`err`（失败原因短语，成功为空串） | 回包固定发 PC:50003（端口覆写，见 §8.1 同一依据） |
+
+### 9.2 设备端行为（wallpaper_service §76）
+
+收到 WP_OFFER → `wp_fetch` 任务（**内部 RAM 栈**，F35：下载要写 SD 卡）依次执行：
+
+1. 前闸：SD 已挂载、轮换服务非降级态，否则 `WP_RESULT ok:0`；
+2. HTTP GET 流式落 SD（先写 `/sdcard/wallpaper/.wp_tmp` 临时名），8KB 块 + **2MB 硬闸**；
+3. 回读对账（stat 与已写字节数 + PC 报的 size 三方一致）；
+4. `wallpaper_service_validate_file()`：JPEG 头部 parse，必须 800x480；
+5. `rename` 落池（FATFS 不许覆盖，先 unlink 旧同名）→ `request_set()`；
+6. `WP_RESULT` 回包。**任何一步失败：删临时文件、当前壁纸不动。**
+
+成功后 UI 经 §75 代际号轮询自动 crossfade，NVS `wp_last` write-through。
+`name` 校验双闸：设备端拒路径分隔符/引号 + 后缀必须 .jpg/.jpeg（服务端池扫描再验一次，防路径注入）。
+
+### 9.3 PC 端数据面（httpd :50005）
+
+`GET /wallpaper/<name>` —— **就绪才宣告**：仅上传会话活跃时存在（`WallpaperSession.start()`
+attach、收尾 detach），名字与当前会话不符即 404；`sha256` 忽略的依据：TCP 保证传输完整性，
+落池后 validate_file 为最终闸。
+
+### 9.4 设备侧 grep 关键字
+
+- `grep "\[WP\]"` → 壁纸上传全链路（offer rejected / fetched / fetch failed / fetch ready）
