@@ -1,31 +1,38 @@
 # WiFi 局域网 OTA — 逐功能逐步骤验收手册
 
-> 版本 **V2**（2026-09-29）· 对应改动记录 **§61 + §61b**、ICD **V1.4**
+> 版本 **V3**（2026-10-07）· 对应改动记录 **§61 + §61b + §63**、ICD **V1.4**
 > 方案 `docs/项目规划/WiFi局域网OTA升级实施方案.md`
 > 分支：**main**
 >
+> **V3 变更：PC 端主路线切换为 pc_host v0.3「固件升级」页（GUI）**。
+> 原因（源码实证）：设备回包固定发 PC:50003（`link_manager.c:102` 端口覆写），而 C# agent
+> 用临时 UDP 口等 ACCEPT **收不到设备回包**（真 bug）——C# `--ota` 降级为"不建议使用"，
+> 本手册所有 PC 侧操作以 GUI 为准（§3 有开关对照表）。
+>
 > 本手册的写法：**每个功能 = 一个独立验收项**，每项给出
 > ① 怎么操作 ② **预期 PC 日志** ③ **预期设备日志（可 grep）** ④ 内存三元组基线 ⑤ 判据。
-> 出问题时查 §9 排错表和 §10 日志关键字速查。
+> 出问题时查 §9 排错表和 §10 日志关键字速查。PC 侧日志同时出现在
+> **GUI 日志窗**与启动 pc_host 的控制台（两者内容一致，grep 用控制台或 `docs/_serial_capture.py` 输出）。
 
 ---
 
 ## 0. 一分钟速览
 
 ```
-PC: pc_now_agent.exe --ota build\display_audio_photo.bin
+PC: pc_host「固件升级」页（桌面 ESP32_Voice_Host.bat → 左侧第 4 页）
+        │  ① 选 bin（自动解析 esp_app_desc_t → 版本/大小/SHA256）
+        │  ② 版本比对结论（可升级 / 需勾选忽略比对）
+        ├─ UDP 50003: OTA_OFFER（×3，10s/次）
         │
-        ├─ SemVer 比对（设备旧才继续）
-        ├─ UDP 50003: OTA_OFFER
-        │
-设备:   ├─ 6 条校验链 → OTA_ACCEPT
+设备:   ├─ 6 条校验链 → OTA_ACCEPT（回 PC:50003，link 分发器喂会话）
         ├─ HTTP :50005 GET /firmware.bin（支持 Range 续传）
         ├─ 边收边写备用槽 + 每 256KB 段哈希落 nvs
-        ├─ OTA_PROGRESS ×N → esp_ota_end → 段数校验 → set_boot_partition
+        ├─ OTA_PROGRESS ×N → GUI 进度条 → esp_ota_end → 段数校验 → set_boot_partition
         ├─ OTA_RESULT{ok:1} → 1s → esp_restart
         │
         └─ 30s 自证（WiFi 已连 + link 在线）→ mark VALID
            （不自证 ⇒ bootloader 下次启动自动回滚旧槽）
+           PC: 60s 内心跳 fw_ver == 期望版本 → 「★ 版本核对通过」
 ```
 
 **零新增端口**：控制面 = 既有 UDP 50003；数据面 = 设备作 HTTP 客户端拉 PC 的 :50005。
@@ -42,7 +49,8 @@ main 分支分区表：
 |---|---|---|
 | `ota_0` | 0x20000 | **5 MB** (0x500000 = 5,242,880 B) |
 | `ota_1` | 0x520000 | **5 MB** |
-| `storage` | 0xA20000 | 5.875 MB |
+| `uext(ota_2)` | 0xA20000 | 2.875 MB（副屏固件专属，OTA 永不触碰） |
+| `storage` | 0xD00000 | 3 MB（littlefs） |
 
 ```bash
 ls -la build/display_audio_photo.bin          # 必须 < 5,242,880
@@ -61,8 +69,8 @@ ls -la build/display_audio_photo.bin          # 必须 < 5,242,880
 
 ### 1.3 关闭 PC 旧实例（端口冲突）
 
-`tools/pc_now_agent`（C#）与 `pc_host`（PySide6，桌面 `ESP32_Voice_Host.bat`）
-**都占 50004/50005，二选一**。OTA 前先关掉 PySide6 上位机。
+**OTA 用 pc_host（GUI）**：关掉 C# 版 `tools/pc_now_agent`（如后台残留 `pc_now_agent.exe` 进程先结束）。
+pc_host 自身启动即占 50005（OTA 数据面常驻），同一 PC 只跑一份。
 
 ### 1.4 设备不在"忙"状态
 
@@ -114,40 +122,66 @@ LINK: ONLINE peer=192.168.1.xx
 
 ---
 
-## 3. 启动 PC 端 OTA 服务
+## 3. 启动 PC 端 OTA 服务（V3：pc_host GUI 路线）
+
+### 3.1 启动
+
+1. 双击桌面 **`ESP32_Voice_Host.bat`**（或 `pc_host\start_all.bat`）；
+2. 侧边栏进「**固件升级**」页（第 4 项，⇪ 图标）；
+3. 固件路径默认已定位 `build\display_audio_photo.bin`（也可"浏览…"另选）；
+4. 页面立即显示解析结果：**固件版本 / 工程·构建时间 / 大小 / SHA256**——
+   解析失败（误选 bootloader.bin 等）会显示"—"且开始按钮不亮。
+
+### 3.2 GUI 与原 C# 开关对照表
+
+| C# 开关（旧） | GUI 对应操作 | 用于验收项 |
+|---|---|---|
+| `--ota <bin>` | 选文件 → **开始升级**按钮 | 全部 |
+| `--ota-limit N` | 「只发前 [N] %」数字框（0=全量） | **E 组续传** |
+| `--ota-corrupt` | 勾「注入 1bit 损坏」 | **F 组坏固件** |
+| `--force` | 勾「忽略版本比对」 | **D 组同版本重刷** |
+| （无） | **中止**按钮（会话中可点） | **G 组主动中止** |
+
+### 3.3 GUI 自身验收项（I 组，新增）
+
+| 步骤 | 操作 | 判据 |
+|---|---|---|
+| I-1 | 侧边栏状态点 | 设备在线时变绿并显示 IP；离线"发现中" |
+| I-2 | 选有效 bin | 版本/大小/SHA256 即时刷新；「比对结论」显示 `可升级 x.y.z → x.y.w` |
+| I-3 | 设备版本 ≥ 固件版本 | 结论显示"版本未提升…需勾选忽略比对"，**开始按钮变灰**（勾 --force 后恢复） |
+| I-4 | 会话进行中 | 开始变灰、中止可点、文件框与三开关锁定（防误操作） |
+| I-5 | 升级中 | 进度条随 `OTA_PROGRESS` 走（显示 `%` + `KB/s`）；状态行随阶段切换（等待上线/OFFER/下载/自证核对） |
+| I-6 | 结束 | 成功 → 进度条 100% + 日志窗 `★ 版本核对通过`；失败 → 状态行"失败"+ 原因；控件全部解锁 |
+| I-7 | 中止按钮 | 日志出现 `已发送 OTA_ABORT`，设备侧 `aborted by peer` |
+
+### 3.4 PC 端日志与判据（替代旧"退出码"）
+
+GUI 模式无退出码，判定看**状态行 + 日志窗最后一行**（与 C# 退出码一一对应）：
+
+| GUI 日志/状态 | 等价 C# 退出码 |
+|---|---|
+| `★ 版本核对通过（x.y.z）→ 升级成功 ✅` | 0 |
+| `设备未上线（20s 超时）…` | 2 |
+| `设备拒绝: <reason>` | 3 |
+| `未收到 OTA_ACCEPT（3 次 OFFER 已用尽）` | 4 |
+| `设备重启后 60s 内未恢复心跳 —— 可能已自动回滚` | 5 |
+| `设备上报升级失败: <detail>` | 6 |
+| `下载/校验阶段 180s 超时` | 7 |
+| `版本未提升（… >= …），默认不发 OFFER` | 8 |
+| `版本核对不一致 … 可能已自动回滚 ❌` | 9 |
+
+> 脚本化判定仍可用 C# 路线的退出码表（见下），但 C# 路线因收包缺陷**不建议**用于正式验收。
+
+### 3.5 C# 路线（备用，已知缺陷）
 
 ```bash
 cd C:\Users\xiao1\Desktop\esp32\display_audio_photo\tools\pc_now_agent
-set DOTNET_ROOT=C:\Users\xiao1\.workbuddy\binaries\dotnet
-C:\Users\xiao1\.workbuddy\binaries\dotnet\dotnet.exe build -c Release   # 改过代码才需要
-
 bin\Release\net8.0-windows10.0.19041.0\pc_now_agent.exe --ota C:\...\build\display_audio_photo.bin
 ```
 
-### PC 端命令行开关全表
-
-| 开关 | 作用 | 用于验收项 |
-|---|---|---|
-| `--ota <bin>` | 进入 OTA 模式并推送该固件 | 全部 |
-| `--ota-limit N` | 只发前 N%（1..99） | **8.2 续传** |
-| `--ota-corrupt` | 流中点翻 1 bit | **8.3 坏固件** |
-| `--force` | 忽略 SemVer 比对 | **8.5 同版本重刷** |
-| `--device <ip>` | 直接单播（跳过广播发现） | 排障 |
-
-### PC 端退出码（脚本判定用）
-
-| 码 | 含义 |
-|---|---|
-| 0 | ✅ 升级成功且**版本核对一致** |
-| 2 | 设备未上线（20s 超时） |
-| 3 | 设备 `OTA_REJECT`（看 reason） |
-| 4 | 3 次 OFFER 未收到 ACCEPT |
-| 5 | 重启后 60s 未回心跳（可能已回滚） |
-| 6 | 设备上报 `OTA_RESULT{ok:0}` |
-| 7 | 下载/校验阶段 180s 超时 |
-| 8 | **版本未提升**（设备 ≥ 固件，未加 `--force` 时拒发） |
-| 9 | 设备回来了但 **fw_ver ≠ 期望**（疑似回滚） |
-| 130 | Ctrl-C 主动中止 |
+⚠ **已知缺陷（§63 源码实证）**：设备回包固定发 PC:50003（`link_manager.c:102` 端口覆写），
+而 C# 会话在临时 UDP 口等 ACCEPT ⇒ 收不到任何回包，3 次 OFFER 后必然超时退出。
+除非设备侧把回包改为"回 OFFER 源地址"，否则不要用该路线验收。
 
 ---
 
@@ -175,32 +209,25 @@ idf.py monitor          # 另开一个终端；先按 Ctrl+] 退出后可用
 # 或把日志重定向到文件便于 grep
 ```
 
-### A-2. 启动 PC 端
+### A-2. 启动 PC 端（V3：GUI）
 
-```bash
-pc_now_agent.exe --ota build\display_audio_photo.bin
-```
+pc_host「固件升级」页：选 `build\display_audio_photo.bin` → 点**开始升级**。
 
-**预期 PC 输出**：
+**预期 GUI 日志窗**（与 C# 版字段一致，前缀 `[HH:MM:SS]`）：
 
 ```
-http listening on :50005 (/cover/<hash>.jpg, /lyrics.json?k=<hash>, /firmware.json, /firmware.bin[+Range])
-OTA 模式启动：a1b2c3d (4,980,000 B)
-
-================== OTA 升级会话 ==================
+==================================================
   固件    : C:\...\build\display_audio_photo.bin
   版本    : a1b2c3d  (display_audio_photo, build 22:45:11)
   大小    : 4980000 B (4.75 MB)
   SHA256  : 3f8a...c21e
-  下载 URL: http://<本机>:50005/firmware.bin
-==================================================
-[ota] 等待设备心跳.....
-[ota] 设备在线: 192.168.1.23
-[ota] 设备当前版本: 9f3e21a                 ← ★ 改 §61b 新增：显示设备现有版本
+[ota] 设备在线: 192.168.1.23，当前版本: 9f3e21a      ← ★ 显示设备现有版本
 [ota] 通告 URL: http://192.168.1.100:50005/firmware.bin
+[ota] OTA 路由上线：/firmware.json /firmware.bin（a1b2c3d）
+[ota] 发送 OTA_OFFER（第 1/3 次）
 ```
 
-> ✅ **A-2 判据**：出现了 `设备当前版本: <hex>`（非 `(未上报)`）。
+> ✅ **A-2 判据**：出现了 `当前版本: <hex>`（非 `(未上报)`）且**比对结论=可升级**。
 > 若显示 `(未上报)` ⇒ 设备固件还是老版本（`HEARTBEAT_ACK` 无 `fw_ver`），
 > 本次仍可继续，但**升级后的版本核对会跳过**。
 
@@ -379,7 +406,7 @@ OTA: [OTA_DIAG] init done: running=ota_1 ... pending_verify=0     ← 转正后�
 // 临时改：删掉 esp_timer_start_once(ota_st, 30ULL * 1000 * 1000);
 ```
 
-编译后 USB 烧进 **ota_0**（当前槽），然后 `--force --ota <该bin>` 推到 ota_1。
+编译后 USB 烧进 **ota_0**（当前槽），然后 GUI 勾「忽略版本比对」推到 ota_1。
 
 **预期时间线**：
 
@@ -449,20 +476,18 @@ OTA: [OTA_DIAG] REJECT reason=busy
 
 ## 8. 【E/F/G】断点续传、坏固件、主动中止（M2 三项新能力）
 
-### E-1. 制造"下不完"（`--ota-limit 40`）
+### E-1. 制造"下不完"（GUI：只发前 40%）
 
-```bash
-pc_now_agent.exe --ota build\display_audio_photo.bin --ota-limit 40
-```
+「只发前 [40] %」数字框 → 开始升级（V3 GUI；等价旧 `--ota-limit 40`）。
 
 PC 会只发 40% 的字节，且 `OTA_OFFER.size` 与 `/firmware.json` 都报**截断长度**。
 
 **PC 预期**：
 
 ```
-  ★ 测试开关: --ota-limit 40% → 只发 1992000 B
+  ★ 测试开关: limit 40% → 只发 1992000 B
 ...
-[ota] 设备上报：升级失败 → {"type":"OTA_RESULT","ok":0,"detail":"failed"}
+[ota] 设备上报 RESULT: ok=False detail=failed
 ```
 
 **设备预期**：
@@ -487,11 +512,9 @@ OTA: [OTA_ERR] size mismatch: got 1992000, expect 1992000 (offset kept for resum
 OTA: [OTA_RESUME] keeping resume record for retry (next_offset=1992000)
 ```
 
-### E-2. 立即重推（不带 limit）→ 应续传
+### E-2. 立即重推（数字框归 0）→ 应续传
 
-```bash
-pc_now_agent.exe --ota build\display_audio_photo.bin
-```
+「只发前 [0] %」→ 开始升级（等价旧不带 limit 的重推）。
 
 **设备预期（★ 本项核心）**：
 
@@ -544,18 +567,16 @@ OTA: [OTA_DIAG] download start: offset=0 / 4980000 (0%), seg_done=0
 > ✅ **E-4 判据**：**降级整包**（offset 归 0），不会出现"槽内容错位"导致的
 > `esp_ota_end failed`。
 
-### F-1. 坏固件注入（`--ota-corrupt`）
+### F-1. 坏固件注入（GUI：勾「注入 1bit 损坏」）
 
-```bash
-pc_now_agent.exe --ota build\display_audio_photo.bin --ota-corrupt
-```
+勾选「注入 1bit 损坏」→ 开始升级（等价旧 `--ota-corrupt`）。
 
 **PC 预期**：
 
 ```
-  ★ 测试开关: --ota-corrupt → 流中点翻 1 bit
+  ★ 测试开关: corrupt → 流中点翻 1 bit
 ...
-[ota] ★ CORRUPT injected at stream offset 2490000 (1 bit flipped) —— 预期设备端 esp_ota_end / 段哈希报错
+[ota] ★ CORRUPT 注入 @ 流偏移 2490000（预期设备端 esp_ota_end / 段哈希报错）
 ```
 
 **设备预期（二选一，都算正确）**：
@@ -577,10 +598,9 @@ OTA: [OTA_ERR] segment count mismatch: got N expect M
 
 **构造**：升级进行中，**在设备侧拔掉网线 / 关 WiFi**（设备心跳停）。
 
-**PC 预期**：
+**PC 预期**（GUI 日志窗；侧边栏状态点同步变灰）：
 
 ```
-[ota] 设备 OFFLINE (ack timeout)
 [ota] ★ 设备心跳丢失 >8s，已发送 OTA_ABORT（设备应立即停手）
 ```
 
