@@ -32,6 +32,7 @@ class WallpaperPage(QWidget):
         self.ctx = ctx
         self.wp_path: Path | None = None
         self._running = False
+        self._cancel_req = False
         self._t0 = 0.0                     # 上传开始时刻（算已耗时）
 
         root = QVBoxLayout(self)
@@ -156,18 +157,22 @@ class WallpaperPage(QWidget):
             return
         self._running = True
         self._t0 = time.monotonic()
+        self._cancel_req = False
         self._sync_buttons()
         self._set_status("上传中… OFFER×3（每 8s 一轮），等设备拉取并回 WP_RESULT", _C_RUN)
 
     def _cancel(self) -> None:
         sess = self.ctx.wp_session
-        if sess is not None:
-            sess.abort()
-            self._set_status("已请求取消，等会话线程收场…", _C_RUN)
+        if sess is None or not sess.active:
+            self._set_status("当前没有进行中的上传", _C_DIM)
+            return
+        sess.abort()
+        self._cancel_req = True
+        self._set_status("已请求取消，等会话线程收场…", _C_RUN)
 
     # ---- wp_q 排空（Qt 线程） ----
     def _drain(self) -> None:
-        if self._running:
+        if self._running and not self._cancel_req:
             import time
             self.status.setText(
                 f"上传中… 已等待 {time.monotonic() - self._t0:.0f}s "
@@ -182,16 +187,21 @@ class WallpaperPage(QWidget):
                 self.log.appendPlainText(str(ev.get("line", "")))
             elif ev.get("ev") == "result":
                 self._running = False
-                self._sync_buttons()
                 ok = bool(ev.get("ok"))
                 self._set_status(("✓ " if ok else "✗ ") + str(ev.get("line", "")),
                                  _C_OK if ok else _C_ERR)
+        # ★ 按钮状态以会话真值（active）为准，每 tick 自愈 —— 页面本地 _running
+        #   只作"上传中"计时显示，不再单独决定按钮可用性（§71：取消键曾因此失同步）
+        self._sync_buttons()
 
     def _sync_buttons(self) -> None:
+        sess = self.ctx.wp_session
+        running = bool(sess is not None and sess.active)
+        self._running = running
         self.send_btn.setEnabled(
-            not self._running and self.wp_path is not None
+            not running and self.wp_path is not None
             and self.dim_label.text().startswith("✓"))
-        self.cancel_btn.setEnabled(self._running)
+        self.cancel_btn.setEnabled(running)
 
     def _set_status(self, text: str, color: str) -> None:
         self.status.setText(text)

@@ -145,6 +145,9 @@ class OtaPage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "选择固件 bin", start, "固件 (*.bin);;所有文件 (*)")
         if path:
             self.path_edit.setText(path)
+            # ★ 同路径重选（重编译后 build/display_audio_photo.bin 版本已变）
+            #   不会触发 textChanged → 显式重解析，否则版本/SHA256 一直显示旧值
+            self._reparse()
 
     def _reparse(self) -> None:
         fw = FirmwareInfo.parse(self.path_edit.text().strip()) if self.path_edit.text().strip() else None

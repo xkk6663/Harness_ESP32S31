@@ -126,6 +126,11 @@ class WallpaperSession:
             self.ctx.link.send(offer)
             self._log(f"WP_OFFER 已发（第 {attempt}/{OFFER_TRIES} 次）")
             if self._done.wait(OFFER_INTERVAL_S):
+                if self._result is None:
+                    # ★ abort() 置位 _done 但不填 _result —— 这是用户取消，
+                    #   不能误报成"设备无响应（超时）"（§71：取消必须有可信反馈）
+                    self._push(False, "已取消上传")
+                    return
                 result = self._result
                 break
         if result is None:
