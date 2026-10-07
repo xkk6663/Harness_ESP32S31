@@ -270,8 +270,8 @@ idf.py -p COM9 storage-flash     # 首次烧录 / littlefs 素材变更后，刷
 
 | 端 | 技术 | 说明 |
 |---|---|---|
-| [`pc_host/`](pc_host/) | PySide6 GUI | 全功能：对讲 / 录音 / PC NOW 推流（网易云 debug 端口 9222 抓取播放态 → 歌词/封面/进度）。启动：桌面 `ESP32_Voice_Host.bat` 或 `pc_host/start_all.bat`（幂等） |
-| [`tools/pc_now_agent/`](tools/pc_now_agent/) | C# 单体 | 轻量：Windows SMTC 直接抓"正在播放"推 UDP。与 pc_host 的推流端口冲突，**同一时间只跑一个** |
+| [`pc_host/`](pc_host/) | PySide6 GUI | **全功能**：对讲 / 录音 / PC NOW 推流（网易云 debug 端口 9222 抓取播放态 → 歌词/封面/进度）/ **WiFi OTA 固件升级**。启动：桌面 `ESP32_Voice_Host.bat` 或 `pc_host/start_all.bat`（幂等） |
+| [`tools/pc_now_agent/`](tools/pc_now_agent/) | C# 单体 | 轻量：Windows SMTC 直接抓"正在播放"推 UDP（OTA 命令行备用，**推荐用 pc_host 固件升级页**）。与 pc_host 的推流端口冲突，**同一时间只跑一个** |
 
 协议细节见 [`docs/项目规划/通信接口规范_ICD.md`](docs/项目规划/通信接口规范_ICD.md)。
 

@@ -1,12 +1,14 @@
-"""Korvo 统一上位机（pc_host v2）：通话对讲 + 录音库 + 音乐副屏 + 系统，PySide6 单应用。
+"""Korvo 统一上位机（pc_host v2）：通话对讲 + 录音库 + 音乐副屏 + 固件升级 + 系统。
 
 用法：
   python -m pc_host.main                 # 广播自动发现设备（推荐）
   python -m pc_host.main --device 192.168.4.1
-  python -m pc_host.main --no-pcnow      # 不启动音乐副屏（不占 50004/50005）
+  python -m pc_host.main --no-pcnow      # 不启动音乐副屏（50004 不占；50005 仍为 OTA 服务）
 
 v0.2（2026-09-23）：UI 重构为侧边栏多页框架（ui/），合并副屏功能（pcnow/），
 link 支持广播发现；对讲/录音链路代码不变。
+v0.3（2026-10-07）：收编 OTA（pc_host/ota/）——固件升级页 + 50005 /firmware.* 路由；
+link.on_json 改为按 type 分发（NOW_CMD → 副屏控制，OTA_* → OTA 会话）。
 """
 from __future__ import annotations
 
@@ -51,6 +53,10 @@ class Ctx:
         #   改为只投队列，页面在 Qt 线程的定时器里排空 —— 与 call_page 的 _asr_q
         #   完全同一套写法（那里本来就是对的）。
         self.pcnow_q: queue.Queue = queue.Queue(maxsize=4000)
+        # ---- OTA（v0.3 收编，见 ota/）----
+        self.ota_q: queue.Queue = queue.Queue(maxsize=1000)     # 会话事件 → OTA 页排空
+        self.ota_session = None                                  # OtaSession | None
+        self.on_now_cmd = None                                   # 副屏 NOW_CMD 回调（pcnow 注入）
 
     def pcnow_log(self, s: str) -> None:
         line = f"[{__import__('time').strftime('%H:%M:%S')}] {s}"
@@ -60,6 +66,14 @@ class Ctx:
             self.pcnow_q.put_nowait(line)
         except queue.Full:
             pass                     # 页面未在排空（窗口已关）时丢弃，绝不阻塞工作线程
+
+    def ota_log(self, s: str) -> None:
+        line = f"[{__import__('time').strftime('%H:%M:%S')}] {s}"
+        print(line, flush=True)
+        try:
+            self.ota_q.put_nowait({"ev": "log", "line": line})
+        except queue.Full:
+            pass
 
 
 def build_services(args) -> Ctx:
@@ -107,9 +121,25 @@ def build_services(args) -> Ctx:
     ctx.voice.start()
     ctx.wav = WavPlayer(send_ptt)
 
-    # ---- 音乐副屏（可选） ----
+    # ---- link.on_json 分发器（v0.3）：设备回包全部到 PC:50003，按 type 分流 ----
+    # NOW_CMD → 副屏媒体控制；OTA_* → 当前 OTA 会话（若无会话则丢弃并记日志）。
+    # ★ 设备端 link_manager_send_json() 强制回包到 PC:50003（link_manager.c:102-112），
+    #   所以 OFFER 也必须走这条 50003 socket（link.send）——同端口同源，语义自洽。
+    def dispatch_link_json(msg: dict) -> None:
+        t = str(msg.get("type", ""))
+        if t == "NOW_CMD":
+            if ctx.on_now_cmd is not None:
+                ctx.on_now_cmd(msg)
+        elif t.startswith("OTA_"):
+            if ctx.ota_session is not None:
+                ctx.ota_session.feed(msg)
+            else:
+                print(f"[ota] 收到 {t} 但无活跃会话，忽略", flush=True)
+
+    ctx.link.on_json = dispatch_link_json
+
+    # ---- 音乐副屏（可选；httpd 无论开关都起 —— OTA 数据面复用 50005） ----
     if not args.no_pcnow:
-        from .pcnow.http_server import NowHttpServer
         from .pcnow.netease_cdp import NeteaseCdp
         from .pcnow.pusher import NowPusher, TrackStore
         from .pcnow.smtc import SmtcWatcher
@@ -131,16 +161,14 @@ def build_services(args) -> Ctx:
         except Exception as e:  # noqa: BLE001
             ctx.pcnow_log(f"CDP 探测异常（忽略）: {type(e).__name__}: {e}")
 
-        ctx.httpd = NowHttpServer(ctx.store, on_log=ctx.pcnow_log)
-        ctx.httpd.start()
         ctx.smtc = SmtcWatcher(on_track=ctx.pusher.update_track,
                                on_position=ctx.pusher.update_position,
                                on_log=ctx.pcnow_log)
         ctx.smtc.start()
 
-        # 设备端媒体控制回程：link bind :50003 收到 NOW_CMD → SMTC 会话控制
-        def on_link_json(msg: dict) -> None:
-            if msg.get("type") != "NOW_CMD" or ctx.smtc is None:
+        # 设备端媒体控制回程：link 50003 收 NOW_CMD → SMTC 会话控制
+        def on_now_cmd(msg: dict) -> None:
+            if ctx.smtc is None:
                 return
             cmd = str(msg.get("cmd", ""))
             pos_ms = msg.get("pos_ms")
@@ -167,11 +195,20 @@ def build_services(args) -> Ctx:
             ctx.smtc.send_command(cmd,
                                   int(pos_ms) if has_pos else None)
 
-        ctx.link.on_json = on_link_json
+        ctx.on_now_cmd = on_now_cmd
+
+    from .pcnow.http_server import NowHttpServer
+    ctx.httpd = NowHttpServer(ctx.store, on_log=ctx.pcnow_log)
+    ctx.httpd.start()
     return ctx
 
 
 def teardown(ctx: Ctx) -> None:
+    if ctx.ota_session is not None:
+        try:
+            ctx.ota_session.stop("app_exit")
+        except Exception as e:
+            print(f"[teardown] ota_session: {e}", flush=True)
     for closer in ("smtc", "httpd", "pusher", "wav", "asr", "player", "voice", "record_server", "link"):
         obj = getattr(ctx, closer, None)
         if obj is not None and hasattr(obj, "close"):
@@ -185,7 +222,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="pc_host")
     parser.add_argument("--device", default=None, help="设备 IP；缺省=UDP 50003 广播自动发现")
     parser.add_argument("--recordings", default="recordings")
-    parser.add_argument("--no-pcnow", action="store_true", help="不启动音乐副屏模块")
+    parser.add_argument("--no-pcnow", action="store_true",
+                        help="不启动音乐副屏模块（50004 不占；50005 仍供 OTA 使用）")
     args = parser.parse_args()
 
     try:

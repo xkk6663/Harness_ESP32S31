@@ -38,14 +38,19 @@ C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe -m pc_host.main          
 - `start_all.bat` 开头把 `System32` 提到 `PATH` 最前：万一从 Git Bash 启动，
   MSYS 的 `find.exe` / `timeout.exe` 会顶掉 Windows 版本，`/I`、`/t` 全部失效。
 
-## 四个页面
+## 五个页面
 
 | 页面 | 功能 | 协议 |
 |---|---|---|
 | 通话对讲 | 设备麦克风上行电平、WAV 推流到设备扬声器、sherpa-onnx 实时转写 | UDP 50000/50001（会话由设备端按键发起） |
 | 录音库 | 设备录音自动上传后的本地库：列表/时长/删除/打开目录 | TCP 50002（分块+CRC16，断点续传） |
 | 音乐副屏 | 采集 Windows 正在播放（SMTC）→ 网易云歌词/封面 → 推送设备 | UDP 50004 推流 + TCP 50005 HTTP 拉取 |
-| 系统 | 固件版本/协议版本/设备 IP、本机环境自检、端口总表、OTA 预留 | UDP 50003 心跳 |
+| 固件升级 | WiFi OTA：选 bin（解析 esp_app_desc_t + SHA256）→ OFFER → 进度条 → 自证版本核对；内置 --force / --ota-limit / --ota-corrupt 联调开关 | UDP 50003 OFFER + TCP 50005 /firmware.bin（Range 续传） |
+| 系统 | 固件版本/协议版本/设备 IP、本机环境自检、端口总表、OTA 入口 | UDP 50003 心跳 |
+
+> v0.3（2026-10-07）起 OTA 面板收编进本应用（`pc_host/ota/`），**C# agent 不再是唯一带 OTA 的端**；
+> 设备回包（OTA_ACCEPT/PROGRESS/RESULT）固定到 PC:50003（`link_manager_send_json` 端口覆写），
+> 本应用由 link 分发器路由给 OTA 会话——比 C# 版临时 UDP 口收包的写法更贴合设备语义。
 
 ## 依赖
 
@@ -65,5 +70,7 @@ C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe -m pc_host.main          
 ## 注意
 
 - 音乐副屏与 C# 版 `tools/pc_now_agent` **不要同时开**（50004/50005 冲突，后启动方绑定失败并日志提示）。
+- OTA 面板与 C# agent 的 `--ota` 模式**也不要同时开**（50005 冲突）；OTA 已收编进本应用，日常直接用「固件升级」页。
+- `--no-pcnow` 只是不起副屏采集（50004 不占）；50005 仍由本应用占用供 OTA 固件下发。
 - 歌词/封面来自网易云非官方接口（约 2 次/首），纯音乐或未收录歌曲会显示"无歌词"，不影响推流。
 - v1 的单窗口 UI 已被 `ui/` 多页框架取代；`net/` `record/` `audio/` `asr/` 模块保持原实现。

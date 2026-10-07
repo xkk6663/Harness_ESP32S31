@@ -97,13 +97,13 @@ class SystemPage(QWidget):
             "TCP 50005  副屏封面/歌词 HTTP（设备拉取）"))
         bottom.addWidget(ports, 1)
 
-        ota, ota_lay = v_card("OTA 升级（规划中）")
+        ota, ota_lay = v_card("OTA 升级")
         ota_lay.addWidget(QLabel(
-            "A/B 双区 + 回滚防砖方案已定稿\n"
-            "（《WiFi局域网OTA升级实施方案》M1）。\n"
-            "落地后此处提供拖拽固件升级。"))
-        self.ota_btn = QPushButton("等待实施")
-        self.ota_btn.setEnabled(False)
+            "WiFi 局域网 OTA 已收编进本应用：\n"
+            "「固件升级」页选 bin → OFFER → 进度 → 自证核对。\n"
+            "A/B 双槽 + 30s 自证回滚防砖。"))
+        self.ota_btn = QPushButton("去固件升级页")
+        self.ota_btn.clicked.connect(lambda: (self.ctx.request_page or (lambda i: None))(3))
         ota_lay.addWidget(self.ota_btn)
         ota_lay.addStretch(1)
         bottom.addWidget(ota, 1)

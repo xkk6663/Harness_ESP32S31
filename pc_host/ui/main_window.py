@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMainWindow,
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from .pages.call_page import CallPage
+from .pages.ota_page import OtaPage
 from .pages.pcnow_page import PcNowPage
 from .pages.record_page import RecordPage
 from .pages.system_page import SystemPage
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
             ("通话对讲", "◉", CallPage),
             ("录音库", "▶", RecordPage),
             ("音乐副屏", "♫", PcNowPage),
+            ("固件升级", "⇪", OtaPage),
             ("系统", "◆", SystemPage),
         ]
         self._navs: list[QPushButton] = []
@@ -65,12 +67,15 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(cls(ctx))
 
         side_lay.addStretch(1)
-        ver = QLabel("pc_host 0.2 · ICD v1.3")
+        ver = QLabel("pc_host 0.3 · ICD v1.3")
         ver.setObjectName("AppSub")
         side_lay.addWidget(ver)
 
         lay.addWidget(side)
         lay.addWidget(self.stack, 1)
+
+        # 页面跳转钩子（系统页"去固件升级页"按钮用）
+        ctx.request_page = self.switch
 
         self._navs[0].setChecked(True)
         self.stack.setCurrentIndex(0)
