@@ -410,8 +410,8 @@ bool ota_service_mark_valid_if_pending(void)
     bool wifi_ok = wifi_manager_is_connected();
     bool link_ok = link_manager_is_online();
     if (!wifi_ok || !link_ok) {
-        ESP_LOGW(TAG, "[OTA_DIAG] PENDING_VERIFY but wifi=%d link=%d -> NOT marking valid "
-                      "(bootloader will roll back on next boot)", (int)wifi_ok, (int)link_ok);
+        /* 未就绪：静默返回 false，等调用方（main.c 1s tick）下一秒再试；
+           窗口耗尽的 W 告警由 tick 统一打一次，避免周期性刷屏。 */
         return false;
     }
     esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();

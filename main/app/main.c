@@ -147,14 +147,34 @@ static void stack_hwm_timer_cb(lv_timer_t *timer)
              (unsigned)words, (unsigned)words * (unsigned)sizeof(StackType_t));
 }
 
-/* ★ OTA 自证（防砖核心，方案 §3.1-6）：新固件跑满 30s 且 WiFi 正常才 mark_valid；
-   否则 bootloader 下次启动自动回滚旧槽。放在 app_main 尾部，等各服务都起好。
+/* ★ OTA 自证（防砖核心，方案 §3.1-6）：PENDING_VERIFY 期间**任何复位（含断电）**
+   都会被 bootloader 视为"未自证"而回滚旧槽（实测 2026-10-07：v1.2 升级成功、
+   用户在 ~11s 硬件断电 → 回滚 v1.1）。原设计 30s 一次性定时器把脆弱窗口拉到 34s，
+   而 WiFi+心跳实际 ~8s 就绪 ⇒ 改为 1s 周期检查：
+   · 条件（WiFi+link）满足且浸泡 ≥10s → 立即 mark_valid（窗口 34s → ~10s）；
+   · 30s 仍未满足 → 打 W 日志、留 pending（下次启动回滚，语义与原设计一致）。
    回调跑在 esp_timer 任务上下文 —— ota_service 内部只读分区状态 + 调 IDF API，
    不碰 LVGL，安全。 */
-static void ota_selftest_timer_cb(void *arg)
+static esp_timer_handle_t s_ota_st;
+static int64_t s_selftest_t0_us;
+
+static void ota_selftest_tick_cb(void *arg)
 {
     (void)arg;
-    ota_service_mark_valid_if_pending();
+    int64_t elapsed_s = (esp_timer_get_time() - s_selftest_t0_us) / 1000000LL;
+    if (elapsed_s < 10) {
+        return;                     /* 最短浸泡：证明固件活过开机 + 10s */
+    }
+    if (ota_service_mark_valid_if_pending()) {
+        esp_timer_stop(s_ota_st);   /* 已转正（函数内含 WiFi+link 双条件） */
+        return;
+    }
+    if (elapsed_s >= 30) {
+        /* 窗口耗尽仍未转正：留 pending，下次启动由 bootloader 回滚 */
+        ESP_LOGW("MAIN", "[OTA] self-test window expired (30s) without WiFi+link -> "
+                         "will roll back on next boot");
+        esp_timer_stop(s_ota_st);
+    }
 }
 
 void app_main(void)
@@ -308,15 +328,16 @@ void app_main(void)
     /* WiFi 局域网 OTA：必须在 link_manager_init() 之后（注册其 JSON 回调槽）。 */
     ota_service_init();
     BOOT_DIAG("after ota_service_init");
-    /* 自证定时器：30s 一次性。若本固件是 OTA 上来的（PENDING_VERIFY），
-       这一枪决定"转正"还是"下次启动回滚"。非 OTA 启动时函数立即返回，零开销。 */
+    /* 自证定时器：1s 周期检查（条件满足即刻转正，见 ota_selftest_tick_cb 注释）。
+       若本固件是 OTA 上来的（PENDING_VERIFY），这条链决定"转正"还是"下次启动回滚"。
+       非 OTA 启动时 mark_valid_if_pending() 立即返回 false 且开销趋零。 */
+    s_selftest_t0_us = esp_timer_get_time();
     esp_timer_create_args_t ota_st_args = {
-        .callback = ota_selftest_timer_cb,
+        .callback = ota_selftest_tick_cb,
         .name = "ota_selftest",
     };
-    esp_timer_handle_t ota_st = NULL;
-    if (esp_timer_create(&ota_st_args, &ota_st) == ESP_OK) {
-        esp_timer_start_once(ota_st, 30ULL * 1000 * 1000);   /* 30s */
+    if (esp_timer_create(&ota_st_args, &s_ota_st) == ESP_OK) {
+        esp_timer_start_periodic(s_ota_st, 1ULL * 1000 * 1000);   /* 1s 周期 */
     }
     BOOT_DIAG("after ota selftest timer armed");
     /* 默认上电 STA 模式（自动连已保存路由）；UI 可切 AP 开热点 */
