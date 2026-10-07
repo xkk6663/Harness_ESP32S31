@@ -26,10 +26,6 @@
 #include "ui/pages/page_system.h"
 #include "middleware/system/button_service.h"
 #include "middleware/bluetooth/link_manager.h"
-#include "middleware/network/wifi_manager.h"
-#include "middleware/system/sdcard_service.h"
-#include "esp_app_desc.h"
-#include "esp_mac.h"
 #include "freertos/queue.h"
 
 static lv_obj_t  *s_vol_slider;
@@ -135,52 +131,6 @@ void tab_sys_entry_build(lv_obj_t *screen, lv_group_t *group)
     lv_label_set_text_static(s_link_label, link_manager_is_online() ? LV_SYMBOL_OK "  PC online" : LV_SYMBOL_CLOSE "  No PC peer");
     lv_obj_set_style_text_color(s_link_label, link_manager_is_online() ? COL_GREEN : COL_RED, 0);
     lv_obj_set_style_text_font(s_link_label, UI_FONT, 0);
-
-    /* 设备信息卡片（§69）：版本 / 编译 / 网络 / 存储 —— 数据全部来自
-       esp_app_desc + wifi_manager + sdcard_service，构建时一次读取。 */
-    lv_obj_t *info = lv_obj_create(screen);
-    lv_obj_set_size(info, BSP_LCD_H_RES - 40, 150);
-    lv_obj_set_style_bg_color(info, COL_CARD, 0);
-    lv_obj_set_style_border_color(info, COL_BORDER, 0);
-    lv_obj_set_style_border_width(info, 1, 0);
-    lv_obj_set_style_radius(info, 16, 0);
-    lv_obj_set_style_pad_left(info, 16, 0);
-    lv_obj_set_style_pad_right(info, 16, 0);
-    lv_obj_set_style_pad_top(info, 10, 0);
-    lv_obj_set_style_pad_bottom(info, 10, 0);
-    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(info, 6, 0);
-    lv_obj_clear_flag(info, LV_OBJ_FLAG_SCROLLABLE);
-
-    const esp_app_desc_t *app = esp_app_get_description();
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char ip[16] = "-";
-    wifi_manager_get_ip(ip, sizeof(ip));
-
-    lv_obj_t *row;
-    row = lv_label_create(info);
-    lv_label_set_text_fmt(row, "固件  %s  ·  IDF %s", app->version, app->idf_ver);
-    lv_obj_set_style_text_color(row, COL_CYAN, 0);
-    lv_obj_set_style_text_font(row, UI_FONT, 0);
-
-    row = lv_label_create(info);
-    lv_label_set_text_fmt(row, "编译  %s %s", app->date, app->time);
-    lv_obj_set_style_text_color(row, COL_TEXT, 0);
-    lv_obj_set_style_text_font(row, UI_FONT, 0);
-
-    row = lv_label_create(info);
-    lv_label_set_text_fmt(row, "IP    %s  ·  SD %s", ip,
-                          sdcard_service_is_mounted() ? "OK" : "NO");
-    lv_obj_set_style_text_color(row, COL_TEXT, 0);
-    lv_obj_set_style_text_font(row, UI_FONT, 0);
-
-    row = lv_label_create(info);
-    lv_label_set_text_fmt(row, "MAC   %02X:%02X:%02X:%02X:%02X:%02X",
-                          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    lv_obj_set_style_text_color(row, COL_TEXT, 0);
-    lv_obj_set_style_text_font(row, UI_FONT, 0);
 
     /* Volume card */
     lv_obj_t *vol = lv_obj_create(screen);

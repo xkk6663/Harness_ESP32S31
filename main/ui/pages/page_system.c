@@ -13,13 +13,16 @@
 
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
-#include "esp_idf_version.h"
 #include "esp_littlefs.h"
 #include "esp_heap_caps.h"
 
 #include "page_system.h"
 #include "ui/common/ui_theme.h"
 #include "ui/common/ui_common.h"
+#include "middleware/network/wifi_manager.h"
+#include "middleware/system/sdcard_service.h"
+#include "esp_app_desc.h"
+#include "esp_mac.h"
 
 /* 实时监视控件（页面销毁时清空，timer 同步删除） */
 static lv_obj_t *s_storage_bar;
@@ -75,24 +78,48 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     char buf[96];
     lv_obj_t *l;
 
+    /* ---- Device info（§70）：固件版本 / 编译时间 / 网络 / MAC ----
+       数据全部来自 esp_app_desc + wifi_manager + sdcard_service，
+       进页面时一次读取（静态快照）。全 ASCII 文案，纯 montserrat_14。 */
+    const esp_app_desc_t *app = esp_app_get_description();
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char ip[16] = "-";
+    wifi_manager_get_ip(ip, sizeof(ip));
+
     l = lv_label_create(card);
     lv_label_set_text_static(l, "Board: ESP32-S31-Korvo-1 V1.1");
     lv_obj_set_style_text_color(l, COL_TEXT, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
-    snprintf(buf, sizeof(buf), "IDF: %s", esp_get_idf_version());
+    lv_snprintf(buf, sizeof(buf), "Firmware: %s  (IDF %s)", app->version, app->idf_ver);
+    l = lv_label_create(card);
+    lv_label_set_text(l, buf);
+    lv_obj_set_style_text_color(l, COL_CYAN, 0);
+    lv_obj_set_style_text_font(l, UI_FONT, 0);
+
+    lv_snprintf(buf, sizeof(buf), "Build: %s %s", app->date, app->time);
     l = lv_label_create(card);
     lv_label_set_text(l, buf);
     lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
     l = lv_label_create(card);
-    lv_label_set_text_static(l, "LCD: 800x480");
+    lv_label_set_text_static(l, "LCD 800x480 | Audio ES8389 16kHz");
     lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
+    lv_snprintf(buf, sizeof(buf), "IP: %s  |  SD: %s", ip,
+                sdcard_service_is_mounted() ? "OK" : "NO");
     l = lv_label_create(card);
-    lv_label_set_text_static(l, "Audio: ES8389 16kHz/16bit");
+    lv_label_set_text(l, buf);
+    lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(l, UI_FONT, 0);
+
+    lv_snprintf(buf, sizeof(buf), "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    l = lv_label_create(card);
+    lv_label_set_text(l, buf);
     lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
