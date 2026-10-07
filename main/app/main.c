@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "nvs_flash.h"   /* ★ 壁纸开机恢复依赖 NVS：app_main 早期初始化（幂等） */
 #include "esp_timer.h"          /* OTA 自证定时器（esp_timer_create / start_once） */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -200,6 +201,18 @@ void app_main(void)
     BOOT_DIAG("after bt_sink early init");
     fs_service_init();          /* JPEG 输出缓冲 1.10MB（800*480*3，LV_DEPTH=24），显式 PSRAM（F30） */
     BOOT_DIAG("after fs_service_init");
+    /* ★ NVS 提前初始化（壁纸恢复 BUG 修，2026-10-07）：原唯一 nvs_flash_init 在
+       wifi_manager_init（本函数后段），而 wallpaper_service_init 的开机恢复要读
+       NVS wp_svc/last —— 排序倒挂导致 load_last 静默失败 → 每次开机都走随机恢复。
+       nvs_flash_init 幂等，wifi_manager_init 里那次照旧保留（会直接返回 OK）。 */
+    {
+        esp_err_t nvs_ret = nvs_flash_init();
+        if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            ESP_ERROR_CHECK(nvs_flash_init());
+        }
+    }
+    BOOT_DIAG("after nvs early init");
     /* §75 壁纸服务：借 file_buffer 前 768KB 当 buffer0 + 自分 768KB work buffer
        （RGB565×2）。含开机同步解码"上次壁纸"（几百 ms），必须在 bsp_display_start
        之前拿完大块（时序纪律见上）；且 splash 粒子层要借它的当前 buffer。 */

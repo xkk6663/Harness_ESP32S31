@@ -19,13 +19,16 @@
  *
  * ★★★ 本文件的硬约束（都是本工程踩过的坑，改动前先读）
  *
- *  1. 【F35/F44】下载任务栈外置 PSRAM 是**安全**的：本任务只做网络 IO +
- *     esp_ota_write（写 flash 但不碰 littlefs/NVS **文件系统**；nvs 断点
- *     用的是 nvs API，不是文件系统，见约束 2），且 esp_ota_write 内部
- *     自行处理 cache 关窗。⚠ 但**绝不能**在本任务里 fopen/unlink littlefs
- *     —— 那会触发 F28/F30 的"PSRAM 栈 + flash IO" panic。
- *     （注意：nvs_set_blob 会走 esp_partition 写 + 内部缓存，**不经 VFS**，
- *      实测在 PSRAM 栈任务里可用；若将来报 cache error，把本任务栈改回内部。）
+ *  1. 【F35/铁律·实机验证 2026-10-07】ota_task 栈**必须在内部 RAM**（用
+ *     xTaskCreatePinnedToCore，栈由 pvPortMalloc 从 INTERNAL 拿）。
+ *     曾把栈外置 PSRAM，实机一收 OFFER 就 assert：
+ *     `esp_cache_freeze_caches_disable_interrupts esp_cache_utils.c:96
+ *     (s_task_stack_is_sane_when_cache_frozen())` —— 该检查要求**当前任务
+ *     SP 在内部 DRAM**，而 otadata 读 / esp_ota_begin 擦槽 / esp_ota_write
+ *     全都会冻结 ext-mem cache。F35 的完整表述：
+ *     凡做 flash IO（含 esp_ota_x / NVS / littlefs）的任务栈一律内部 RAM，
+ *     "esp_ota_write 自行处理 cache 关窗"不豁免 SP 检查。
+ *     另：nvs_set_blob 断点写同样跑在本任务 ⇒ 同受此约束，一并内栈。
  *
  *  2. 【F44】link_manager 的 JSON 回调跑在 link_task 上下文 ⇒
  *     ota_on_json() 只允许 cJSON 解析 + 命令入队，**禁止阻塞 IO**。
@@ -50,7 +53,6 @@
 #include <strings.h>   /* strcasecmp（SHA256 hex 大小写不敏感比对） */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/idf_additions.h"   /* xTaskCreatePinnedToCoreWithCaps（栈外置 PSRAM，F35） */
 #include "freertos/queue.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -324,14 +326,14 @@ void ota_service_init(void)
     s_pending_verify = (run && esp_ota_get_state_partition(run, &st) == ESP_OK &&
                         st == ESP_OTA_IMG_PENDING_VERIFY);
 
-    /* ★ 栈外置 PSRAM（F35）：下载任务只做网络 + esp_ota_write（见文件头约束 1）。
+    /* ★ 栈必须在内部 RAM（F35 铁律 + 实机验证，见文件头约束 1）：
+       otadata 读 / esp_ota_begin 擦槽 / esp_ota_write 都会冻结 ext-mem cache，
+       IDF 的 s_task_stack_is_sane_when_cache_frozen() 要求当前任务 SP 在内部 DRAM。
+       xTaskCreatePinnedToCore 走 pvPortMalloc → INTERNAL（heap_idf.c 硬写）。
        优先级 3：低于 link(4)/LVGL(4)，避免下载挤占交互；高于 IDLE 保证推进。 */
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(ota_task, "ota_service", OTA_TASK_STACK, NULL, 3, NULL, 0,
-                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    BaseType_t ok = xTaskCreatePinnedToCore(ota_task, "ota_service", OTA_TASK_STACK, NULL, 3, NULL, 0);
     if (ok != pdPASS) {
-        /* T5：失败未必是内存不足 —— 若外置栈被关会稳定 pdFAIL，必须点名配置项 */
-        ESP_LOGE(TAG, "[OTA_ERR] task create failed (stack->PSRAM); check "
-                      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY");
+        ESP_LOGE(TAG, "[OTA_ERR] ota_task create failed (8KB internal stack)");
     }
     assert(ok == pdPASS);
 
@@ -921,7 +923,7 @@ static void ota_task(void *arg)
 {
     (void)arg;
     ota_cmd_t cmd;
-    ESP_LOGI(TAG, "[OTA_DIAG] ota_task started (stack in PSRAM)");
+    ESP_LOGI(TAG, "[OTA_DIAG] ota_task started (stack in INTERNAL, F35)");
     for (;;) {
         if (xQueueReceive(s_cmd_q, &cmd, portMAX_DELAY) != pdTRUE) {
             continue;
