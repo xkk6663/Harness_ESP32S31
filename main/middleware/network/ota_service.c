@@ -82,6 +82,8 @@ static const char *TAG = "OTA";
 
 /* ---- 常量 ---- */
 #define OTA_READ_CHUNK      4096                       /* 每块读 4KB（方案 §3.1-2） */
+#define OTA_WRITE_STAGE     (32 * 1024)                /* ★ 写槽攒块 32KB：把 esp_ota_write 的
+                                                        cache 冻结频率降 8 倍，缓解 OTA 期屏闪 */
 #define OTA_TASK_STACK      8192
 #define OTA_PROGRESS_STEP   2                          /* 每 2% 回一条 PROGRESS */
 #define OTA_HTTP_TIMEOUT    15000                      /* 15s：局域网 4.9MB 远够 */
@@ -151,6 +153,12 @@ static volatile bool s_pending_verify;   /* 本固件处于 PENDING_VERIFY */
    栈在 PSRAM 且本缓冲与 DMA 无关 —— 静态化只为"零运行期分配风险"，
    并把地址固定下来便于日志核对。 */
 static uint8_t s_rd_buf[OTA_READ_CHUNK];
+
+/* ★ 写槽 staging（PSRAM，init 时分配）：读 4KB/次、写 32KB/次。
+   esp_ota_write 每次调用都冻结 ext-mem cache → PSRAM 帧缓冲的 GDMA 扫描被饿
+   → 屏闪 + 可能残留几行向下偏移。攒块把冻结频率从 ~1270 次/包降到 ~160 次/包。
+   分配失败退化为 4KB 直写（只影响闪烁观感，不影响正确性）。 */
+static uint8_t *s_wr_stage;
 
 /* 段哈希计算器（下载中持续累积；到段边界 flush 到 resume 结构） */
 static ota_resume_t s_resume;
@@ -319,6 +327,12 @@ void ota_service_init(void)
 {
     s_cmd_q = xQueueCreate(OTA_CMD_Q_LEN, sizeof(ota_cmd_t));
     assert(s_cmd_q);   /* 初始化期，允许断言（规范 §3.2 A1） */
+
+    /* ★ 写槽 staging（PSRAM 32KB，屏闪缓解，见 s_wr_stage 注释） */
+    s_wr_stage = heap_caps_malloc(OTA_WRITE_STAGE, MALLOC_CAP_SPIRAM);
+    if (!s_wr_stage) {
+        ESP_LOGW(TAG, "[OTA_MEM] write-stage 32KB alloc failed -> direct 4KB writes");
+    }
 
     /* 记录本固件是否处于自证窗口（供 UI 提示用） */
     const esp_partition_t *run = esp_ota_get_running_partition();
@@ -591,27 +605,27 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
         return false;
     }
 
-    /* -------- M2：判定能否续传 -------- */
+    /* -------- M2：判定能否续传 --------
+     * ★★ 2026-10-07 实机证伪：设备端**写槽续传不可行**，一律全新下载。根因两条：
+     *  1. esp_ota_begin(upd, expect_size, ...) 在 begin 时**整槽擦除**（实测 5MB ≈ 3.5s），
+     *     上一会话写进槽里的前缀荡然无存——"槽里已有前 N 字节"的前提不成立；
+     *  2. 本函数走 esp_ota_write（顺序写，handle 内部 wrote_size 从 0 起，无偏移参数），
+     *     续传数据从文件中段开始喂 → IDF 首写 0xE9 魔数检查直接拒收
+     *     （esp_ota_ops.c:371-377："OTA image has invalid magic byte (expected 0xE9,
+     *      saw 0x4b)"，实机复现）；即便绕过魔数检查，中段数据也会错位写到槽头。
+     * 要真续传只能弃 esp_ota_* 改 esp_partition 裸写 + 手动擦除管理 + 自校验
+     * （bootloader 兜底 + 30s 自证回滚仍在）——留作后续，65KB/s 下整包 ~80s 收益有限。 */
     size_t start_off = 0;
     uint32_t seg_done = 0;
     bool can_resume = false;
-    if (s_resume.magic == OTA_RESUME_MAGIC &&
-        s_resume.total_size == expect_size &&
-        expect_sha256 && strcasecmp(s_resume.sha256, expect_sha256) == 0 &&
-        s_resume.next_offset > 0 &&
-        s_resume.next_offset < expect_size &&
-        s_resume.seg_done <= OTA_SEG_MAX &&
-        s_resume.next_offset >= (size_t)s_resume.seg_done * OTA_SEG_SIZE &&
-        s_resume.next_offset <= (size_t)(s_resume.seg_done + 1) * OTA_SEG_SIZE) {
-        /* ★ 只在"段边界之后、下一段之内"的偏移可安全续传：
-           这样已完成的段摘要全部有效，只需重算当前段的尾巴。 */
-        can_resume = true;
-        /* 回退到最近段边界重拉，保证该段摘要可重算 */
-        start_off = (size_t)s_resume.seg_done * OTA_SEG_SIZE;
-        seg_done = s_resume.seg_done;
-        ESP_LOGW(TAG, "[OTA_RESUME] RESUME from %u B (seg_done=%u, rollback from %u for hash)",
-                 (unsigned)start_off, (unsigned)seg_done, (unsigned)s_resume.next_offset);
-    } else {
+    if (s_resume.magic == OTA_RESUME_MAGIC && s_resume.next_offset > 0) {
+        ESP_LOGW(TAG, "[OTA_RESUME] 检测到断点 next_offset=%u（seg_done=%u），"
+                 "但 esp_ota_begin 整槽擦除 + esp_ota_write 无偏移写 → 降级全新下载",
+                 (unsigned)s_resume.next_offset, (unsigned)s_resume.seg_done);
+        memset(&s_resume, 0, sizeof(s_resume));
+        resume_save();
+    }
+    {
         ESP_LOGI(TAG, "[OTA_RESUME] fresh download (resume rec magic=0x%08x size=%u off=%u)",
                  (unsigned)s_resume.magic, (unsigned)s_resume.total_size,
                  (unsigned)s_resume.next_offset);
@@ -714,6 +728,8 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
     size_t total = (size_t)start_off;
     /* 当前段内的已累积字节数（段 = [seg_done*SIZE, (seg_done+1)*SIZE) ） */
     size_t seg_fill = 0;
+    /* ★ 写槽 staging 当前待写字节数（< OTA_WRITE_STAGE） */
+    size_t stage_fill = 0;
     int last_pct = -1;
     int64_t t0 = esp_timer_get_time();
     ESP_LOGI(TAG, "[OTA_DIAG] download start: offset=%u / %u (%u%%), seg_done=%u",
@@ -743,13 +759,27 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
             break;   /* 读完 */
         }
 
-        /* 写槽 + 段哈希累积 */
-        if (esp_ota_write(h, s_rd_buf, n) != ESP_OK) {
+        /* ★ 攒块写槽（屏闪缓解）：4KB 只入 staging，攒满 32KB 才 esp_ota_write。
+           abort 检查仍按 4KB 粒度（本循环顶部），取消延迟最多一个 staging。 */
+        const uint8_t *src = s_rd_buf;
+        if (s_wr_stage) {
+            memcpy(s_wr_stage + stage_fill, s_rd_buf, (size_t)n);
+            stage_fill += (size_t)n;
+            if (stage_fill < OTA_WRITE_STAGE) {
+                continue;
+            }
+            src = s_wr_stage;
+            n = (int)stage_fill;
+            stage_fill = 0;
+        }
+
+        /* 写槽 + 段哈希累积（同序捆绑：失败/abort 时槽内容与记录保持一致） */
+        if (esp_ota_write(h, src, n) != ESP_OK) {
             ESP_LOGE(TAG, "[OTA_ERR] esp_ota_write failed at %u B (slot=%s)",
                      (unsigned)total, upd->label);
             goto out;
         }
-        if (psa_hash_update(&seg_sha, s_rd_buf, n) != PSA_SUCCESS) {
+        if (psa_hash_update(&seg_sha, src, (size_t)n) != PSA_SUCCESS) {
             ESP_LOGE(TAG, "[OTA_ERR] psa_hash_update failed at %u B", (unsigned)total);
             goto out;
         }
@@ -802,6 +832,22 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
             ESP_LOGI(TAG, "[OTA_DIAG] progress %d%% (%u B, %d KB/s)", pct, (unsigned)total, speed);
         }
         vTaskDelay(1);   /* ★ 让出 CPU（方案 §3.1-4 / §7 风险表） */
+    }
+
+    /* ★ 收尾：staging 残余（最后一块 < 32KB）。abort 时丢弃（"取消即放弃"语义，
+       槽反正会在下次 begin 时整槽擦除）。 */
+    if (!s_abort && s_wr_stage && stage_fill > 0) {
+        if (esp_ota_write(h, s_wr_stage, stage_fill) != ESP_OK) {
+            ESP_LOGE(TAG, "[OTA_ERR] tail esp_ota_write failed at %u B", (unsigned)total);
+            goto out;
+        }
+        if (psa_hash_update(&seg_sha, s_wr_stage, stage_fill) != PSA_SUCCESS) {
+            ESP_LOGE(TAG, "[OTA_ERR] tail psa_hash_update failed at %u B", (unsigned)total);
+            goto out;
+        }
+        total += stage_fill;
+        seg_fill += stage_fill;
+        stage_fill = 0;
     }
 
     /* -------- 下载完成判定 -------- */
