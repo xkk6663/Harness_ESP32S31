@@ -151,6 +151,15 @@ static void save_connected_cred(void)
     if (store_load(&store) != ESP_OK) {
         store.count = 0;   /* 首次使用，空表 */
     }
+    /* ★ 没变不写（§69）：重连一个已在 MRU 表尾且内容一致的 SSID 时表内容零变化，
+       跳过 NVS 写 —— 每次写 flash 都冻结 ext-mem cache，屏扫被饿一拍
+       （屏闪/残留向下偏移，§67/§69），正常运行期应尽量减少这类写。 */
+    if (store.count > 0 &&
+        strcmp(store.creds[store.count - 1].ssid, (const char *)cur.sta.ssid) == 0 &&
+        strcmp(store.creds[store.count - 1].password, (const char *)cur.sta.password) == 0) {
+        ESP_LOGI(TAG, "cred \"%s\" unchanged (MRU tail) -> skip NVS write", cur.sta.ssid);
+        return;
+    }
     store_upsert(&store, (const char *)cur.sta.ssid, (const char *)cur.sta.password);
     esp_err_t err = store_commit(&store);
     ESP_LOGI(TAG, "saved \"%s\" to NVS (%s), total=%d",
