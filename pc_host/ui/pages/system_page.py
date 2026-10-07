@@ -1,13 +1,12 @@
-"""系统页：设备信息 / 链路 / PC 环境 / 壁纸管理（§76）/ OTA 预留。"""
+"""系统页：设备信息 / 链路 / PC 环境 / OTA 预留（壁纸管理已独立成页）。"""
 from __future__ import annotations
 
 import importlib.util
 import socket
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from ..widgets import make_page_header, status_chip, v_card
@@ -98,31 +97,7 @@ class SystemPage(QWidget):
             "TCP 50005  副屏封面/歌词/固件/壁纸 HTTP（设备拉取）"))
         bottom.addWidget(ports, 1)
 
-        # ---- §76 壁纸管理卡片（设备拉模型，与 OTA 同构） ----
-        wp, wp_lay = v_card("壁纸管理（SD 卡壁纸池）")
-        wp_lay.addWidget(QLabel(
-            "选 800x480 JPEG（≤2MB）→ 设备经局域网拉取 →\n"
-            "落池 /sdcard/wallpaper → 自动设为当前壁纸并 crossfade。"))
-        self.wp_file = QLabel("未选择文件")
-        self.wp_file.setStyleSheet("color: #94A3B8;")
-        wp_row = QHBoxLayout()
-        self.wp_pick_btn = QPushButton("选图…")
-        self.wp_pick_btn.clicked.connect(self._wp_pick)
-        self.wp_send_btn = QPushButton("上传到设备")
-        self.wp_send_btn.setEnabled(False)
-        self.wp_send_btn.clicked.connect(self._wp_send)
-        self.wp_cancel_btn = QPushButton("取消")
-        self.wp_cancel_btn.setEnabled(False)
-        self.wp_cancel_btn.clicked.connect(self._wp_cancel)
-        wp_row.addWidget(self.wp_pick_btn)
-        wp_row.addWidget(self.wp_send_btn, 1)
-        wp_row.addWidget(self.wp_cancel_btn)
-        wp_lay.addLayout(wp_row)
-        self.wp_status = QLabel("空闲")
-        self.wp_status.setWordWrap(True)
-        wp_lay.addWidget(self.wp_status)
-        wp_lay.addStretch(1)
-        bottom.addWidget(wp, 1)
+        # 壁纸管理已独立成左侧「壁纸管理」页（大图预览 + 取消上传），此处不再放卡片。
 
         ota, ota_lay = v_card("OTA 升级")
         ota_lay.addWidget(QLabel(
@@ -138,7 +113,6 @@ class SystemPage(QWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
-        self._timer.timeout.connect(self._wp_drain)
         self._timer.start(1000)
 
     def _apply_ip(self) -> None:
@@ -148,70 +122,7 @@ class SystemPage(QWidget):
             link.set_device_ip(ip or None)
             print(f"[link] manual device ip -> {ip or '(auto-discover)'}", flush=True)
 
-    # ---- §76 壁纸管理 ----
-    def _wp_pick(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择壁纸（800x480 JPEG）", str(Path.home()),
-            "图片 (*.jpg *.jpeg)")
-        if not path:
-            return
-        self.wp_path = Path(path)
-        self.wp_file.setText(self.wp_path.name)
-        self.wp_file.setStyleSheet("color: #E2E8F0;")
-        # 本地预校验（与设备端闸一致：≤2MB + 800x480 整屏）
-        from ...wallpaper import precheck
-        chk = precheck(self.wp_path)
-        if isinstance(chk, str):
-            self.wp_status.setText(f"✗ {chk}")
-            self.wp_status.setStyleSheet("color: #F87171;")
-            self.wp_send_btn.setEnabled(False)
-        else:
-            self.wp_status.setText(f"✓ {chk[0]}x{chk[1]}，{chk[2]} B，可上传")
-            self.wp_status.setStyleSheet("color: #34D399;")
-            self.wp_send_btn.setEnabled(True)
-
-    def _wp_send(self) -> None:
-        if getattr(self, "wp_path", None) is None:
-            return
-        sess = self.ctx.wp_session
-        if sess is None:
-            self.wp_status.setText("✗ 壁纸会话不可用（服务未启动）")
-            self.wp_status.setStyleSheet("color: #F87171;")
-            return
-        err = sess.start(self.wp_path)
-        if err is not None:
-            self.wp_status.setText(f"✗ {err}")
-            self.wp_status.setStyleSheet("color: #F87171;")
-            return
-        self._wp_set_running(True)
-        self.wp_status.setText("上传中…（OFFER×3 / 等设备回 WP_RESULT）")
-        self.wp_status.setStyleSheet("color: #22D3EE;")
-
-    def _wp_cancel(self) -> None:
-        sess = self.ctx.wp_session
-        if sess is not None:
-            sess.abort()
-
-    def _wp_set_running(self, running: bool) -> None:
-        self.wp_send_btn.setEnabled(not running and getattr(self, "wp_path", None) is not None)
-        self.wp_cancel_btn.setEnabled(running)
-
-    def _wp_drain(self) -> None:
-        q = self.ctx.wp_q
-        while q is not None:
-            try:
-                ev = q.get_nowait()
-            except Exception:                 # queue.Empty
-                break
-            if ev.get("ev") == "log":
-                print(f"[wp] {ev['line']}", flush=True)
-            elif ev.get("ev") == "result":
-                self._wp_set_running(False)
-                ok = bool(ev.get("ok"))
-                self.wp_status.setText(("✓ " if ok else "✗ ") + str(ev.get("line", "")))
-                self.wp_status.setStyleSheet(
-                    "color: #34D399;" if ok else "color: #F87171;")
-
+    # ---- §76 壁纸管理已迁至 wallpaper_page.py（此处仅保留设备信息轮询） ----
     def _poll(self) -> None:
         link = self.ctx.link
         info = link.info or {}

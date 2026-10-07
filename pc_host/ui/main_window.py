@@ -10,6 +10,7 @@ from .pages.ota_page import OtaPage
 from .pages.pcnow_page import PcNowPage
 from .pages.record_page import RecordPage
 from .pages.system_page import SystemPage
+from .pages.wallpaper_page import WallpaperPage
 from .widgets import status_chip
 
 
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
             ("录音库", "▶", RecordPage),
             ("音乐副屏", "♫", PcNowPage),
             ("固件升级", "⇪", OtaPage),
+            ("壁纸管理", "▣", WallpaperPage),
             ("系统", "◆", SystemPage),
         ]
         self._navs: list[QPushButton] = []
@@ -67,7 +69,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(cls(ctx))
 
         side_lay.addStretch(1)
-        ver = QLabel("pc_host 0.4 · ICD v1.5")
+        ver = QLabel("pc_host 0.4.1 · ICD v1.5")
         ver.setObjectName("AppSub")
         side_lay.addWidget(ver)
 
