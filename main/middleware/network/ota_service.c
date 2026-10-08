@@ -83,9 +83,9 @@ static const char *TAG = "OTA";
 
 /* ---- 常量 ---- */
 #define OTA_READ_CHUNK      4096                       /* 每块读 4KB（方案 §3.1-2） */
-#define OTA_WRITE_STAGE     (64 * 1024)                /* ★ §79d 攒块 64KB：写调用次数减半（见 s_wr_stage 注记） */
+#define OTA_WRITE_STAGE     (32 * 1024)                /* ★ 写槽攒块 32KB（§79f 回退：64KB 让单次 cache 断供翻倍，条纹更长更扎眼） */
 #define OTA_TASK_STACK      8192
-#define OTA_PROGRESS_STEP   5                          /* 每 5% 回一条 PROGRESS（§79d：降 UI 刷新频度） */
+#define OTA_PROGRESS_STEP   2                          /* 每 2% 回一条 PROGRESS（§79f 回退：5% 步进让进度条"跳变"，观感变慢） */
 #define OTA_HTTP_TIMEOUT    15000                      /* 15s：局域网 4.9MB 远够 */
 #define OTA_REBOOT_DELAY_MS 1000
 #define OTA_CMD_Q_LEN       4
@@ -154,12 +154,11 @@ static volatile bool s_pending_verify;   /* 本固件处于 PENDING_VERIFY */
    并把地址固定下来便于日志核对。 */
 static uint8_t s_rd_buf[OTA_READ_CHUNK];
 
-/* ★ 写槽 staging（PSRAM，init 时分配）：读 4KB/次、写 64KB/次。
+/* ★ 写槽 staging（PSRAM，init 时分配）：读 4KB/次、写 32KB/次。
  * esp_ota_write 每次调用都冻结 ext-mem cache → PSRAM 帧缓冲的 GDMA 扫描被饿
- * → 屏闪 + 可能残留几行向下偏移。§79d 攒块 32→64KB：写调用次数再减半
- * （4.9MB：~155 次 → ~77 次）。★ 机理注记：总 cache 断供时长 ≈ 固件大小 ÷
- * flash 写速，是常数 —— 攒块只改"每次冻结的长度"，滑屏只能靠深色遮罩掩盖
- * （§79d）或 bounce-buffer 根治（挂账，等 .bss 瘦身）。
+ * → 屏闪 + 可能残留几行向下偏移。攒块把冻结频率从 ~1270 次/包降到 ~160 次/包。
+ * ★ §79f 定论：总断供时长 ≈ 固件大小 ÷ flash 写速，是常数 —— 攒块只改
+ * "每次冻结的长度"；64KB 实测让条纹更长更扎眼（单次断供翻倍），回退 32KB。
  * 分配失败退化为 4KB 直写（只影响闪烁观感，不影响正确性）。 */
 static uint8_t *s_wr_stage;
 
@@ -405,10 +404,10 @@ void ota_service_init(void)
     s_cmd_q = xQueueCreate(OTA_CMD_Q_LEN, sizeof(ota_cmd_t));
     assert(s_cmd_q);   /* 初始化期，允许断言（规范 §3.2 A1） */
 
-    /* ★ 写槽 staging（PSRAM 64KB，屏闪缓解，见 s_wr_stage 注释） */
+    /* ★ 写槽 staging（PSRAM 32KB，屏闪缓解，见 s_wr_stage 注释） */
     s_wr_stage = heap_caps_malloc(OTA_WRITE_STAGE, MALLOC_CAP_SPIRAM);
     if (!s_wr_stage) {
-        ESP_LOGW(TAG, "[OTA_MEM] write-stage 64KB alloc failed -> direct 4KB writes");
+        ESP_LOGW(TAG, "[OTA_MEM] write-stage 32KB alloc failed -> direct 4KB writes");
     }
 
     /* 记录本固件是否处于自证窗口（供 UI 提示用） */

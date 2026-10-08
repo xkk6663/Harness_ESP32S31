@@ -122,14 +122,13 @@ static const lv_font_t *cjk_font(void)
 static void ota_card_build(void)
 {
     /* 全屏遮罩：拦下层触摸（升级中不该让用户点到别的 tab）。
-     * ★ §79d 滑屏缓解：改**完全不透明**（原 OPA_70 会透出壁纸）—— OTA 写 flash
-     * 冻结 ext-mem cache ⇒ GDMA 饥饿 ⇒ 条纹滑屏物理上不可消除（断供总时长 ≈
-     * 固件大小 ÷ flash 写速，常数），但饥饿条纹在近黑纯色上几乎不可见；
-     * 半透明时条纹叠在花壁纸上非常扎眼。体验级"根治"。 */
+     * ★ §79f 回退到半透明（OPA_70）：完全不透明黑屏让"升级中设备变砖了？"的
+     * 焦虑感上升（用户拍板还回来）；滑屏条纹本就物理不可消除（断供总时长
+     * = 常数），根治只能等 bounce-buffer / IDF S31 restart。 */
     s_mask = lv_obj_create(lv_layer_top());
     lv_obj_set_size(s_mask, BSP_LCD_H_RES, BSP_LCD_V_RES);
     lv_obj_set_style_bg_color(s_mask, COL_DARK, 0);
-    lv_obj_set_style_bg_opa(s_mask, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_mask, LV_OPA_70, 0);
     lv_obj_set_style_border_width(s_mask, 0, 0);
     lv_obj_set_style_radius(s_mask, 0, 0);
     lv_obj_set_style_pad_all(s_mask, 0, 0);
