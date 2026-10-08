@@ -31,10 +31,15 @@ CONFIG_FREERTOS_HZ=1000
 ##   IDF 该项默认就是 1536（Kconfig range 1536~32768），本项目此前用的是默认最小值。
 CONFIG_FREERTOS_ISR_STACKSIZE=4096
 CONFIG_BSP_LCD_RGB_BUFFER_NUMS=2
-CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_MODE=y
-## ★ C 类降配（13_内存管理规范 §9.6）：HEIGHT 20→10，bounce 64000B→32000B，省 31.25 KB 内部 DMA。
-##   代价：vsync/行中断频率翻倍，CPU 占用略升 —— 烧录后观察 UI 流畅度；异常花屏/撕裂则回 20。
-CONFIG_BSP_LCD_RGB_BOUNCE_BUFFER_HEIGHT=10
+## ★ §79g（v2.0）刷新模式定稿 = AUTO（GDMA 直接扫 PSRAM 整帧环形链）。
+##   历史：bb 模式（bounce 10 行）EOF 中断里从 PSRAM 搬 16KB/次，flash 写冻结
+##   cache → ISR 卡死 → 搬运/消费指针错开 → 屏幕内容下移定格且不自愈
+##   （连 WiFi / 连上位机时刻必现）。2026-09-25 花屏修复曾改 AUTO=y，但改动
+##   只落在本地 sdkconfig、从未进 git，被 fullclean 冲掉 —— 漂移事故重演。
+##   本次三处固化：defaults + sdkconfig + sdkconfig.bsp.esp32_s31_korvo_1。
+##   收益：消掉 ~2900 次/s EOF ISR + memcpy CPU 负载，省 32KB 内部 DMA bounce；
+##   偏移退化为瞬态撕裂线（冻结期 GDMA 停等、恢复后行序天然对齐）。
+CONFIG_BSP_LCD_RGB_REFRESH_AUTO=y
 CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR=y
 CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE=y
 #CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
