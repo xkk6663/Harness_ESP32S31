@@ -112,20 +112,29 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_t *page = ui_common_page_root(parent);
     lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_top(page, 16, 0);
-    lv_obj_set_style_pad_row(page, 10, 0);
+    lv_obj_set_style_pad_top(page, 6, 0);
+    lv_obj_set_style_pad_row(page, 6, 0);
+    /* §79b 排查修复（用户拍板：**不要滚动**，一屏放下）：旧布局三卡 240+150+~90
+     * + 标题栏48 + 间距 ≈ 554px，> tabview 页可视 ~408px（480 − tab栏48 − 页 pad
+     * 12×2，F46），而页根工厂默认 scrollable=false（ui_common.c:30）⇒ 超界内容
+     * 被**静默裁掉**，Firmware Update 卡整卡不可见（v1.6 实机复现，bin 已确认
+     * 是 v1.6，纯布局 bug）。
+     * 修复 = 三卡全部 LV_SIZE_CONTENT + pad 收紧（12/6）+ 页 pad_top/row 6：
+     *   标题48 + 设备信息~172 + OTA卡~62 + 存储卡~82 + pad/gap ~24 ≈ 388 ≤ 408，
+     * 一屏放下，零信息删除。★ 改本页布局前先按这个预算算高度。 */
+    lv_obj_set_scrollable(page, false);
 
     ui_common_title_bar(page, LV_SYMBOL_SETTINGS"  System");
 
     lv_obj_t *card = lv_obj_create(page);
-    lv_obj_set_size(card, BSP_LCD_H_RES - 40, 240);
+    lv_obj_set_size(card, BSP_LCD_H_RES - 40, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, COL_CARD, 0);
     lv_obj_set_style_border_color(card, COL_BORDER, 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_radius(card, 16, 0);
-    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(card, 10, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
 
     char buf[96];
     lv_obj_t *l;
@@ -180,44 +189,18 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(l, COL_CYAN, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
-    /* ---- Flash / storage 实时监视卡片 ---- */
-    lv_obj_t *scard = lv_obj_create(page);
-    lv_obj_set_size(scard, BSP_LCD_H_RES - 40, 150);
-    lv_obj_set_style_bg_color(scard, COL_CARD, 0);
-    lv_obj_set_style_border_color(scard, COL_BORDER, 0);
-    lv_obj_set_style_border_width(scard, 1, 0);
-    lv_obj_set_style_radius(scard, 16, 0);
-    lv_obj_set_style_pad_all(scard, 16, 0);
-    lv_obj_set_flex_flow(scard, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(scard, 10, 0);
-
-    s_storage_label = lv_label_create(scard);
-    lv_label_set_text_static(s_storage_label, "Storage  -- KB");
-    lv_obj_set_style_text_color(s_storage_label, COL_TEXT, 0);
-    lv_obj_set_style_text_font(s_storage_label, UI_FONT, 0);
-
-    s_storage_bar = lv_bar_create(scard);
-    lv_obj_set_size(s_storage_bar, BSP_LCD_H_RES - 72, 14);
-    lv_bar_set_range(s_storage_bar, 0, 100);
-    lv_obj_set_style_bg_color(s_storage_bar, COL_BG, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_storage_bar, COL_CYAN, LV_PART_INDICATOR);
-
-    s_heap_label = lv_label_create(scard);
-    lv_label_set_text_static(s_heap_label, "Heap free  -- KB");
-    lv_obj_set_style_text_color(s_heap_label, COL_SUBTEXT, 0);
-    lv_obj_set_style_text_font(s_heap_label, UI_FONT, 0);
-
     /* ---- Firmware Update 卡（§79 双向 OTA）----
      * Latest 行 = PC 心跳 fw_latest（PC 侧最新编译固件版本）；
      * Check update 按钮 = 设备端主动发起升级（OTA_REQ，PC 有更新自动开拉）；
-     * 状态行由下方 1s 定时器刷新（is_active 进度 / 查新状态）。 */
+     * 状态行由下方 1s 定时器刷新（is_active 进度 / 查新状态）。
+     * ★ 排在存储卡之前：一屏内直接可见。 */
     lv_obj_t *ucard = lv_obj_create(page);
     lv_obj_set_size(ucard, BSP_LCD_H_RES - 40, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(ucard, COL_CARD, 0);
     lv_obj_set_style_border_color(ucard, COL_BORDER, 0);
     lv_obj_set_style_border_width(ucard, 1, 0);
     lv_obj_set_style_radius(ucard, 16, 0);
-    lv_obj_set_style_pad_all(ucard, 16, 0);
+    lv_obj_set_style_pad_all(ucard, 12, 0);
     lv_obj_set_flex_flow(ucard, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(ucard, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(ucard, 14, 0);
@@ -228,7 +211,7 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_border_width(ucol, 0, 0);
     lv_obj_set_style_pad_all(ucol, 0, 0);
     lv_obj_set_flex_flow(ucol, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(ucol, 6, 0);
+    lv_obj_set_style_pad_row(ucol, 4, 0);
 
     s_fw_latest_label = lv_label_create(ucol);
     lv_label_set_text_static(s_fw_latest_label, "Latest  -");
@@ -241,7 +224,7 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(s_fw_status, UI_FONT, 0);
 
     s_btn_check = lv_btn_create(ucard);         /* 右：发起按钮 */
-    lv_obj_set_size(s_btn_check, 170, 42);
+    lv_obj_set_size(s_btn_check, 170, 38);
     lv_obj_set_style_bg_color(s_btn_check, COL_CYAN, 0);
     lv_obj_set_style_bg_color(s_btn_check, COL_BORDER, LV_STATE_DISABLED);
     lv_obj_t *bl = lv_label_create(s_btn_check);
@@ -250,6 +233,33 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(bl, UI_FONT, 0);
     lv_obj_center(bl);
     lv_obj_add_event_cb(s_btn_check, check_update_cb, LV_EVENT_CLICKED, NULL);
+
+    /* ---- Flash / storage 实时监视卡片（压缩版，§79b） ---- */
+    lv_obj_t *scard = lv_obj_create(page);
+    lv_obj_set_size(scard, BSP_LCD_H_RES - 40, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(scard, COL_CARD, 0);
+    lv_obj_set_style_border_color(scard, COL_BORDER, 0);
+    lv_obj_set_style_border_width(scard, 1, 0);
+    lv_obj_set_style_radius(scard, 16, 0);
+    lv_obj_set_style_pad_all(scard, 12, 0);
+    lv_obj_set_flex_flow(scard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(scard, 6, 0);
+
+    s_storage_label = lv_label_create(scard);
+    lv_label_set_text_static(s_storage_label, "Storage  -- KB");
+    lv_obj_set_style_text_color(s_storage_label, COL_TEXT, 0);
+    lv_obj_set_style_text_font(s_storage_label, UI_FONT, 0);
+
+    s_storage_bar = lv_bar_create(scard);
+    lv_obj_set_size(s_storage_bar, BSP_LCD_H_RES - 72, 12);
+    lv_bar_set_range(s_storage_bar, 0, 100);
+    lv_obj_set_style_bg_color(s_storage_bar, COL_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_storage_bar, COL_CYAN, LV_PART_INDICATOR);
+
+    s_heap_label = lv_label_create(scard);
+    lv_label_set_text_static(s_heap_label, "Heap free  -- KB");
+    lv_obj_set_style_text_color(s_heap_label, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(s_heap_label, UI_FONT, 0);
 
     /* 1s 节拍刷新（跑在 LVGL task，安全） */
     s_stat_timer = lv_timer_create(system_stat_timer_cb, 1000, NULL);
