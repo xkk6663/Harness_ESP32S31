@@ -10,6 +10,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "bsp/esp-bsp.h"
 #include "lvgl.h"
@@ -37,6 +38,28 @@ static lv_obj_t *s_fw_latest_label;
 static lv_obj_t *s_fw_status;
 static lv_obj_t *s_btn_check;
 
+/* §79c 抖动修复：1s 定时器的四个 label 全部缓存上次文本 ——
+ * lv_label_set_text 即使内容相同也会 invalidate（LVGL 无条件重算+重绘），
+ * 而文本长度变化还会引发 LV_SIZE_CONTENT 卡高重算 → 整页 flex 重排（全屏重绘）。
+ * 每秒一次"全屏重绘 + esp_littlefs_info 冻结 cache"叠加 = v1.6 起实机可见的周期抖动。 */
+static char s_last_storage[96];
+static char s_last_heap[64];
+static char s_last_latest[64];
+static char s_last_status[64];
+
+/** 文本变了才 set_text（不变 = 零 invalidate、零重排）。 */
+static void label_set_if_changed(lv_obj_t *label, char *cache, size_t cache_len,
+                                 const char *text)
+{
+    if (!label || !text) {
+        return;
+    }
+    if (strncmp(cache, text, cache_len) != 0) {
+        snprintf(cache, cache_len, "%s", text);
+        lv_label_set_text(label, cache);
+    }
+}
+
 static void check_update_cb(lv_event_t *e)
 {
     (void)e;
@@ -48,24 +71,31 @@ static void check_update_cb(lv_event_t *e)
 static void system_stat_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    size_t total = 0, used = 0;
-    if (esp_littlefs_info("storage", &total, &used) == ESP_OK) {
-        int pct = total ? (int)((used * 100U) / total) : 0;
-        char buf[96];
-        snprintf(buf, sizeof(buf), "Storage  %u / %u KB  (%d%%)",
-                 (unsigned)(used / 1024), (unsigned)(total / 1024), pct);
-        if (s_storage_label) {
-            lv_label_set_text(s_storage_label, buf);
-        }
-        if (s_storage_bar) {
-            lv_bar_set_value(s_storage_bar, pct, LV_ANIM_OFF);
+    /* §79c：esp_littlefs_info 是 flash IO（LVGL 线程冻结 ext-mem cache → GDMA
+     * 饿一拍 → 撕裂）。OTA 升级期本就每秒多次 flash 写，这里再叠加读 = 滑屏
+     * 加重 —— 升级期直接跳过（存储行保持上次值，升级完成自然恢复）。 */
+    if (!ota_service_is_active()) {
+        size_t total = 0, used = 0;
+        if (esp_littlefs_info("storage", &total, &used) == ESP_OK) {
+            int pct = total ? (int)((used * 100U) / total) : 0;
+            char buf[96];
+            snprintf(buf, sizeof(buf), "Storage  %u / %u KB  (%d%%)",
+                     (unsigned)(used / 1024), (unsigned)(total / 1024), pct);
+            label_set_if_changed(s_storage_label, s_last_storage,
+                                 sizeof(s_last_storage), buf);
+            if (s_storage_bar) {
+                int cur = (int)lv_bar_get_value(s_storage_bar);
+                if (cur != pct) {
+                    lv_bar_set_value(s_storage_bar, pct, LV_ANIM_OFF);
+                }
+            }
         }
     }
     if (s_heap_label) {
         char hb[64];
         snprintf(hb, sizeof(hb), "Heap free  %u KB",
                  (unsigned)(esp_get_free_heap_size() / 1024));
-        lv_label_set_text(s_heap_label, hb);
+        label_set_if_changed(s_heap_label, s_last_heap, sizeof(s_last_heap), hb);
     }
 
     /* §79：Firmware Update 卡刷新（LVGL 线程只读 volatile 状态 + 一次栈上拷贝） */
@@ -74,7 +104,8 @@ static void system_stat_timer_cb(lv_timer_t *t)
         link_manager_get_fw_latest(latest, sizeof(latest));
         char lb[64];
         snprintf(lb, sizeof(lb), "Latest  %s", latest[0] ? latest : "-");
-        lv_label_set_text(s_fw_latest_label, lb);
+        label_set_if_changed(s_fw_latest_label, s_last_latest,
+                             sizeof(s_last_latest), lb);
     }
     if (s_fw_status) {
         char st[64];
@@ -95,7 +126,7 @@ static void system_stat_timer_cb(lv_timer_t *t)
                 snprintf(st, sizeof(st), "Firmware update  -"); break;
             }
         }
-        lv_label_set_text(s_fw_status, st);
+        label_set_if_changed(s_fw_status, s_last_status, sizeof(s_last_status), st);
         if (s_btn_check) {
             if (ota_service_is_active() ||
                 ota_service_get_check_state() == OTA_CHECK_PENDING) {
@@ -204,9 +235,13 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_flex_flow(ucard, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(ucard, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(ucard, 14, 0);
+    /* §79c：固定高度 —— LV_SIZE_CONTENT 卡里的 label 每秒文本变化会引发
+     * "label 重算 → 卡高重算 → 页 flex 全列重排（全屏 invalidate）"级联，
+     * 是连接后周期抖动的主源之一。内容两行 16px + gap4 = 36，卡 = 36+24 = 62。 */
+    lv_obj_set_height(ucard, 62);
 
     lv_obj_t *ucol = lv_obj_create(ucard);      /* 左：两行文字（透明容器） */
-    lv_obj_set_size(ucol, 500, LV_SIZE_CONTENT);
+    lv_obj_set_size(ucol, 500, 38);
     lv_obj_set_style_bg_opa(ucol, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ucol, 0, 0);
     lv_obj_set_style_pad_all(ucol, 0, 0);
@@ -234,9 +269,10 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_center(bl);
     lv_obj_add_event_cb(s_btn_check, check_update_cb, LV_EVENT_CLICKED, NULL);
 
-    /* ---- Flash / storage 实时监视卡片（压缩版，§79b） ---- */
+    /* ---- Flash / storage 实时监视卡片（压缩版，§79b）----
+     * §79c：固定高度 84（16+6+12+6+16+pad24）—— 理由同 ucard，禁止每秒重排。 */
     lv_obj_t *scard = lv_obj_create(page);
-    lv_obj_set_size(scard, BSP_LCD_H_RES - 40, LV_SIZE_CONTENT);
+    lv_obj_set_size(scard, BSP_LCD_H_RES - 40, 84);
     lv_obj_set_style_bg_color(scard, COL_CARD, 0);
     lv_obj_set_style_border_color(scard, COL_BORDER, 0);
     lv_obj_set_style_border_width(scard, 1, 0);
