@@ -20,6 +20,8 @@
 #include "ui/common/ui_theme.h"
 #include "ui/common/ui_common.h"
 #include "middleware/network/wifi_manager.h"
+#include "middleware/network/ota_service.h"      /* §79：双向 OTA（查新/发起/进度） */
+#include "middleware/bluetooth/link_manager.h"   /* §79：PC 心跳 fw_latest */
 #include "middleware/system/sdcard_service.h"
 #include "esp_app_desc.h"
 #include "esp_mac.h"
@@ -29,6 +31,18 @@ static lv_obj_t *s_storage_bar;
 static lv_obj_t *s_storage_label;
 static lv_obj_t *s_heap_label;
 static lv_timer_t *s_stat_timer;
+
+/* §79 双向 OTA 控件 */
+static lv_obj_t *s_fw_latest_label;
+static lv_obj_t *s_fw_status;
+static lv_obj_t *s_btn_check;
+
+static void check_update_cb(lv_event_t *e)
+{
+    (void)e;
+    /* 一次非阻塞 sendto，LVGL 线程可直接调；结果由 1s 定时器轮询展示 */
+    ota_service_request_update();
+}
 
 /* 跑在 LVGL task：读 littlefs 用量 + 堆空闲，刷新 UI */
 static void system_stat_timer_cb(lv_timer_t *t)
@@ -52,6 +66,44 @@ static void system_stat_timer_cb(lv_timer_t *t)
         snprintf(hb, sizeof(hb), "Heap free  %u KB",
                  (unsigned)(esp_get_free_heap_size() / 1024));
         lv_label_set_text(s_heap_label, hb);
+    }
+
+    /* §79：Firmware Update 卡刷新（LVGL 线程只读 volatile 状态 + 一次栈上拷贝） */
+    if (s_fw_latest_label) {
+        char latest[32];
+        link_manager_get_fw_latest(latest, sizeof(latest));
+        char lb[64];
+        snprintf(lb, sizeof(lb), "Latest  %s", latest[0] ? latest : "-");
+        lv_label_set_text(s_fw_latest_label, lb);
+    }
+    if (s_fw_status) {
+        char st[64];
+        if (ota_service_is_active()) {
+            snprintf(st, sizeof(st), "Updating  %u%%",
+                     (unsigned)ota_service_get_percent());
+        } else {
+            switch (ota_service_get_check_state()) {
+            case OTA_CHECK_PENDING:
+                snprintf(st, sizeof(st), "Checking with PC..."); break;
+            case OTA_CHECK_NOUPDATE:
+                snprintf(st, sizeof(st), "Up to date"); break;
+            case OTA_CHECK_FOUND:
+                snprintf(st, sizeof(st), "Update available"); break;
+            case OTA_CHECK_TIMEOUT:
+                snprintf(st, sizeof(st), "No response (PC offline?)"); break;
+            default:
+                snprintf(st, sizeof(st), "Firmware update  -"); break;
+            }
+        }
+        lv_label_set_text(s_fw_status, st);
+        if (s_btn_check) {
+            if (ota_service_is_active() ||
+                ota_service_get_check_state() == OTA_CHECK_PENDING) {
+                lv_obj_add_state(s_btn_check, LV_STATE_DISABLED);
+            } else {
+                lv_obj_clear_state(s_btn_check, LV_STATE_DISABLED);
+            }
+        }
     }
 }
 
@@ -155,6 +207,50 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_heap_label, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(s_heap_label, UI_FONT, 0);
 
+    /* ---- Firmware Update 卡（§79 双向 OTA）----
+     * Latest 行 = PC 心跳 fw_latest（PC 侧最新编译固件版本）；
+     * Check update 按钮 = 设备端主动发起升级（OTA_REQ，PC 有更新自动开拉）；
+     * 状态行由下方 1s 定时器刷新（is_active 进度 / 查新状态）。 */
+    lv_obj_t *ucard = lv_obj_create(page);
+    lv_obj_set_size(ucard, BSP_LCD_H_RES - 40, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(ucard, COL_CARD, 0);
+    lv_obj_set_style_border_color(ucard, COL_BORDER, 0);
+    lv_obj_set_style_border_width(ucard, 1, 0);
+    lv_obj_set_style_radius(ucard, 16, 0);
+    lv_obj_set_style_pad_all(ucard, 16, 0);
+    lv_obj_set_flex_flow(ucard, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(ucard, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(ucard, 14, 0);
+
+    lv_obj_t *ucol = lv_obj_create(ucard);      /* 左：两行文字（透明容器） */
+    lv_obj_set_size(ucol, 500, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(ucol, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ucol, 0, 0);
+    lv_obj_set_style_pad_all(ucol, 0, 0);
+    lv_obj_set_flex_flow(ucol, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(ucol, 6, 0);
+
+    s_fw_latest_label = lv_label_create(ucol);
+    lv_label_set_text_static(s_fw_latest_label, "Latest  -");
+    lv_obj_set_style_text_color(s_fw_latest_label, COL_TEXT, 0);
+    lv_obj_set_style_text_font(s_fw_latest_label, UI_FONT, 0);
+
+    s_fw_status = lv_label_create(ucol);
+    lv_label_set_text_static(s_fw_status, "Firmware update  -");
+    lv_obj_set_style_text_color(s_fw_status, COL_SUBTEXT, 0);
+    lv_obj_set_style_text_font(s_fw_status, UI_FONT, 0);
+
+    s_btn_check = lv_btn_create(ucard);         /* 右：发起按钮 */
+    lv_obj_set_size(s_btn_check, 170, 42);
+    lv_obj_set_style_bg_color(s_btn_check, COL_CYAN, 0);
+    lv_obj_set_style_bg_color(s_btn_check, COL_BORDER, LV_STATE_DISABLED);
+    lv_obj_t *bl = lv_label_create(s_btn_check);
+    lv_label_set_text_static(bl, "Check update");
+    lv_obj_set_style_text_color(bl, COL_DARK, 0);   /* F47 附：文字恒色可设 label */
+    lv_obj_set_style_text_font(bl, UI_FONT, 0);
+    lv_obj_center(bl);
+    lv_obj_add_event_cb(s_btn_check, check_update_cb, LV_EVENT_CLICKED, NULL);
+
     /* 1s 节拍刷新（跑在 LVGL task，安全） */
     s_stat_timer = lv_timer_create(system_stat_timer_cb, 1000, NULL);
     system_stat_timer_cb(s_stat_timer); /* 立刻刷一次 */
@@ -171,6 +267,9 @@ static void system_destroy(lv_obj_t *page)
     s_storage_bar = NULL;
     s_storage_label = NULL;
     s_heap_label = NULL;
+    s_fw_latest_label = NULL;
+    s_fw_status = NULL;
+    s_btn_check = NULL;
     lv_obj_del(page);
 }
 

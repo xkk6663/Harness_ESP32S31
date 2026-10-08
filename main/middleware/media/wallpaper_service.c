@@ -44,6 +44,7 @@
 #include "middleware/system/sdcard_service.h"   /* SDCARD_MNT_PATH + is_mounted */
 #include "middleware/mem_diag.h"
 #include "middleware/bluetooth/link_manager.h"  /* §76：WP_OFFER 分发槽 + 回包 */
+#include "middleware/network/ota_service.h"     /* §78：OTA 期全静止（轮换暂停） */
 
 #include "cJSON.h"
 #include "esp_http_client.h"
@@ -418,6 +419,15 @@ static void rotate_task(void *arg)
          *   手动事件顺带重置轮换计时（下次轮换从手动切换起算 10min），合理。 */
         wp_req_t req;
         BaseType_t got = xQueueReceive(s_req_q, &req, pdMS_TO_TICKS(WP_ROTATE_MS));
+
+        /* §78 OTA 期全静止：升级进行中跳过**自动**轮换（超时到点的那次）。
+         * 根因：save_last 的 NVS 写会冻结 ext-mem cache，叠加 OTA 写槽的
+         * cache 冻结窗口，屏幕可见闪屏变本加厉。手动 SET 请求照常响应
+         * （got==pdTRUE 是用户主动操作，不算"自己动"）。此时本任务只是
+         * 空转到下个 10min 超时，无资源代价；OTA 结束后自然恢复轮换。 */
+        if (got != pdTRUE && ota_service_is_active()) {
+            continue;
+        }
 
         /* 等上一轮的旧 buffer 被 UI 归还（crossfade 结束）。
          * 5s 超时兜底：UI 不在场（如 splash 已销毁的间隙）也绝不卡死轮换。

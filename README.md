@@ -149,6 +149,12 @@ PC: pc_host「固件升级」页                     设备: ota_service（middl
 > 固件尺寸硬上限 = 5,242,880 B（超出设备回 `OTA_REJECT reason=space`）。
 > 版本号 = `git describe` 烘焙进 `esp_app_desc_t`（**tag/提交后必须 `idf.py fullclean` 重建**，
 > 否则增量构建不重跑 configure、版本串不更新）。
+>
+> **双向 OTA（v1.6 / §79）**：PC 心跳携带 `fw_latest`（本机 build bin 编译版本），
+> 设备端 SYS 子页 Firmware Update 卡实时显示最新版本；点 **Check update** 发
+> `OTA_REQ` —— PC 判无更新回 `OTA_NOUPDATE`，有更新则自动起升级会话（走同一套
+> OFFER/校验/归档链路）。OTA 下载期壁纸轮换与粒子动画自动暂停（§78 全静止变体，
+> 缓解写 flash 的 cache 冻结闪屏）。
 
 操作与逐项验收详见 [`docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`](docs/项目规划/WiFi_OTA_烧录验收与使用流程.md)，
 协议字段见 [`docs/项目规划/通信接口规范_ICD.md`](docs/项目规划/通信接口规范_ICD.md)。

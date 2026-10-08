@@ -1,6 +1,6 @@
 # 传声机工程 TodoList
 
-> 最后更新：2026-10-08（OTA 实弹验收归档后回填；基线：ICD V1.4+、固件 v1.4、pc_host v0.4.3，main @ 994f1ac）
+> 最后更新：2026-10-08（§77~§79 v1.6 批次：深色主题 / OTA 期全静止 / 双向 OTA + 实时编译版本；基线：固件 v1.5、pc_host v0.6.0）
 > 工程：ESP32-S31-Korvo-1 V1.1，ESP-IDF v6.1.0，IDF_TARGET=esp32s31，LCD 800×480，Flash 16MB / PSRAM 16MB。
 > 闭环 SOP：每个子任务完成 → `idf.py build` → `idf.py -p COM9 flash`（板子自动复位）→ `docs/_serial_capture.py` 抓日志验证 → 打勾。
 > 分层红线：APP(app/) / 中间层(middleware/) / UI(ui/)；中间层**禁止 include lvgl.h**；新源文件注册 `main/CMakeLists.txt`。
@@ -429,7 +429,10 @@ BT_PUSH: pipeline run
    水位擦除 + 旧段回读验哈希），待真机回归**（E-1 只发 40% → E-2 归零重推应 RESUME）；
    ② 屏幕偏移根治（等 IDF 支持 S31 `esp_lcd_rgb_panel_restart`，接入点 `bsp_display_get_panel()` 已定）；
    ③ ~~固件版本归档 + sqlite 升级历史~~ **已实现（§73，pc_host v0.5.0，含 bin 拖拽）**；
-   ④ 升级期屏闪残余（32KB 攒块后偶发轻撕，结构性不可归零）。
+   ④ 升级期屏闪残余（32KB 攒块后偶发轻撕，结构性不可归零；§78 OTA 期全静止变体已落地
+   —— 轮换暂停 + 粒子冻结，待真机观感复核）；
+   ⑤ ~~设备端发起 OTA~~ **已实现（§79 双向 OTA：心跳 fw_latest + OTA_REQ/OTA_NOUPDATE +
+   System 页 Firmware Update 卡）**，真机验收清单见 §79。
 6. **内存结构性风险（§G 头号）**：内部 RAM 刚性余量 ~4KB（largest 55,296 − WiFi DMA 51,200 挪不走）
    ⇒ 只能缩 `.bss` 加堆：任务栈静态化（`xTaskCreateStatic`，全仓为 0）、LVGL 渲染栈外置等
    "未执行清单"见 `13/14_内存*.md`。

@@ -92,11 +92,18 @@ class NetLink:
         self.on_json = on_json
         self.online = False
         self.info: dict = {}
+        # §79：PC 侧最新可用固件版本（build bin 解析），随心跳下发 fw_latest。
+        # 设备端 System 子页显示"云端最新版本" + 双向 OTA 的展示依据。
+        # Qt 线程写 / 心跳线程读，GIL 引用读写原子，无需加锁。
+        self.fw_latest: str | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sock: socket.socket | None = None
 
     # ---- 对外 ----
+    def set_firmware_version(self, ver: str | None) -> None:
+        """更新心跳里的 fw_latest（None=不携带该字段）。线程安全（GIL 原子赋值）。"""
+        self.fw_latest = ver or None
     def set_device_ip(self, ip: str | None) -> None:
         """系统页手动指定。ip=None 表示回到自动发现。线程安全（GIL 原子赋值）。"""
         self.device_ip_manual = ip is not None
@@ -170,6 +177,8 @@ class NetLink:
             if now - last_send >= HEARTBEAT_INTERVAL:
                 hb = {"type": "HEARTBEAT", "ver": 1, "ts": int(now * 1000),
                       "sw_ver": "0.2", "listen_ports": [50000, 50002, 50005]}
+                if self.fw_latest:          # §79：384B 包内放得下一个版本串
+                    hb["fw_latest"] = self.fw_latest
                 pkt = json.dumps(hb, separators=(",", ":")).encode()
                 try:
                     if self.device_ip is None:

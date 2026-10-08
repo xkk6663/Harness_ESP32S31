@@ -46,6 +46,7 @@
 
 #include "overlay_wp_particles.h"
 #include "middleware/media/wallpaper_service.h"
+#include "middleware/network/ota_service.h"   /* §78：OTA 期全静止（粒子冻结） */
 
 static const char *TAG = "WP_PART";
 
@@ -292,6 +293,13 @@ static void tick_cb(lv_timer_t *t)
                      wallpaper_service_get_current(), (unsigned)gen);
         }
         wallpaper_service_commit();     /* splash 不播动画，看完立即归还 */
+    }
+
+    /* §78 OTA 期全静止：升级进行中冻结粒子动画（gen 轮询必须保留在上面——
+     * OTA 期用户仍可能手动 SET 壁纸，gen 变了要切指针 + commit 归还，
+     * 否则 service 等 commit 5s 超时。冻结的只是粒子重绘这一步）。 */
+    if (ota_service_is_active()) {
+        return;
     }
 
     dirty_reset();

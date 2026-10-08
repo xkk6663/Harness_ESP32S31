@@ -45,6 +45,12 @@ class OtaPage(QWidget):
 
         root.addWidget(make_page_header("固件升级", "WiFi 局域网 OTA · A/B 双槽轮替 + 30s 自证回滚防砖"))
 
+        # §79：实时查询当前编译固件版本（bin mtime 变化才重解析，~1s 粒度）
+        self.lbl_build = QLabel("本地编译固件： —")
+        self.lbl_build.setObjectName("Secondary")
+        root.addWidget(self.lbl_build)
+        self._build_mtime: float | None = None
+
         top = QHBoxLayout()
         top.setSpacing(14)
 
@@ -170,6 +176,29 @@ class OtaPage(QWidget):
             self.lbl_sha.setText(fw.sha256[:16] + "…")
         self._update_cmp()
 
+    def _check_build_bin(self) -> None:
+        """§79：实时查询当前编译固件版本。
+
+        语义统一：fw_latest / lbl_build **只认 build/display_audio_photo.bin**
+        （与 main.py OTA_REQ 判据同源，设备端"Latest"显示的就是它）。
+        mtime 变了才重新解析（重编译一次只多读几 MB），~1s 粒度轮询。
+        用户在 path_edit 另选的 bin 只影响 OTA 页自身的对比/升级来源。"""
+        try:
+            m = _DEFAULT_FW.stat().st_mtime
+        except OSError:
+            return                      # build bin 不存在：保持现状
+        if self._build_mtime is not None and m == self._build_mtime:
+            return
+        self._build_mtime = m
+        try:
+            fw = FirmwareInfo.parse(str(_DEFAULT_FW))
+        except Exception as e:  # noqa: BLE001
+            self.lbl_build.setText(f"本地编译固件： 解析失败（{e}）")
+            return
+        self.lbl_build.setText(f"本地编译固件： {fw.version}  (build {fw.build_time})")
+        if self.ctx.link:
+            self.ctx.link.set_firmware_version(fw.version)
+
     def _update_cmp(self) -> None:
         fw = getattr(self, "_fw", None)
         link = self.ctx.link
@@ -241,13 +270,31 @@ class OtaPage(QWidget):
                     if ok is True:
                         self.bar.setValue(100)
                     self._teardown_session()
+                elif kind == "adopt":
+                    # §79 双向 OTA：设备端发起，main.py 心跳线程已起好会话，
+                    # 这里在 Qt 线程收养（F44：跨线程只投队列，落笔只在 Qt 线程）
+                    sess = ev.get("session")
+                    if sess is not None and self.session is None:
+                        self.session = sess
+                        self._set_running(True)
+                        self.bar.setValue(0)
+                        self.bar.setFormat("0%")
+                        self.lbl_state.setText(_STATE_TEXT["wait_online"])
+                    line = ev.get("line")
+                    if line:
+                        self.log_view.appendPlainText(str(line))
+                    if ev.get("goto"):
+                        goto = getattr(self.ctx, "request_page", None)
+                        if goto:
+                            goto(3)              # 切到本页（index 3）看进度
         except queue.Empty:
             pass
-        # 设备版本/比对结论低频刷新
+        # 设备版本/比对结论低频刷新 + build bin 实时版本监测
         self._cmp_tick = getattr(self, "_cmp_tick", 0) + 1
         if self._cmp_tick >= 7:                 # ~1s
             self._cmp_tick = 0
             self._update_cmp()
+            self._check_build_bin()
 
     def _teardown_session(self) -> None:
         self.session = None

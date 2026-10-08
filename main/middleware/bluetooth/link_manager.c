@@ -29,6 +29,7 @@ static bool s_online;
 static int64_t s_last_heartbeat_us;
 static link_evt_cb_t s_observers[LINK_MAX_OBSERVERS];
 static link_json_cb_t s_json_cbs[LINK_MAX_JSON_OBSERVERS];   /* 多槽 JSON 分发，见 .h 说明 */
+static char s_fw_latest[32];                                 /* §79：PC 心跳 fw_latest（s_mux 保护） */
 
 static void link_task(void *arg);
 static void notify_observers(link_evt_t evt, const char *ip);
@@ -137,6 +138,57 @@ static void notify_observers(link_evt_t evt, const char *ip)
     }
 }
 
+/* §79 双向 OTA：从 PC 心跳包提取 "fw_latest":"x.y.z"（PC 侧最新可用固件版本，
+ * 设备端 System 子页显示"云端最新版本"用）。不引 cJSON：384B 包 + strstr 风格
+ * 与本文件既有解析一致，手工扫描零分配；字段缺失/格式怪异一律返回空串。 */
+static void heartbeat_fw_latest(const char *pkt, char *out, size_t len)
+{
+    out[0] = '\0';
+    if (!pkt || len == 0) {
+        return;
+    }
+    const char *k = strstr(pkt, "\"fw_latest\"");
+    if (!k) {
+        return;
+    }
+    const char *p = strchr(k, ':');
+    if (!p) {
+        return;
+    }
+    ++p;
+    while (*p == ' ') {
+        ++p;
+    }
+    if (*p != '"') {
+        return;
+    }
+    ++p;
+    const char *e = strchr(p, '"');
+    if (!e) {
+        return;
+    }
+    size_t n = (size_t)(e - p);
+    if (n >= len) {
+        n = len - 1;
+    }
+    memcpy(out, p, n);
+    out[n] = '\0';
+}
+
+void link_manager_get_fw_latest(char *out, size_t len)
+{
+    if (!out || len == 0) {
+        return;
+    }
+    if (!s_mux) {
+        out[0] = '\0';      /* init 之前被调（防御）：直接空 */
+        return;
+    }
+    xSemaphoreTake(s_mux, portMAX_DELAY);
+    snprintf(out, len, "%s", s_fw_latest);
+    xSemaphoreGive(s_mux);
+}
+
 static void link_task(void *arg)
 {
     (void)arg;
@@ -171,11 +223,16 @@ static void link_task(void *arg)
                     char ip[INET_ADDRSTRLEN];
                     inet_ntoa_r(from.sin_addr, ip, sizeof(ip));
                     bool was_online;
+                    char latest[32];
+                    heartbeat_fw_latest(packet, latest, sizeof(latest));
                     xSemaphoreTake(s_mux, portMAX_DELAY);
                     was_online = s_online;
                     s_peer = from;
                     s_online = true;
                     s_last_heartbeat_us = esp_timer_get_time();
+                    if (latest[0]) {
+                        snprintf(s_fw_latest, sizeof(s_fw_latest), "%s", latest);
+                    }
                     xSemaphoreGive(s_mux);
                     char ack[192];
                     /* ★ fw_ver 真实化：PC 的版本比对与 OTA"升级成功/已回滚"判定

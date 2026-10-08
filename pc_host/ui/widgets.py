@@ -72,5 +72,5 @@ def update_meter(bar: QProgressBar, value: int, extra: str = "") -> None:
 def hline() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet("color:#273041; background:#273041; max-height:1px; border:none;")
+    line.setStyleSheet("color:#2A2A2A; background:#2A2A2A; max-height:1px; border:none;")
     return line

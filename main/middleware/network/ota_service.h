@@ -102,6 +102,26 @@ void ota_service_get_running_version(char *out, size_t len);
  *         未收到过 OFFER / 已结束则填 "-"。UI 浮层显示 "to" 用。 */
 void ota_service_get_offer_version(char *out, size_t len);
 
+/* ---- §79 双向 OTA：设备端发起 ---- */
+
+/** @brief 查新状态（ota_service_get_check_state 返回值语义）。
+ *  0=空闲 1=已发 OTA_REQ 等应答 2=无更新 3=有更新（OFFER 已到）
+ *  4=超时/发送失败。 */
+#define OTA_CHECK_IDLE      0u
+#define OTA_CHECK_PENDING   1u
+#define OTA_CHECK_NOUPDATE  2u
+#define OTA_CHECK_FOUND     3u
+#define OTA_CHECK_TIMEOUT   4u
+
+/** @brief 设备端主动请求升级（System 子页按钮）。
+ *  发 {"type":"OTA_REQ"} 给 PC；PC 判定：有更新 → 自动起升级会话（走既有
+ *  OTA_OFFER 链路，本服务照常收 OFFER 自动开拉），无更新 → 回 OTA_NOUPDATE。
+ *  可从 LVGL 线程直接调（内部只是一次非阻塞 sendto）。 */
+void ota_service_request_update(void);
+
+/** @brief 取当前查新状态（宏值见上；pending 超 10s 自动判超时）。 */
+uint8_t ota_service_get_check_state(void);
+
 #ifdef __cplusplus
 }
 #endif

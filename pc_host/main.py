@@ -26,6 +26,7 @@ from .record.server import RecordingServer
 from .audio.player import Player
 from .audio.wav_player import WavPlayer
 from .asr.backend import AsrBackend
+from .ota import FirmwareInfo, OtaSession, compare_semver
 
 
 class Ctx:
@@ -129,14 +130,49 @@ def build_services(args) -> Ctx:
     ctx.wav = WavPlayer(send_ptt)
 
     # ---- link.on_json 分发器（v0.3）：设备回包全部到 PC:50003，按 type 分流 ----
-    # NOW_CMD → 副屏媒体控制；OTA_* → 当前 OTA 会话（若无会话则丢弃并记日志）。
+    # NOW_CMD → 副屏媒体控制；OTA_REQ → 设备端发起升级（§79）；OTA_* → 当前
+    # OTA 会话（若无会话则丢弃并记日志）。
     # ★ 设备端 link_manager_send_json() 强制回包到 PC:50003（link_manager.c:102-112），
     #   所以 OFFER 也必须走这条 50003 socket（link.send）——同端口同源，语义自洽。
+    def _handle_device_ota_req(_msg: dict) -> None:
+        """§79 双向 OTA：设备端 System 子页点 Check update → 发 OTA_REQ。
+        PC 判定（权威判据 = build/display_audio_photo.bin 的编译版本）：
+          无本地 bin / 设备版本 >= 本地版本 → 回 OTA_NOUPDATE；
+          有更新 → 自动起 OtaSession（走既有 OFFER→ACCEPT→PROGRESS 链路），
+                   经 ota_q 发 adopt 事件让 OTA 页在 Qt 线程收养（F44 纪律：
+                   本函数跑在心跳线程，只允许投队列 + 线程安全 send）。"""
+        if ctx.ota_session is not None:
+            print("[ota] OTA_REQ ignored: session already active", flush=True)
+            return
+        dev_ver = str((ctx.link.info or {}).get("fw_ver", "") or "")
+        bin_path = Path(__file__).resolve().parents[1] / "build" / "display_audio_photo.bin"
+        fw = FirmwareInfo.parse(str(bin_path)) if bin_path.exists() else None
+        if fw is None:
+            print("[ota] OTA_REQ: no local build bin, reply NOUPDATE", flush=True)
+            ctx.link.send({"type": "OTA_NOUPDATE", "ver": ""})
+            return
+        if dev_ver and compare_semver(dev_ver, fw.version) >= 0:
+            print(f"[ota] OTA_REQ: device {dev_ver} >= local {fw.version}, reply NOUPDATE", flush=True)
+            ctx.link.send({"type": "OTA_NOUPDATE", "ver": fw.version})
+            return
+        print(f"[ota] OTA_REQ: device {dev_ver or '?'} -> {fw.version}, auto-start session", flush=True)
+        session = OtaSession(ctx, fw, limit_percent=0, corrupt=False, force=False)
+        ctx.ota_session = session
+        session.start()
+        try:
+            ctx.ota_q.put_nowait({"ev": "adopt", "session": session,
+                                  "line": f"设备端发起升级: {dev_ver or '?'} → {fw.version}",
+                                  "goto": True})
+        except queue.Full:
+            pass
+
     def dispatch_link_json(msg: dict) -> None:
         t = str(msg.get("type", ""))
         if t == "NOW_CMD":
             if ctx.on_now_cmd is not None:
                 ctx.on_now_cmd(msg)
+        elif t == "OTA_REQ":
+            _handle_device_ota_req(msg)
         elif t.startswith("OTA_"):
             if ctx.ota_session is not None:
                 ctx.ota_session.feed(msg)
@@ -220,6 +256,20 @@ def build_services(args) -> Ctx:
     # ---- M4（v0.5）：固件归档 + sqlite 升级历史 ----
     from .ota.store import FirmwareStore
     ctx.ota_store = FirmwareStore(Path(__file__).resolve().parent / "firmware_store")
+
+    # ---- §79：启动即解析本地编译固件版本 → 心跳 fw_latest ----
+    # 设备端 System 子页的"云端最新版本"与双向 OTA 判据都源自这个版本。
+    # 之后 build bin 重编译（mtime 变化）由 OTA 页的实时监测器刷新此值。
+    try:
+        bin_path = Path(__file__).resolve().parents[1] / "build" / "display_audio_photo.bin"
+        fw0 = FirmwareInfo.parse(str(bin_path)) if bin_path.exists() else None
+        ctx.link.set_firmware_version(fw0.version if fw0 else None)
+        if fw0:
+            print(f"[ota] local firmware: {fw0.version} (build {fw0.build_time})", flush=True)
+        else:
+            print("[ota] local build bin not found, fw_latest omitted", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ota] local firmware parse failed: {e}", flush=True)
     return ctx
 
 

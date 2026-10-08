@@ -46,6 +46,10 @@ bool link_manager_get_peer(struct sockaddr_in *peer);
 void link_manager_add_evt_cb(link_evt_cb_t cb);
 esp_err_t link_manager_send_json(const char *json);
 
+/** @brief 取 PC 心跳里最新的 fw_latest（PC 侧可用固件版本，§79 双向 OTA）。
+ *         未收到过该字段时返回空串。任意线程可调（s_mux 保护）。 */
+void link_manager_get_fw_latest(char *out, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

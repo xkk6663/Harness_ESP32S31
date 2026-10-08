@@ -167,6 +167,13 @@ static ota_resume_t s_resume;
 /* 最近一次 OFFER 的 ver（UI 浮层显示 "from → to" 的 to；仅展示用） */
 static char s_offer_ver[32];
 
+/* ---- §79 双向 OTA：设备端发起升级的"查新"状态 ----
+ * 状态值宏（OTA_CHECK_*）在 ota_service.h 定义。写侧：link_task（ota_on_json）
+ * + UI 线程（request_update）；读侧 LVGL 定时器。uint8_t 单字节读写原子，够用。 */
+#define OTA_CHECK_TIMEOUT_US (10LL * 1000000LL)   /* 10s 无应答即超时 */
+static volatile uint8_t s_check_state;
+static int64_t s_check_sent_us;
+
 static void ota_task(void *arg);
 static void notify(ota_evt_t evt, uint8_t percent, const char *detail);
 static void handle_offer(const char *json);
@@ -329,6 +336,7 @@ static void ota_on_json(const char *json)
         return;
     }
     if (strstr(json, "OTA_OFFER")) {
+        s_check_state = OTA_CHECK_FOUND;    /* §79：有更新（无论谁发起） */
         /* ★ 必须拷贝：link_task 的 packet 是栈上复用缓冲，回调返回即失效，
            而下载任务可能晚几毫秒才处理。拷贝在堆（PSRAM，OFFER ~300B）。 */
         size_t len = strlen(json);
@@ -355,6 +363,10 @@ static void ota_on_json(const char *json)
         ESP_LOGW(TAG, "[OTA_DIAG] OTA_ABORT received -> s_abort=1 (effective at next chunk)");
         ota_cmd_t cmd = { .id = OTA_CMD_ABORT, .json = NULL };
         xQueueSend(s_cmd_q, &cmd, 0);
+    } else if (strstr(json, "OTA_NOUPDATE")) {
+        /* §79 双向 OTA：PC 判定无更新（设备版本 >= 本地最新），查新收尾 */
+        s_check_state = OTA_CHECK_NOUPDATE;
+        ESP_LOGI(TAG, "[OTA_DIAG] OTA_NOUPDATE received (already up to date)");
     }
 }
 
@@ -445,6 +457,40 @@ void ota_service_get_offer_version(char *out, size_t len)
     }
     /* 单写者（ota_task）写、任意读；不追求强一致，UI 只是展示。 */
     snprintf(out, len, "%s", s_offer_ver[0] ? s_offer_ver : "-");
+}
+
+/* ---- §79 双向 OTA：设备端发起 ---- */
+
+void ota_service_request_update(void)
+{
+    if (s_active) {
+        ESP_LOGW(TAG, "[OTA_DIAG] request_update ignored: update already running");
+        return;
+    }
+    if (!s_cmd_q) {
+        return;     /* init 未跑（防御） */
+    }
+    char fw[32];
+    ota_service_get_running_version(fw, sizeof(fw));
+    char req[96];
+    snprintf(req, sizeof(req), "{\"type\":\"OTA_REQ\",\"fw\":\"%s\"}", fw);
+    if (link_manager_send_json(req) == ESP_OK) {
+        s_check_state = OTA_CHECK_PENDING;
+        s_check_sent_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "[OTA_DIAG] device-initiated update request sent (fw=%s)", fw);
+    } else {
+        s_check_state = OTA_CHECK_TIMEOUT;   /* link 离线，立即给 UI 失败态 */
+        ESP_LOGW(TAG, "[OTA_DIAG] OTA_REQ send failed (link offline?)");
+    }
+}
+
+uint8_t ota_service_get_check_state(void)
+{
+    if (s_check_state == OTA_CHECK_PENDING &&
+        esp_timer_get_time() - s_check_sent_us > OTA_CHECK_TIMEOUT_US) {
+        s_check_state = OTA_CHECK_TIMEOUT;   /* 10s 无应答 → 超时 */
+    }
+    return s_check_state;
 }
 
 /* =====================================================================
