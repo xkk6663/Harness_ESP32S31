@@ -95,6 +95,65 @@
 
 ---
 
+## 🔄 WiFi OTA 升级（A/B 双槽，已实弹验收）
+
+**零新增端口**：控制面复用 UDP 50003（link_manager），数据面复用 TCP 50005（pc_host 内置 HTTP），
+设备作 **HTTP 客户端主动拉取**（无需 PC 能直连设备）。
+
+```
+PC: pc_host「固件升级」页                     设备: ota_service（middleware/network/）
+ ① 选 bin → 解析 esp_app_desc_t                ⑥ 收 OFFER → 6 条校验链
+    （版本/大小/SHA256）                          （离线/录音/会话/重复/待自证/槽容量）
+ ② SemVer 比对 → OTA_OFFER(×3)  ──UDP 50003──▶ ⑦ 全过 → OTA_ACCEPT ◀──┐
+ ③ 进度条 ◀──OTA_PROGRESS(×N)────────────────── ⑧ HTTP GET :50005/firmware.bin
+ ④                                              边收边写**对侧槽**（32KB 攒块，
+ ⑤ OTA_RESULT{ok} ◀───────────────────────────     每 256KB 段哈希落 nvs）
+    esp_ota_end 段CRC校验 → set_boot_partition → OTA_RESULT{ok:1} → 1s 后重启
+    新固件自证（WiFi 已连 且 link 在线，1s 周期条件驱动，~10s 转正）
+    └─ 转正失败/窗口内断电 ⇒ bootloader 自动回滚旧槽（防砖）
+```
+
+- **PC 端**（[`pc_host/ui/pages/ota_page.py`](pc_host/ui/pages/ota_page.py)）：固件解析 / 版本比对 /
+  进度与结果展示 / `--force`·截断·坏固件注入等验收开关；下载侧 600s 绝对超时 + 120s 活动超时。
+- **设备端**（[`main/middleware/network/ota_service.c`](main/middleware/network/ota_service.c)）：
+  A/B 双槽锁死 ota_0⇄ota_1（**永不触碰 uext 槽**）；flash IO 任务栈**强制内部 RAM**
+  （IDF 冻结 cache 期间断言 SP，PSRAM 栈必 panic）；断点段哈希落 nvs（设备端写槽续传
+  受 esp_ota API 限制已降级为全新下载）。
+- **LVGL 浮层**（`ui/overlays/overlay_ota.c`）：升级期间全屏遮罩进度卡 + "请勿断电"警示，
+  触摸不穿透；线程纪律 = 事件回调只赋值，刷新全在 `lv_timer`。
+- **防砖四防线**：① `esp_ota_end` 镜像头 + 段 CRC；② 256KB 段摘要链 + 段数一致性；
+  ③ 自证 + bootloader 自动回滚（已计划外实测：升级后断电 → 正确回退旧槽）；
+  ④ 最坏情况 USB 全量重刷。
+
+### 16 MB Flash 分布（partitions.csv V1.3，无 factory）
+
+```
+0x000000 ┌────────────────────────┐
+         │ bootloader（隐含 ~36K） │
+0x009000 ├────────────────────────┤
+         │ nvs            24 KB   │  ← WiFi 凭据 / OTA 断点段哈希 / 壁纸索引
+0x00F000 │ phy_init        4 KB   │
+0x011000 │ otadata         8 KB   │  ← A/B 槽选择 + PENDING_VERIFY 回滚标记
+0x020000 ├────────────────────────┤
+         │ ota_0           5 MB   │  ← 主固件 A 槽
+0x520000 │ ota_1           5 MB   │  ← 主固件 B 槽（OTA 写入对侧）
+0xA20000 ├────────────────────────┤
+         │ uext (ota_2)   2.875 MB│  ← USB 副屏固件专属，OTA 永不触碰（定点烧写）
+0xD00000 ├────────────────────────┤
+         │ storage (littlefs) 3 MB│  ← 壁纸池 / 素材（OTA 完全不碰）
+0x1000000└────────────────────────┘
+```
+
+> OTA 只写 ota_0/ota_1 的**对侧**；`nvs`/`storage`/`uext` 一概不碰。
+> 固件尺寸硬上限 = 5,242,880 B（超出设备回 `OTA_REJECT reason=space`）。
+> 版本号 = `git describe` 烘焙进 `esp_app_desc_t`（**tag/提交后必须 `idf.py fullclean` 重建**，
+> 否则增量构建不重跑 configure、版本串不更新）。
+
+操作与逐项验收详见 [`docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`](docs/项目规划/WiFi_OTA_烧录验收与使用流程.md)，
+协议字段见 [`docs/项目规划/通信接口规范_ICD.md`](docs/项目规划/通信接口规范_ICD.md)。
+
+---
+
 ## 🤖 为什么这仓库不只是固件
 
 传统嵌入式开发：人写代码 → 人编译 → 人插线烧录 → 人开串口看日志 → 人判断对错 → 人改。
@@ -296,7 +355,7 @@ idf.py -p COM9 storage-flash     # 首次烧录 / littlefs 素材变更后，刷
 - [x] 阶段 A/B：SD 卡存储 + 音频/视频播放（AUDIO HUB / VIDEO tab，MJPEG 硬解）
 - [x] 蓝牙双模式：A2DP Source 本地推流（AUDIO 页切换）+ A2DP Sink 蓝牙音箱（SINK tab）
 - [x] PC NOW 音乐副屏（封面旋转 + 全量 LRC 歌词 1.25s 补偿 + 媒体键），pc_host / pc_now_agent 双端
-- [x] M6 OTA：A/B 双槽 WiFi 升级（ota_service + LVGL 覆盖层 + PC 端烧录 agent）
+- [x] M6 OTA：A/B 双槽 WiFi 升级（ota_service + LVGL 覆盖层 + PC 端烧录 agent）——**已实弹验收**（v1.0→v1.4 五连升 + 断电回滚实测，2026-10-08）
 - [x] USB 扩展屏（uext 双固件架构：SET 键双向切换 + 预编译烧录包 `firmware/uext_screen/`）
 - [ ] M3 TCP 录音远端化 + M4 多任务调度深化
 - [ ] 小智 AI 对话接入（方案已定稿：[`docs/项目规划/小智AI对话接入实施方案.md`](docs/项目规划/小智AI对话接入实施方案.md)，未开工）

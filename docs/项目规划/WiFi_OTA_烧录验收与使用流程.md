@@ -1,8 +1,16 @@
 # WiFi 局域网 OTA — 逐功能逐步骤验收手册
 
-> 版本 **V3**（2026-10-07）· 对应改动记录 **§61 + §61b + §63**、ICD **V1.4**
+> 版本 **V3.1**（2026-10-08）· 对应改动记录 **§61 ~ §69**、ICD **V1.4+**
 > 方案 `docs/项目规划/WiFi局域网OTA升级实施方案.md`
 > 分支：**main**
+>
+> **V3.1 变更（2026-10-07/08 实弹验收后同步，§65~§69）**：
+> ① **实弹验收通过**（见 §15 实测记录）；
+> ② OTA 任务栈内化为内部 RAM（§65，OFFER 即 panic 根因）；
+> ③ **设备端写槽续传证伪降级为全新下载**（§67，esp_ota API 三大约束）——E 组判据按新语义执行；
+> ④ 写槽 32KB 攒块缓解升级期屏闪（§67）；
+> ⑤ PC 端下载超时 180s → 600s 上限 + 120s 活动超时（§68）；
+> ⑥ 自证改 **1s 周期条件驱动**，浸泡 ~10s 即转正（§69），下文凡"30s 窗口"按此理解。
 >
 > **V3 变更：PC 端主路线切换为 pc_host v0.3「固件升级」页（GUI）**。
 > 原因（源码实证）：设备回包固定发 PC:50003（`link_manager.c:102` 端口覆写），而 C# agent
@@ -30,8 +38,8 @@ PC: pc_host「固件升级」页（桌面 ESP32_Voice_Host.bat → 左侧第 4 �
         ├─ OTA_PROGRESS ×N → GUI 进度条 → esp_ota_end → 段数校验 → set_boot_partition
         ├─ OTA_RESULT{ok:1} → 1s → esp_restart
         │
-        └─ 30s 自证（WiFi 已连 + link 在线）→ mark VALID
-           （不自证 ⇒ bootloader 下次启动自动回滚旧槽）
+        └─ 自证（WiFi 已连 + link 在线，1s 周期条件驱动，浸泡 ~10s 即 mark VALID）
+           （不自证 / 窗口内断电 ⇒ bootloader 下次启动自动回滚旧槽）
            PC: 60s 内心跳 fw_ver == 期望版本 → 「★ 版本核对通过」
 ```
 
@@ -76,9 +84,10 @@ pc_host 自身启动即占 50005（OTA 数据面常驻），同一 PC 只跑一�
 
 录音中 / 通话中 / 推流中 / 已有升级在进行 → 设备回 `OTA_REJECT reason=busy`。
 
-### 1.5 设备不在 30s 自证窗口内
+### 1.5 设备不在自证窗口内
 
-设备刚被 OTA 上来、还没跑满 30s → 回 `OTA_REJECT reason=pending`。等 30s 重发。
+设备刚被 OTA 上来、还没转正（PENDING_VERIFY，1s 周期条件驱动浸泡 ~10s 即转正，
+30s 兜底判死）→ 回 `OTA_REJECT reason=pending`。等 ~15s 重发即可。
 
 ---
 
@@ -166,7 +175,7 @@ GUI 模式无退出码，判定看**状态行 + 日志窗最后一行**（与 C#
 | `未收到 OTA_ACCEPT（3 次 OFFER 已用尽）` | 4 |
 | `设备重启后 60s 内未恢复心跳 —— 可能已自动回滚` | 5 |
 | `设备上报升级失败: <detail>` | 6 |
-| `下载/校验阶段 180s 超时` | 7 |
+| `下载停滞判定失败（120s 无进度）/ 600s 超时` | 7 |
 | `版本未提升（… >= …），默认不发 OFFER` | 8 |
 | `版本核对不一致 … 可能已自动回滚 ❌` | 9 |
 
@@ -292,6 +301,10 @@ OTA: [OTA_DIAG] progress 100% (4980000 B, 412 KB/s)
 > 2. 段 flush 日志**每 256KB 一条**，`next_offset` 单调递增到 `size`；
 > 3. `progress` 到 100%。
 
+> ★ **§67 攒块**：写槽走 32KB PSRAM staging（读 4KB / 满 32KB 才 `esp_ota_write`），
+> `esp_ota_write` 冻结 ext-mem cache 的窗口从 1270 次/包降到 ~160 次/包 ⇒
+> 升级期屏闪从"持续闪"降为"偶发轻撕"（结构性不可归零，体验优先级：宁可轻撕不黑屏）。
+
 > ★ **排错提示**：若出现 `[OTA_ERR] http read error (-28672) ...`（`-ESP_ERR_HTTP_EAGAIN`），
 > 那是**旧版本代码**的表现 —— 本版已单独分支处理该重试信号（不会误杀）。
 > 若仍见错误，查 PC 是否被 Clash TUN 劫持（§1.2）。
@@ -314,7 +327,7 @@ OTA: [OTA_RESUME] cleared                                          ← 成功 �
 OTA: [OTA_DIAG] OTA OK, rebooting in 1000 ms
 ```
 
-**重启后（约 30s）**：
+**重启后（自证窗口 ~10s）**：
 
 ```
 OTA: [OTA_DIAG] init done: running=ota_1 next_update=ota_0 pending_verify=1
@@ -333,7 +346,7 @@ OTA: [OTA_DIAG] self-test OK: app marked VALID (rollback cancelled), run=ota_1
 > 1. `esp_ota_end OK`；
 > 2. `digest chain: seg_count=N (expect N)` **两数相等**；
 > 3. `set_boot_partition(ota_X) OK` 且 X 已换到对侧；
-> 4. 重启后 30s 内 `self-test OK: app marked VALID`，PC 显示 `升级成功 ✅`（退出码 0）。
+> 4. 重启后自证窗口（~10s，30s 兜底）内 `self-test OK: app marked VALID`，PC 显示 `升级成功 ✅`（退出码 0）。
 
 ---
 
@@ -400,10 +413,11 @@ OTA: [OTA_DIAG] init done: running=ota_1 ... pending_verify=0     ← 转正后�
 
 ### C-2. 自证失败 → 自动回滚（★ 防砖核心验证）
 
-**构造坏固件**（在 `main.c` 里把自证定时器注释掉）：
+**构造坏固件**（在 `main.c` 里让自证 tick 直接返回）：
 
 ```c
-// 临时改：删掉 esp_timer_start_once(ota_st, 30ULL * 1000 * 1000);
+// 临时改：main.c 的 ota_selftest_tick_cb() 开头直接 return;
+// （现状 = 1s 周期 esp_timer，条件驱动 mark_valid_if_pending；让 tick 永不转正即可）
 ```
 
 编译后 USB 烧进 **ota_0**（当前槽），然后 GUI 勾「忽略版本比对」推到 ota_1。
@@ -412,7 +426,7 @@ OTA: [OTA_DIAG] init done: running=ota_1 ... pending_verify=0     ← 转正后�
 
 ```
 [第一次重启] running=ota_1  pending_verify=1
-             （30s 内没有任何 mark VALID）
+             （自证窗口内没有任何 mark VALID）
              ↓ 手动按复位
 [第二次重启] bootloader 自动回滚 → running=ota_0
              fw_ver 变回旧值
@@ -432,7 +446,7 @@ boot: ... Rollback: current app is not verified, switching to ota_0
 
 ### C-3. 自证条件严格性（link 在线）
 
-**操作**：升级成功后，**断开 PC 端**（设备失去 link 对端），然后在 30s 窗口内观察。
+**操作**：升级成功后，**断开 PC 端**（设备失去 link 对端），然后在自证窗口内观察。
 
 **设备预期**：
 
@@ -453,7 +467,7 @@ OTA: [OTA_DIAG] PENDING_VERIFY but wifi=1 link=0 -> NOT marking valid
 | **D-1** | 设备录音中（REC tab 按一次）发 OFFER | `busy` | `check#2 record active` |
 | **D-2** | 设备通话/推流中发 OFFER | `busy` | `check#3 session mode=N` |
 | **D-3** | 升级进行中再发一次 OFFER | `busy` | `check#4 already active` |
-| **D-4** | OTA 成功后**不等 30s** 立即再推 | `pending` | `check#5 running slot ota_1 is PENDING_VERIFY` |
+| **D-4** | OTA 成功后**转正前**立即再推（~10s 窗口内） | `pending` | `check#5 running slot ota_1 is PENDING_VERIFY` |
 | **D-5** | 推 6MB 的 bin（人脸分支残留物） | `space` | `check#6 image 6837312 > slot 5242880` |
 | **D-6** | 关掉 PC 端 link 或拔设备网 | `network` | `check#1 link_manager offline` |
 
@@ -475,6 +489,14 @@ OTA: [OTA_DIAG] REJECT reason=busy
 ---
 
 ## 8. 【E/F/G】断点续传、坏固件、主动中止（M2 三项新能力）
+
+> ★★ **E 组语义已按 §67 实弹结论降级（2026-10-07）**：
+> `esp_ota_begin` 在 begin 时**整槽擦除**（实测 5MB≈3.5s）、`esp_ota_write` 无偏移参数（顺序写）、
+> 首写必过 0xE9 魔数检查（`esp_ota_ops.c:371-377`）⇒ **设备端写槽续传在 esp_ota_* API 下不可行**。
+> 现行为：检测到旧断点 → 清空 + W 日志 `降级全新下载`，**PC 侧 Range/206 保留但设备从头重下**；
+> 断点记录（段哈希）仍落 nvs，为将来 esp_partition 裸写自管擦除的真续传留接口。
+> 下文 E-1~E-4 的 RESUME 判据**保留为设计文档**（真续传实现时启用），当前验收以"降级全新下载"为准；
+> 下载总时长由 PC 端 600s 绝对超时 + 120s 活动超时兜底（§68，29KB/s 慢链路不再被误杀）。
 
 ### E-1. 制造"下不完"（GUI：只发前 40%）
 
@@ -746,7 +768,7 @@ grep "boot-diag"  ota.log     # 开机内存账单
 | PC 卡在"等待设备心跳" | 不同网段 / 防火墙 / 设备未联网 | 查设备 `LINK: ONLINE`；放行 UDP 50003 |
 | PC 立即报版本未提升（rc=8） | 设备 `fw_ver >=` 固件版本 | 加 `--force`，或给固件提版本号 |
 | `OTA_REJECT reason=busy` | 设备在录音/通话/推流 | 停掉对应功能重发 |
-| `OTA_REJECT reason=pending` | 设备上电未满 30s（自证窗口内） | 等 30s 重发 |
+| `OTA_REJECT reason=pending` | 设备在自证窗口内（转正前 ~10s） | 等转正后重发 |
 | `OTA_REJECT reason=space` | bin 超 5MB 槽 | 确认 build 是 main 分支的（`idf.py fullclean` 重建） |
 | `OTA_REJECT reason=network` | link 未在线 | 等设备联网 |
 | `http status=502` / 设备解析失败 | **PC 上 Clash TUN 劫持 LAN 入站** | 私有网段 `DIRECT` 或关 TUN |
@@ -774,12 +796,13 @@ grep "boot-diag"  ota.log     # 开机内存账单
 不会。**四道防线**：
 ① `esp_ota_end` 做镜像头 + 段 CRC 校验；
 ② 段摘要链 + 段数一致性硬校验；
-③ 30s 自证（WiFi + link）+ bootloader 自动回滚；
+③ 自证（WiFi + link，1s 周期条件驱动 ~10s 转正，30s 兜底判死）+ bootloader 自动回滚；
 ④ 最坏情况 USB 全量重刷（单 app 槽布局的兜底）。
+★ 已实弹验证：升级成功后 ~11s 硬件断电（转正前）→ 正确回滚旧槽（§68 复盘，§69 修复后窗口缩短）。
 
 **Q：断电了怎么办？**
-断点（nvs）已落盘到**最近 256KB 段边界**。重新上电后同版本 OFFER
-会自动 `RESUME from <段边界>`，最多重下 256KB。**这是 M2 的核心价值**。
+断点（nvs）已落盘到**最近 256KB 段边界**。⚠ 当前版本**设备端续传已降级为全新下载**（§67，
+esp_ota API 证伪）：重推后从 0 开始下，PC 端 600s/120s 超时兜底慢链路。
 
 **Q：`storage` 分区会被 OTA 覆盖吗？**
 不会。OTA 只写 app 槽（ota_0/ota_1 对侧），`storage`/`nvs` 完全不碰。
@@ -803,9 +826,40 @@ grep "boot-diag"  ota.log     # 开机内存账单
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **M1** | 闭环（OFFER/ACCEPT、HTTP 拉取、SHA256、切槽、自证） | ✅ 已完成（§61） |
-| **M2** | `OTA_ABORT` 真中断 + HTTP Range 续传 + 256KB 分段哈希 + 断点保留 | ✅ 已完成（§61b） |
+| **M2** | `OTA_ABORT` 真中断 + HTTP Range 续传 + 256KB 分段哈希 + 断点保留 | ✅ 已完成（§61b；设备端写槽续传 §67 降级，见 E 组头注） |
 | **M3** | LVGL 升级浮层 + 自证增强（WiFi **且** link） + PC 破坏性开关 | ✅ 已完成（§61b） |
-| **M4** | `firmware/` 版本归档 + PySide6 OTA Tab + 多设备批量 | ⏳ 未开工 |
+| **实弹** | v1.0→v1.4 五连升全链路 + 计划外断电回滚实测 | ✅ **通过（2026-10-08，§15）** |
+| **M4** | `firmware/` 版本归档 + 多设备批量 | ⏳ 未开工 |
+
+---
+
+## 15. 实弹验收记录（2026-10-07/08，版本线 v1.0 → v1.4）
+
+**结论：全链路通过。** 五次真机 OTA（v1.0→v1.1→v1.2→v1.3→v1.4）逐版验证，
+期间计划外踩出的四个真问题全部修复并回归：
+
+| # | 实弹暴露的问题 | 根因（源码级） | 修复 | 回归 |
+|---|---|---|---|---|
+| 1 | OFFER 即 panic（`esp_cache_utils.c:96`） | ota_task 栈 WithCaps 外置 PSRAM；IDF 冻结 ext cache 前断言任务 SP 在内部 DRAM，**无 API 豁免** | 任务栈内化（`xTaskCreatePinnedToCore` 8192，§65） | ✅ |
+| 2 | 断点续传 `invalid magic byte (0xE9)` | esp_ota_begin 整槽擦 + write 顺序写 + 首写魔数检查 ⇒ **写槽续传 API 级不可行** | 降级全新下载（§67），真续传留 esp_partition 裸写后续 | ✅ |
+| 3 | 设备明明成功却"升级失败" | PC 端 180s 绝对超时，5.2MB@29KB/s 慢链路被误杀 | 600s 上限 + 120s 活动超时（§68） | ✅ |
+| 4 | 升级成功后断电 → 回滚旧版本 | 自证窗口（34s 判定）内断电 = 判死 | 1s 周期条件驱动，浸泡 ~10s 即转正（§69） | ✅ |
+
+**覆盖验收组**（对照 §4 总表）：
+
+- **A 正常闭环**：✅ v1.0→v1.4 五连升，`esp_ota_end OK` / 段数一致 / 切槽 / `marked VALID` / PC `★ 版本核对通过`；
+- **B LVGL 浮层**：✅ 遮罩卡 + 进度同步 + 触摸拦截；
+- **C 自证回滚**：✅ **计划外实测**——v1.2 成功后 ~11s 硬件断电，POWERON 复位正确回退 v1.1（防砖机制真起效）；
+- **D 校验链**：✅ 版本未提升拒发（PC SemVer）、`pending`/`space` 路径命中；
+- **E 续传**：⚠ 按降级语义验收（全新下载 + PC 超时兜底），真续传挂账；
+- **F 坏固件**：✅ `esp_ota_end failed`，停留旧槽不变砖；
+- **G 中止**：✅ `OTA_ABORT` 块边界真停；
+- **H 内存**：✅ `OTA_MEM` before/after 三元组差值 < 2KB，零泄漏；
+- **附带**：升级期屏闪缓解（32KB 攒块，§67）；屏偏移与 WiFi NVS 写审计（§69补）。
+
+**遗留挂账**：真续传（esp_partition 裸写 + 自管擦除）、屏幕偏移根治（等 IDF S31 restart 支持）。
+**版本机制备忘**：`PROJECT_VER = git describe`（configure 期取值）——tag 后必须 fullclean，
+bin 版本串自检：`python -c "d=open(r'build\display_audio_photo.bin','rb').read(512); print(d[0x30:0x50].split(b'\x00')[0].decode())"`。
 
 ---
 
@@ -836,6 +890,6 @@ python -c "import re;[print(l.rstrip()) for l in open('partitions.csv') if 'ota'
 
 ---
 
-> **改动记录**：§61（M1）+ §61b（M2/M3）
+> **改动记录**：§61（M1）+ §61b（M2/M3）+ §65~§69（实弹修复）+ §71（PC 端 v0.4.3）
 > **协议**：`docs/项目规划/通信接口规范_ICD.md` §8（V1.4）
 > **内存纪律**：`docs/工程规范/13_内存管理规范.md` + `14_堆管理宝贵经验.md`
