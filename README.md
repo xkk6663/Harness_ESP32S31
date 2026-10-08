@@ -12,6 +12,7 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-green)](LICENSE)
 [![Language](https://img.shields.io/badge/C-C99-yellow)](https://en.cppreference.com/w/c)
 [![RTOS](https://img.shields.io/badge/FreeRTOS-SMP-purple)](https://www.freertos.org/)
+![Release](https://img.shields.io/badge/发布版-v2.0-DA291C?logo=github&logoColor=white)
 
 ![UI](https://img.shields.io/badge/UI-LVGL_v9-2EA3DD?logo=lvgl&logoColor=white)
 ![USB](https://img.shields.io/badge/USB_副屏-TinyUSB_HS_扩展屏-6E4B9E)
@@ -65,7 +66,7 @@
 | 🔵 **SINK** | 蓝牙音箱 | A2DP Sink：手机推歌到本机播放，AVRCP 取歌名/进度显示 |
 | 🎬 **VIDEO** | 视频播放 | 播放 SD 卡 MJPEG AVI，硬件 JPEG 解码 + PPA 缩放，全屏 800×480 |
 | 🖥 **PC** | PC 音乐副屏 | 局域网接收 PC"正在播放"（网易云等）：旋转封面 + 三行滚动歌词（1.25 s 提前量补偿）+ 媒体控制键 |
-| ⚙ **SYS** | 系统入口 | RGB 灯 / WiFi / 蓝牙信息 / OTA 升级等监视与设置卡 |
+| ⚙ **SYS** | 系统入口 | RGB 灯 / WiFi / 蓝牙信息 / 固件升级（版本查询·双向 OTA·运行槽显示与手动切槽）/ 存储·堆栈监视卡 |
 
 系统级能力：
 
@@ -95,7 +96,7 @@
 
 ---
 
-## 🔄 WiFi OTA 升级（A/B 双槽，已实弹验收）
+## 🔄 WiFi OTA 升级（A/B 双槽，v2.0 发布版）
 
 **零新增端口**：控制面复用 UDP 50003（link_manager），数据面复用 TCP 50005（pc_host 内置 HTTP），
 设备作 **HTTP 客户端主动拉取**（无需 PC 能直连设备）。
@@ -150,11 +151,18 @@ PC: pc_host「固件升级」页                     设备: ota_service（middl
 > 版本号 = `git describe` 烘焙进 `esp_app_desc_t`（**tag/提交后必须 `idf.py fullclean` 重建**，
 > 否则增量构建不重跑 configure、版本串不更新）。
 >
-> **双向 OTA（v1.6 / §79）**：PC 心跳携带 `fw_latest`（本机 build bin 编译版本），
-> 设备端 SYS 子页 Firmware Update 卡实时显示最新版本；点 **Check update** 发
-> `OTA_REQ` —— PC 判无更新回 `OTA_NOUPDATE`，有更新则自动起升级会话（走同一套
-> OFFER/校验/归档链路）。OTA 下载期壁纸轮换与粒子动画自动暂停（§78 全静止变体，
-> 缓解写 flash 的 cache 冻结闪屏）。
+> **双向 OTA（§79）**：PC 心跳携带 `fw_latest`（本机 build bin 编译版本），设备端 SYS 页
+> Firmware Update 卡实时显示云端最新版本；点 **Check update** 发 `OTA_REQ` —— PC 判无更新回
+> `OTA_NOUPDATE`，有更新则自动起升级会话（走同一套 OFFER/校验/归档链路）。
+> **真续传已实弹验收通过**（只发 40% → 归零重推 → 从 256KB 段边界 RESUME，2026-10-08）。
+>
+> **手动切槽 Switch slot（§79e）**：SYS 页显示当前运行槽（ota_0/ota_1），一键切到对侧槽；
+> 防砖双闸 = 对侧槽镜像头校验失败拒切 + 槽状态 INVALID/ABORTED 拒切。
+>
+> **显示稳定性定稿（§79g / v2.0）**：LCD 刷新模式 bb→**AUTO**（GDMA 环形链直扫 PSRAM 整帧，
+> flash 写冻结期挂起、恢复后行序天然对齐）——根治"连 WiFi / 连 PC 时刻屏幕内容下移定格"；
+> OTA 下载期壁纸轮换与粒子动画自动暂停（§78 全静止变体）保留。
+> 上位机全局深色主题（#181818 + 法拉利红，§77）。
 
 操作与逐项验收详见 [`docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`](docs/项目规划/WiFi_OTA_烧录验收与使用流程.md)，
 协议字段见 [`docs/项目规划/通信接口规范_ICD.md`](docs/项目规划/通信接口规范_ICD.md)。
@@ -364,6 +372,9 @@ idf.py -p COM9 storage-flash     # 首次烧录 / littlefs 素材变更后，刷
 - [x] PC NOW 音乐副屏（封面旋转 + 全量 LRC 歌词 1.25s 补偿 + 媒体键），pc_host / pc_now_agent 双端
 - [x] M6 OTA：A/B 双槽 WiFi 升级（ota_service + LVGL 覆盖层 + PC 端烧录 agent）——**已实弹验收**（v1.0→v1.4 五连升 + 断电回滚实测，2026-10-08）
 - [x] USB 扩展屏（uext 双固件架构：SET 键双向切换 + 预编译烧录包 `firmware/uext_screen/`）
+- [x] **v1.5 → v2.0 发布版迭代**（2026-10-08）：录音上限动态化（§72）+ OTA 真续传真机验收 +
+  固件归档 sqlite（§73，M4）+ 上位机深色主题（§77）+ OTA 期全静止（§78）+ 双向 OTA（§79）+
+  SYS 页一屏布局（§79b）+ 心跳抖动修复（§79c）+ 手动切槽（§79e）+ 屏偏移根治 bb→AUTO（§79g）
 - [ ] M3 TCP 录音远端化 + M4 多任务调度深化
 - [ ] 小智 AI 对话接入（方案已定稿：[`docs/项目规划/小智AI对话接入实施方案.md`](docs/项目规划/小智AI对话接入实施方案.md)，未开工）
 

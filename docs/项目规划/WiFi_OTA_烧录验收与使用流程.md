@@ -1,8 +1,19 @@
 # WiFi 局域网 OTA — 逐功能逐步骤验收手册
 
-> 版本 **V3.2**（2026-10-08）· 对应改动记录 **§61 ~ §73**、ICD **V1.4+**
+> 版本 **V3.3**（2026-10-08）· 对应改动记录 **§61 ~ §79g**、ICD **V1.6**
 > 方案 `docs/项目规划/WiFi局域网OTA升级实施方案.md`
 > 分支：**main**
+>
+> **V3.3 变更（v1.7 → v2.0 发布版，§79 系列）**：
+> ① **E 组真续传真机回归通过**（2026-10-08：只发 40% → 归零重推 → 从段边界 RESUME，用户确认）；
+> ② **双向 OTA**（§79）：心跳 `fw_latest` + `OTA_REQ`/`OTA_NOUPDATE`，SYS 页 Firmware Update 卡
+>    （Latest 行 + Check update 按钮，一屏布局 §79b，无滚动）；ICD 增量见其 §10；
+> ③ **手动切槽**（§79e）：SYS 页 Slot 行 + Switch 按钮，防砖双闸
+>    （对侧镜像头校验失败拒切 / 槽状态 INVALID·ABORTED 拒切）；
+> ④ **屏偏移根治**（§79g / v2.0 发布版）：LCD 刷新模式 bb→**AUTO** 三处固化
+>    （sdkconfig + defaults + 板级文件同 commit）——"连 WiFi / 连 PC 时刻屏幕内容下移定格"根治；
+> ⑤ §79c 心跳抖动修复（SYS 页文本缓存 set_text + 卡片固定高 + OTA 期跳 esp_littlefs_info）随行；
+> ⑥ §79d 攒块 64KB / 步进 5% / 全黑遮罩三改动**已回退**（§79f：观感无效且进度"变慢"）。
 >
 > **V3.2 变更（§72/§73）**：
 > ① **E 组真续传恢复**：设备端弃 esp_ota_write 改 esp_partition 裸写 + 水位擦除 +
@@ -838,7 +849,8 @@ Range 时自动降级整包）。
 | **M2** | `OTA_ABORT` 真中断 + HTTP Range 续传 + 256KB 分段哈希 + 断点保留 | ✅ 已完成（§61b；设备端写槽续传 §67 降级，见 E 组头注） |
 | **M3** | LVGL 升级浮层 + 自证增强（WiFi **且** link） + PC 破坏性开关 | ✅ 已完成（§61b） |
 | **实弹** | v1.0→v1.4 五连升全链路 + 计划外断电回滚实测 | ✅ **通过（2026-10-08，§15）** |
-| **M4** | `firmware/` 版本归档 + 多设备批量 | ⏳ 未开工 |
+| **M4** | `firmware/` 版本归档 + sqlite 升级历史（多设备批量未做） | ✅ 归档已完成（§73，pc_host v0.5.0，含 bin 拖拽） |
+| **v2.0** | 双向 OTA（§79）+ 手动切槽（§79e）+ bb→AUTO 屏偏移根治（§79g）+ 真续传真机回归 | ✅ **发布版（2026-10-08）** |
 
 ---
 
@@ -866,7 +878,10 @@ Range 时自动降级整包）。
 - **H 内存**：✅ `OTA_MEM` before/after 三元组差值 < 2KB，零泄漏；
 - **附带**：升级期屏闪缓解（32KB 攒块，§67）；屏偏移与 WiFi NVS 写审计（§69补）。
 
-**遗留挂账**：屏幕偏移根治（等 IDF S31 restart 支持）、E 组真续传真机回归（§72 已实现，V3.2 E-1/E-2 步骤）。
+**遗留挂账**：~~屏幕偏移根治~~ **已根治（v2.0 / §79g：刷新模式 bb→AUTO 三处固化，不再依赖
+IDF S31 restart——S31 该 API 为 NOT_SUPPORTED，RGB_LCD_NEEDS_SEPARATE_RESTART_LINK 仅 S3 置 1）**；
+~~E 组真续传真机回归~~ **已通过（2026-10-08）**。升级期残余为偶发**瞬态撕裂线**（AUTO 模式下
+flash 冻结期挂起、恢复后行序天然对齐，不定格不自伤），结构性不可归零，以体验拍板接受。
 **版本机制备忘**：`PROJECT_VER = git describe`（configure 期取值）——tag 后必须 fullclean，
 bin 版本串自检：`python -c "d=open(r'build\display_audio_photo.bin','rb').read(512); print(d[0x30:0x50].split(b'\x00')[0].decode())"`。
 

@@ -1,4 +1,4 @@
-# 设备 ↔ PC 通信接口控制文档（ICD）V1.5
+# 设备 ↔ PC 通信接口控制文档（ICD）V1.6
 
 > 本文件是设备端（ESP32-S31，C）与 PC 端（Python）必须共同遵守的**唯一通信契约**。
 > 双端常量、字节序、帧格式、状态语义必须严格一致；任何改动先改本文件再改代码。
@@ -9,7 +9,7 @@
 > 参数的实际值见 §1 与 §3.2、§4.3；三端（C / Python / 本文）漂移的历史见
 > `docs/工程规范/11_遇到的问题.md` F26。
 >
-> 最后更新：2026-09-24（V1.3 副屏推流实机验收后回填）
+> 最后更新：2026-10-08（V1.6 双向 OTA 查新信令 fw_latest / OTA_REQ / OTA_NOUPDATE + 切槽；v2.0 发布版）
 
 ---
 
@@ -284,6 +284,11 @@ PC 校验总长度/CRC，回填 44B WAV 头，入库并回 `REC_END_ACK {saved:t
   换行时刻比补偿前早约 1.25s；seek 后仍对齐；封面 240×240 就绪、无 `cover decode failed`；
   换曲后三行歌词随进度滚动、`/lyrics.json` 的 `t` 为 5~6 位数。
 
+- **V1.4（2026-09-29）：WiFi 局域网 OTA（OTA_*）**，增量见 §8（变更记录当时未补记，此处追认）。
+- **V1.5（2026-10-07）：PC 壁纸上传（WP_*）**，增量见 §9（同上追认）。
+- **V1.6（2026-10-08）：双向 OTA 查新 + 手动切槽（fw_latest / OTA_REQ / OTA_NOUPDATE）**，
+  增量见 §10；随固件 v2.0 发布版实弹验收（真续传 E 组回归同日通过）。
+
 ## 7. V1.3 增量：PC 音乐副屏推流（NOW_*，2026-09-23 起）
 
 > ⚠ **编号修正（V1.3）**：本节原误编号为"## 6."，与"变更记录"重号；现改为 7。
@@ -479,6 +484,9 @@ IDLE → (OTA_OFFER 校验通过) OFFERED → DOWNLOADING → VERIFY
 （真实编译版本）。**版本三方一致是 OTA 判定"升级成功 / 已回滚"的唯一依据**：
 `bin 内 esp_app_desc_t.version` == `HEARTBEAT_ACK.fw_ver` == PC 侧解析值。
 
+**V1.6 起心跳另带 `fw_latest`**（PC → 设备，PC 本机 build bin 的编译版本，无 bin 时缺省不填），
+供设备端 SYS 页显示"云端最新版本"并发起查新，语义见 §10.1。
+
 ### 8.5 PC 端版本策略与破坏性测试开关（M2/M3 新增）
 
 | 开关 | 语义 | 预期设备端反应 |
@@ -532,3 +540,44 @@ attach、收尾 detach），名字与当前会话不符即 404；`sha256` 忽略
 ### 9.4 设备侧 grep 关键字
 
 - `grep "\[WP\]"` → 壁纸上传全链路（offer rejected / fetched / fetch failed / fetch ready）
+
+---
+
+## 10. V1.6 增量：双向 OTA 查新与切槽（fw_latest / OTA_REQ / OTA_NOUPDATE，2026-10-08）
+
+> 与 §8 同一链路：**控制面复用 UDP 50003，数据面不变**（设备拉 PC :50005，§8.2）。
+> 实现：`link_manager.c`（fw_latest 手工扫描提取，`s_mux` 保护）+
+> `ota_service.c`（查新状态机 / 切槽）+ `page_system.c`（Firmware Update 卡）。
+
+### 10.1 心跳新增字段 `fw_latest`（PC → 设备，随 HEARTBEAT_ACK）
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `fw_latest` | string | PC 本机 **build bin 解析出的编译版本**（与 `esp_app_desc_t.version` 同源，即 §8.4 的 `fw_ver` 语义）；PC 无 build bin 时**缺省不填** |
+
+- 设备端 `link_manager` 手工扫描提取（非 cJSON 全树），存 `s_fw_latest[32]`，互斥锁保护；
+- 读取 API：`link_manager_get_fw_latest()`；
+- 用途：SYS 页 Firmware Update 卡"Latest"行显示 + 发起查新（§10.2）。
+
+### 10.2 查新信令（UDP 50003，JSON / UTF-8）
+
+| type | 方向 | 字段 | 说明 |
+|---|---|---|---|
+| `OTA_REQ` | 设备→PC | `fw`(string) | 设备发起查新（SYS 页 Check update 按钮 / `ota_service_request_update()`）；**非阻塞 sendto，LVGL 线程可直调** |
+| `OTA_NOUPDATE` | PC→设备 | `fw`(string) | PC 判无更新后的应答（无 build bin / 设备版本 ≥ 本地） |
+
+- PC 判据 = build bin 解析版本 SemVer 粗比（§8.5 同规则）；**有更新时不发 NOUPDATE**，
+  直接自动起 OtaSession 走 §8.1 OFFER 流程（pc_host ota_q adopt 事件，OTA 页自动收养切页）。
+- 设备端查新状态机 `s_check_state`：0 空闲 / 1 pending / 2 无更新 / 3 有更新 / 4 超时（10s）。
+
+### 10.3 切槽 Switch slot（设备端本地功能，无新信令，§79e）
+
+- SYS 页显示当前运行槽（`esp_ota_get_running_partition` → ota_0/ota_1）+ Switch 按钮；
+- **防砖双闸**：对侧槽 `esp_ota_get_partition_description` 镜像头校验失败拒切；
+  对侧槽状态 INVALID / ABORTED 拒切；
+- 通过后 `esp_ota_set_boot_partition` + esp_timer **800ms** 后 `esp_restart`。
+
+### 10.4 grep 关键字
+
+- 设备端：`grep "OTA_REQ\|OTA_NOUPDATE"` → 查新链路；`grep "OTA"` → 升级全链路（§8 同源）；
+- PC 端：`fw_latest` → 心跳下发；`NOUPDATE` → 查新应答。
