@@ -37,6 +37,7 @@ static lv_timer_t *s_stat_timer;
 static lv_obj_t *s_fw_latest_label;
 static lv_obj_t *s_fw_status;
 static lv_obj_t *s_btn_check;
+static lv_obj_t *s_btn_switch;      /* §79e 手动切槽 */
 
 /* §79c 抖动修复：1s 定时器的四个 label 全部缓存上次文本 ——
  * lv_label_set_text 即使内容相同也会 invalidate（LVGL 无条件重算+重绘），
@@ -65,6 +66,32 @@ static void check_update_cb(lv_event_t *e)
     (void)e;
     /* 一次非阻塞 sendto，LVGL 线程可直接调；结果由 1s 定时器轮询展示 */
     ota_service_request_update();
+}
+
+/* §79e 手动切槽（A/B 双系统）：校验/set_boot 在 ota_service 内完成，
+ * 这里只负责把结果显示到状态行。OK 时 ota_service 内部 800ms 后自动重启。 */
+static void switch_slot_cb(lv_event_t *e)
+{
+    (void)e;
+    ota_switch_result_t r = ota_service_switch_slot();
+    const char *msg;
+    switch (r) {
+    case OTA_SWITCH_OK:
+        msg = "Switched! Rebooting...";          break;
+    case OTA_SWITCH_BUSY:
+        msg = "Switch refused (updating)";       break;
+    case OTA_SWITCH_NO_TARGET:
+        msg = "Switch refused (no target)";      break;
+    case OTA_SWITCH_INVALID:
+        msg = "Switch refused (target dead)";    break;
+    default:
+        msg = "Switch failed (set_boot)";        break;
+    }
+    if (s_fw_status) {
+        /* 同步文本缓存：绕过缓存直接 set 会被 1s 定时器按旧缓存写回 */
+        snprintf(s_last_status, sizeof(s_last_status), "%s", msg);
+        lv_label_set_text(s_fw_status, s_last_status);
+    }
 }
 
 /* 跑在 LVGL task：读 littlefs 用量 + 堆空闲，刷新 UI */
@@ -135,6 +162,13 @@ static void system_stat_timer_cb(lv_timer_t *t)
                 lv_obj_clear_state(s_btn_check, LV_STATE_DISABLED);
             }
         }
+        if (s_btn_switch) {          /* §79e：升级进行中禁止切槽 */
+            if (ota_service_is_active()) {
+                lv_obj_add_state(s_btn_switch, LV_STATE_DISABLED);
+            } else {
+                lv_obj_clear_state(s_btn_switch, LV_STATE_DISABLED);
+            }
+        }
     }
 }
 
@@ -197,7 +231,14 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
     l = lv_label_create(card);
-    lv_label_set_text_static(l, "LCD 800x480 | Audio ES8389 16kHz");
+    /* §79e：LCD/音频规格行换成槽位对信息（等高，一屏预算不变） */
+    {
+        char pair[48];
+        ota_service_get_slot_pair(pair, sizeof(pair));
+        char slot_line[96];     /* 48 + 常量段 18 → ≥66，64 会触发 format-truncation */
+        snprintf(slot_line, sizeof(slot_line), "%s  |  Audio ES8389", pair);
+        lv_label_set_text(l, slot_line);
+    }
     lv_obj_set_style_text_color(l, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(l, UI_FONT, 0);
 
@@ -241,7 +282,7 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_height(ucard, 62);
 
     lv_obj_t *ucol = lv_obj_create(ucard);      /* 左：两行文字（透明容器） */
-    lv_obj_set_size(ucol, 500, 38);
+    lv_obj_set_size(ucol, 460, 38);
     lv_obj_set_style_bg_opa(ucol, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ucol, 0, 0);
     lv_obj_set_style_pad_all(ucol, 0, 0);
@@ -258,16 +299,28 @@ static lv_obj_t *system_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_fw_status, COL_SUBTEXT, 0);
     lv_obj_set_style_text_font(s_fw_status, UI_FONT, 0);
 
-    s_btn_check = lv_btn_create(ucard);         /* 右：发起按钮 */
-    lv_obj_set_size(s_btn_check, 170, 38);
+    s_btn_check = lv_btn_create(ucard);         /* 右：发起升级 */
+    lv_obj_set_size(s_btn_check, 120, 38);
     lv_obj_set_style_bg_color(s_btn_check, COL_CYAN, 0);
     lv_obj_set_style_bg_color(s_btn_check, COL_BORDER, LV_STATE_DISABLED);
     lv_obj_t *bl = lv_label_create(s_btn_check);
-    lv_label_set_text_static(bl, "Check update");
+    lv_label_set_text_static(bl, "Update");
     lv_obj_set_style_text_color(bl, COL_DARK, 0);   /* F47 附：文字恒色可设 label */
     lv_obj_set_style_text_font(bl, UI_FONT, 0);
     lv_obj_center(bl);
     lv_obj_add_event_cb(s_btn_check, check_update_cb, LV_EVENT_CLICKED, NULL);
+
+    /* §79e：手动切槽（A/B 双系统）。防砖闸在 ota_service 内（镜像/状态校验） */
+    s_btn_switch = lv_btn_create(ucard);
+    lv_obj_set_size(s_btn_switch, 120, 38);
+    lv_obj_set_style_bg_color(s_btn_switch, COL_CARD_HI, 0);
+    lv_obj_set_style_bg_color(s_btn_switch, COL_BORDER, LV_STATE_DISABLED);
+    lv_obj_t *sl = lv_label_create(s_btn_switch);
+    lv_label_set_text_static(sl, "Switch");
+    lv_obj_set_style_text_color(sl, COL_TEXT, 0);
+    lv_obj_set_style_text_font(sl, UI_FONT, 0);
+    lv_obj_center(sl);
+    lv_obj_add_event_cb(s_btn_switch, switch_slot_cb, LV_EVENT_CLICKED, NULL);
 
     /* ---- Flash / storage 实时监视卡片（压缩版，§79b）----
      * §79c：固定高度 84（16+6+12+6+16+pad24）—— 理由同 ucard，禁止每秒重排。 */
@@ -316,6 +369,7 @@ static void system_destroy(lv_obj_t *page)
     s_fw_latest_label = NULL;
     s_fw_status = NULL;
     s_btn_check = NULL;
+    s_btn_switch = NULL;
     lv_obj_del(page);
 }
 

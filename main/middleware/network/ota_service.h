@@ -122,6 +122,24 @@ void ota_service_request_update(void);
 /** @brief 取当前查新状态（宏值见上；pending 超 10s 自动判超时）。 */
 uint8_t ota_service_get_check_state(void);
 
+/* ---- §79e 手动切槽（A/B 双系统）---- */
+
+typedef enum {
+    OTA_SWITCH_OK = 0,      /* 已切启动槽，~800ms 后自动重启 */
+    OTA_SWITCH_BUSY,        /* OTA 升级进行中，拒绝 */
+    OTA_SWITCH_NO_TARGET,   /* 对侧槽不存在 / 运行槽非 ota_0/ota_1 */
+    OTA_SWITCH_INVALID,     /* 对侧镜像校验失败或状态 INVALID/ABORTED（防砖拒切） */
+    OTA_SWITCH_FAIL,        /* set_boot_partition 失败 */
+} ota_switch_result_t;
+
+/** @brief 取槽位对信息（如 "Slot: ota_0  ->  ota_1"）。System 子页显示用。 */
+void ota_service_get_slot_pair(char *out, size_t len);
+
+/** @brief 手动切换到对侧槽（校验通过 → set_boot → 延迟 ~800ms esp_restart）。
+ *  防砖闸：对侧镜像头校验失败 / 槽状态 INVALID/ABORTED 一律拒切（绝不切向
+ *  跑不起来的固件）。可从 LVGL 线程调；OK 返回后调用方负责更新状态行提示。 */
+ota_switch_result_t ota_service_switch_slot(void);
+
 #ifdef __cplusplus
 }
 #endif

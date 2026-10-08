@@ -495,6 +495,79 @@ uint8_t ota_service_get_check_state(void)
     return s_check_state;
 }
 
+/* ---- §79e 手动切槽（A/B 双系统）---- */
+
+static esp_timer_handle_t s_switch_timer;    /* 切槽后延迟重启（一次性） */
+
+static void slot_switch_reboot_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "[OTA_DIAG] slot switched, rebooting now");
+    esp_restart();                           /* 不返回 */
+}
+
+void ota_service_get_slot_pair(char *out, size_t len)
+{
+    if (!out || len == 0) {
+        return;
+    }
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    const esp_partition_t *next = ota_pick_update_slot();
+    snprintf(out, len, "Slot: %s  ->  %s",
+             run ? run->label : "?", next ? next->label : "?");
+}
+
+ota_switch_result_t ota_service_switch_slot(void)
+{
+    if (s_active) {
+        ESP_LOGW(TAG, "[OTA_DIAG] switch_slot ignored: update running");
+        return OTA_SWITCH_BUSY;
+    }
+    const esp_partition_t *target = ota_pick_update_slot();
+    if (!target) {
+        return OTA_SWITCH_NO_TARGET;
+    }
+    /* 防砖闸 1：对侧必须能解析出合法镜像描述（头部 + 段表 OK） */
+    const esp_app_desc_t *desc = NULL;
+    esp_app_desc_t desc_buf;
+    if (esp_ota_get_partition_description(target, &desc_buf) != ESP_OK) {
+        ESP_LOGE(TAG, "[OTA_ERR] switch_slot: target %s image invalid, refuse",
+                 target->label);
+        return OTA_SWITCH_INVALID;
+    }
+    desc = &desc_buf;
+    /* 防砖闸 2：槽状态 INVALID/ABORTED（曾升级失败被回滚标记）拒切 ——
+     * 切向 boot 都会拒绝的槽等于白切；VALID/UNDEFINED/PENDING_VERIFY 放行。 */
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(target, &st) == ESP_OK &&
+        (st == ESP_OTA_IMG_INVALID || st == ESP_OTA_IMG_ABORTED)) {
+        ESP_LOGE(TAG, "[OTA_ERR] switch_slot: target %s state=%d (dead), refuse",
+                 target->label, (int)st);
+        return OTA_SWITCH_INVALID;
+    }
+    if (esp_ota_set_boot_partition(target) != ESP_OK) {
+        ESP_LOGE(TAG, "[OTA_ERR] switch_slot: set_boot_partition failed");
+        return OTA_SWITCH_FAIL;
+    }
+    ESP_LOGW(TAG, "[OTA_DIAG] boot slot -> %s (image ver=%s), reboot in 800ms",
+             target->label, desc ? desc->version : "?");
+    /* 800ms 后重启：给 UI 状态行一拍显示提示（esp_timer 回调里 esp_restart） */
+    if (!s_switch_timer) {
+        const esp_timer_create_args_t targs = {
+            .callback = slot_switch_reboot_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "ota_slot_sw",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&targs, &s_switch_timer) != ESP_OK) {
+            esp_restart();                   /* 定时器建不出来：立即重启兜底 */
+        }
+    }
+    esp_timer_start_once(s_switch_timer, 800 * 1000ULL);
+    return OTA_SWITCH_OK;
+}
+
 /* =====================================================================
  * 自证（防砖核心，方案 §3.1-6）
  * ===================================================================== */
