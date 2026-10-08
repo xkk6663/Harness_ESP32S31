@@ -80,6 +80,8 @@ class OtaSession:
         self.served_bytes = 0
         self.serve_count = 0
         self.result_ok: bool | None = None
+        self._dev_ip = ""                    # M4 历史记录用（_run_impl 里回填）
+        self._dev_ver = ""
 
         self._inbox: queue.Queue = queue.Queue(maxsize=200)
         self._stop = threading.Event()
@@ -210,7 +212,16 @@ class OtaSession:
                                 "检查：同一 WiFi？防火墙放行 UDP 50003？")
         dev_ip = self.ctx.link.device_ip or ""
         dev_ver = str((self.ctx.link.info or {}).get("fw_ver", "") or "")
+        self._dev_ip, self._dev_ver = dev_ip, dev_ver
         self._log(f"设备在线: {dev_ip}，当前版本: {dev_ver or '(未上报)'}")
+
+        # M4：固件归档（按 sha 去重；失败不影响升级主流程）
+        store = getattr(self.ctx, "ota_store", None)
+        if store is not None:
+            try:
+                self._log(f"固件已归档: {store.archive(self.fw)}")
+            except Exception as e:  # noqa: BLE001 —— 归档是附属能力，绝不能挡升级
+                self._log(f"固件归档失败（忽略）: {type(e).__name__}: {e}")
 
         # 2) 版本比对（粗判）
         if not self.force and dev_ver:
@@ -321,6 +332,14 @@ class OtaSession:
         self._set_state("done" if ok else ("cancelled" if ok is None else "failed"))
         self._emit("result", ok=ok, detail=detail)
         self._log(f"会话结束: {detail}")
+        # M4：升级历史落 sqlite（取消不记；归档/历史失败不影响主流程结论）
+        if ok is not None:
+            store = getattr(self.ctx, "ota_store", None)
+            if store is not None:
+                try:
+                    store.add_history(self._dev_ip, self._dev_ver, self.fw, ok, detail)
+                except Exception as e:  # noqa: BLE001
+                    self._log(f"历史记录写入失败（忽略）: {type(e).__name__}: {e}")
 
 
 class _Rejected(Exception):

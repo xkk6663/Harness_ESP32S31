@@ -114,11 +114,12 @@ PC: pc_host「固件升级」页                     设备: ota_service（middl
 ```
 
 - **PC 端**（[`pc_host/ui/pages/ota_page.py`](pc_host/ui/pages/ota_page.py)）：固件解析 / 版本比对 /
-  进度与结果展示 / `--force`·截断·坏固件注入等验收开关；下载侧 600s 绝对超时 + 120s 活动超时。
+  进度与结果展示 / `--force`·截断·坏固件注入等验收开关 / bin 拖拽选件 / **固件按版本归档 +
+  sqlite 升级历史**（「升级历史」按钮，M4）；下载侧 600s 绝对超时 + 120s 活动超时。
 - **设备端**（[`main/middleware/network/ota_service.c`](main/middleware/network/ota_service.c)）：
   A/B 双槽锁死 ota_0⇄ota_1（**永不触碰 uext 槽**）；flash IO 任务栈**强制内部 RAM**
-  （IDF 冻结 cache 期间断言 SP，PSRAM 栈必 panic）；断点段哈希落 nvs（设备端写槽续传
-  受 esp_ota API 限制已降级为全新下载）。
+  （IDF 冻结 cache 期间断言 SP，PSRAM 栈必 panic）；**断点真续传**（256KB 段哈希落 nvs →
+  重推时旧段回读验哈希 → esp_partition 裸写 + 水位擦除续下，最多重下 256KB）。
 - **LVGL 浮层**（`ui/overlays/overlay_ota.c`）：升级期间全屏遮罩进度卡 + "请勿断电"警示，
   触摸不穿透；线程纪律 = 事件回调只赋值，刷新全在 `lv_timer`。
 - **防砖四防线**：① `esp_ota_end` 镜像头 + 段 CRC；② 256KB 段摘要链 + 段数一致性；

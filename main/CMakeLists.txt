@@ -100,6 +100,7 @@ idf_component_register(SRCS
                 "ui/ui_manager"
   PRIV_REQUIRES esp_littlefs esp_wifi esp_event esp_netif nvs_flash esp_timer lwip
                                     esp_http_client cjson mbedtls zlib fatfs sdmmc driver
+                                    bootloader_support
                                     esp_player esp_audio_render esp_extractor esp_audio_codec
                                     gmf_core gmf_audio gmf_io esp_codec_dev media_lib_sal
                                     esp_bt_audio

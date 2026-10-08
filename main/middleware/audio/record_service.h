@@ -50,6 +50,11 @@ bool record_service_is_active(void);
 record_mode_t record_service_get_mode(void);
 void record_service_set_evt_cb(record_evt_cb_t cb);
 
+/* §72：LOCAL 模式可录上限（字节），按 littlefs 剩余空间动态计算
+ * （总可用 − 64KB 预留 − WAV 头，再封顶 RECORD_CAP_HARD_MAX）。
+ * UI 显示"剩余可录时长"必须读它，不得引用编译期常量。 */
+uint32_t record_service_get_local_cap(void);
+
 #ifdef __cplusplus
 }
 #endif

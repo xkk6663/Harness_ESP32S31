@@ -49,3 +49,4 @@ tools/**/obj/
 # pc_host runtime state (written on every run, must not dirty the tree / firmware version)
 debug.log
 pc_host/.device_ip
+pc_host/firmware_store/

@@ -18,6 +18,7 @@
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "lwip/sockets.h"
+#include "esp_littlefs.h"
 #include "middleware/audio/audio_service.h"
 #include "middleware/system/fs_service.h"
 #include "middleware/bluetooth/link_manager.h"
@@ -26,7 +27,12 @@
 
 static const char *TAG = "RECORD";
 #define RECORD_PORT 50002
-#define RECORD_MAX_PCM_BYTES (300U * SAMPLE_RATE * 2U)
+/* ★ §72：LOCAL 上限动态化。旧写法 RECORD_MAX_PCM_BYTES=300s×32000B=9.6MB，
+ * 但 storage 分区只有 3MB（去掉字体/壁纸等已用后剩更少），300s 永远到不了，
+ * 会先撞 ENOSPC。现在：每次进入 LOCAL 落盘前用 esp_littlefs_info 实时算
+ * （总剩余 − 64KB 预留 − WAV 头），再封顶 HARD_MAX。 */
+#define RECORD_CAP_HARD_MAX  (300U * SAMPLE_RATE * 2U)   /* 9.6MB 硬顶（跨过此值无意义） */
+#define RECORD_CAP_RESERVE   (64U * 1024U)               /* littlefs 元数据 + 安全余量 */
 #define RECORD_FLUSH_BYTES (64U * 1024U)
 #define RECORD_CHUNK_PAYLOAD 4090
 #define RECORD_PENDING_PATH FS_MNT_PATH "/recordings/pending.wav"
@@ -41,6 +47,7 @@ static QueueHandle_t s_cmd_q;
 static record_evt_cb_t s_evt_cb;
 static volatile bool s_active;
 static volatile record_mode_t s_mode;
+static volatile uint32_t s_limit_bytes;   /* §72：当前 LOCAL cap（进度事件 limit_bytes 用） */
 
 static void record_task(void *arg);
 static void link_cb(link_evt_t evt, const char *peer_ip);
@@ -53,6 +60,27 @@ static uint16_t crc16_ccitt(const uint8_t *data, size_t len);
 static FILE *open_local(uint32_t *bytes);
 static void finalize_local(FILE *file, uint32_t bytes);
 static void upload_pending(void);
+
+/* §72：LOCAL 可录上限 = littlefs 剩余 − 预留 − WAV 头，封顶 HARD_MAX。
+ * 读不到文件系统信息（未挂载）时返回 0 ⇒ 本地录音直接拒绝（保守正确）。 */
+static uint32_t record_service_local_cap(void)
+{
+    size_t total = 0, used = 0;
+    if (esp_littlefs_info("storage", &total, &used) != ESP_OK || total <= used) {
+        return 0;
+    }
+    uint32_t avail = (uint32_t)(total - used);
+    uint32_t cap = 0;
+    if (avail > RECORD_CAP_RESERVE + sizeof(wav_header_t)) {
+        cap = avail - RECORD_CAP_RESERVE - (uint32_t)sizeof(wav_header_t);
+    }
+    if (cap > RECORD_CAP_HARD_MAX) {
+        cap = RECORD_CAP_HARD_MAX;
+    }
+    return cap;
+}
+
+uint32_t record_service_get_local_cap(void) { return record_service_local_cap(); }
 
 void record_service_init(void)
 {
@@ -75,7 +103,8 @@ void record_service_init(void)
      * 若蓝牙开机再现 F35 症状，再考虑"内部栈文件工作线程"方案 B）。 */
     BaseType_t ok = xTaskCreatePinnedToCore(record_task, "record_service", 8192, NULL, 5, NULL, 0);
     assert(ok == pdPASS);
-    ESP_LOGI(TAG, "init done, local cap=%u bytes", (unsigned)RECORD_MAX_PCM_BYTES);
+    ESP_LOGI(TAG, "init done, local cap=dynamic (littlefs free based, hard max %u B)",
+             (unsigned)RECORD_CAP_HARD_MAX);
 }
 
 void record_service_post_cmd(record_cmd_id_t cmd)
@@ -100,7 +129,8 @@ static void link_cb(link_evt_t evt, const char *peer_ip)
 static void notify(record_evt_t event, record_mode_t mode, uint32_t bytes)
 {
     if (s_evt_cb) {
-        record_event_t message = {.event = event, .mode = mode, .bytes = bytes, .limit_bytes = RECORD_MAX_PCM_BYTES};
+        record_event_t message = {.event = event, .mode = mode, .bytes = bytes,
+                                  .limit_bytes = s_limit_bytes};
         s_evt_cb(&message);
     }
 }
@@ -144,6 +174,10 @@ static void run_recording(void)
     FILE *local = NULL;
     uint32_t local_bytes = 0;
     uint32_t base_offset = 0;
+    /* §72：进入录音时算一次 LOCAL cap；STREAM→LOCAL 降级时再刷新（时间差内
+       剩余空间可能又变了）。cap=0 且需要本地落盘 ⇒ 立即收场，防 ENOSPC 死循环。 */
+    uint32_t cap = record_service_local_cap();
+    s_limit_bytes = cap;
     notify(RECORD_EVT_STARTED, s_mode, 0);
     static uint8_t chunk[RECORD_CHUNK_PAYLOAD];
     uint16_t chunk_used = 0;
@@ -173,6 +207,9 @@ static void run_recording(void)
                     sock = -1;
                     s_mode = RECORD_MODE_LOCAL;
                     base_offset = sent_bytes;
+                    /* §72：降级瞬间重算 cap（录音期间空间可能被其它模块吃掉） */
+                    cap = record_service_local_cap();
+                    s_limit_bytes = cap;
                     local = open_local(&local_bytes);
                     if (!local) { stop = true; }
                     if (local && chunk_used) {
@@ -187,8 +224,15 @@ static void run_recording(void)
                 local = open_local(&local_bytes);
                 if (!local) { stop = true; continue; }
             }
-            if (local_bytes + sizeof(frame) > RECORD_MAX_PCM_BYTES) {
-                ESP_LOGW(TAG, "LOCAL cap reached (300s)");
+            if (cap < sizeof(frame)) {
+                ESP_LOGE(TAG, "LOCAL no space: cap=%u B (littlefs free too small)", (unsigned)cap);
+                notify(RECORD_EVT_ERROR, RECORD_MODE_LOCAL, 0);
+                stop = true;
+                continue;
+            }
+            if (local_bytes + sizeof(frame) > cap) {
+                ESP_LOGW(TAG, "LOCAL cap reached (%u s, littlefs free based)",
+                         (unsigned)(cap / (SAMPLE_RATE * 2U)));
                 stop = true;
                 continue;
             }

@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import queue
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QProgressBar,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+                               QProgressBar, QPushButton, QSpinBox, QVBoxLayout,
+                               QWidget)
 
 from ..widgets import make_page_header, v_card
 from ...ota import FirmwareInfo, OtaSession, compare_semver
@@ -36,6 +38,7 @@ class OtaPage(QWidget):
         super().__init__()
         self.ctx = ctx
         self.session: OtaSession | None = None
+        self.setAcceptDrops(True)            # M4：bin 拖拽进窗口即选固件
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
@@ -110,8 +113,11 @@ class OtaPage(QWidget):
         self.btn_abort = QPushButton("中止")
         self.btn_abort.setEnabled(False)
         self.btn_abort.clicked.connect(self._abort)
+        self.btn_history = QPushButton("升级历史")
+        self.btn_history.clicked.connect(self._show_history)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_abort)
+        btn_row.addWidget(self.btn_history)
         btn_row.addStretch(1)
         ctl_lay.addLayout(btn_row)
 
@@ -248,3 +254,36 @@ class OtaPage(QWidget):
         self.ctx.ota_session = None
         self._set_running(False)
         self._update_cmp()
+
+    # ---- M4：bin 拖拽 + 升级历史 ----
+    def dragEnterEvent(self, e) -> None:
+        m = e.mimeData()
+        if m.hasUrls() and any(u.toLocalFile().lower().endswith(".bin") for u in m.urls()):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:
+        for u in e.mimeData().urls():
+            p = Path(u.toLocalFile())
+            if p.suffix.lower() == ".bin" and p.exists():
+                self.path_edit.setText(str(p))
+                self._reparse()          # 与 §71 同理：不依赖 textChanged
+                break
+
+    def _show_history(self) -> None:
+        store = getattr(self.ctx, "ota_store", None)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("OTA 升级历史（sqlite）")
+        v = QVBoxLayout(dlg)
+        txt = QPlainTextEdit()
+        txt.setReadOnly(True)
+        txt.setStyleSheet("font-family: Consolas, monospace;")
+        v.addWidget(txt)
+        rows = store.recent(200) if store else []
+        lines = []
+        for ts, ip, from_ver, to_ver, size, _sha, ok, detail in rows:
+            tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+            lines.append(f"{tstr}  {'✓' if ok else '✗'}  {ip or '?':<15}  "
+                         f"{from_ver or '?'} → {to_ver}  {size / 1048576:.2f}MB  {detail}")
+        txt.setPlainText("\n".join(lines) if lines else "暂无升级记录（归档目录 pc_host/firmware_store/）")
+        dlg.resize(760, 440)
+        dlg.exec()

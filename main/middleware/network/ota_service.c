@@ -59,6 +59,7 @@
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_image_format.h"   /* §72 真续传：esp_image_verify（与 esp_ota_end 同源校验） */
 #include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "nvs.h"
@@ -192,6 +193,68 @@ static void log_triple(const char *what, size_t want)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+}
+
+/* =====================================================================
+ * §72 真续传（esp_partition 裸写 + 自管擦除）专用
+ * ===================================================================== */
+
+/* 裸写路径收尾校验：与 esp_ota_end **完全同源**（esp_ota_ops.c:587
+ * ota_verify_partition 里就是这一句）——镜像头 + 段 CRC 全量校验。
+ * 纯校验不持有 ota handle，回滚状态机在 otadata，不受影响。 */
+static bool verify_image_on_partition(const esp_partition_t *p)
+{
+    esp_image_metadata_t data;
+    const esp_partition_pos_t pos = {
+        .offset = p->address,
+        .size   = p->size,
+    };
+    if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &data) != ESP_OK) {
+        return false;
+    }
+    ESP_LOGI(TAG, "[OTA_DIAG] image verify OK (esp_image_verify, bare-write path)");
+    return true;
+}
+
+/* 续传前回读校验：槽里已写的前 seg_done 个 256KB 段必须与 nvs 段摘要一致。
+ * 这是裸写路径的"旧前缀完整性证明"——nvs 只证明"当时收到过什么"，
+ * 回读才证明"flash 里现在是什么"。4KB 分块读进 s_rd_buf（此刻 http 还没开，无冲突）。
+ * @return true=全部一致；false=不一致（调用方必须清断点改走全新下载）。 */
+static bool verify_written_segments(const esp_partition_t *p, uint32_t seg_done)
+{
+    psa_hash_operation_t h = PSA_HASH_OPERATION_INIT;
+    for (uint32_t i = 0; i < seg_done; ++i) {
+        size_t remain = OTA_SEG_SIZE;
+        size_t off = (size_t)i * OTA_SEG_SIZE;
+        if (psa_hash_setup(&h, PSA_ALG_SHA_256) != PSA_SUCCESS) {
+            ESP_LOGE(TAG, "[OTA_ERR] verify seg %u: hash_setup failed", (unsigned)i);
+            return false;
+        }
+        while (remain) {
+            size_t want = remain < OTA_READ_CHUNK ? remain : OTA_READ_CHUNK;
+            if (esp_partition_read(p, off, s_rd_buf, want) != ESP_OK) {
+                ESP_LOGE(TAG, "[OTA_ERR] verify seg %u: read failed at %u", (unsigned)i, (unsigned)off);
+                psa_hash_abort(&h);
+                return false;
+            }
+            if (psa_hash_update(&h, s_rd_buf, want) != PSA_SUCCESS) {
+                ESP_LOGE(TAG, "[OTA_ERR] verify seg %u: hash_update failed", (unsigned)i);
+                psa_hash_abort(&h);
+                return false;
+            }
+            off += want;
+            remain -= want;
+        }
+        uint8_t digest[32];
+        size_t dlen = 0;
+        if (psa_hash_finish(&h, digest, sizeof(digest), &dlen) != PSA_SUCCESS || dlen != 32 ||
+            memcmp(digest, s_resume.seg_sha[i], 32) != 0) {
+            ESP_LOGE(TAG, "[OTA_ERR] verify seg %u: digest mismatch (flash != nvs) -> resume record stale", (unsigned)i);
+            return false;
+        }
+        ESP_LOGI(TAG, "[OTA_RESUME] verify seg %u/%u OK", (unsigned)(i + 1), (unsigned)seg_done);
+    }
+    return true;
 }
 
 /* =====================================================================
@@ -605,27 +668,51 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
         return false;
     }
 
-    /* -------- M2：判定能否续传 --------
-     * ★★ 2026-10-07 实机证伪：设备端**写槽续传不可行**，一律全新下载。根因两条：
-     *  1. esp_ota_begin(upd, expect_size, ...) 在 begin 时**整槽擦除**（实测 5MB ≈ 3.5s），
-     *     上一会话写进槽里的前缀荡然无存——"槽里已有前 N 字节"的前提不成立；
-     *  2. 本函数走 esp_ota_write（顺序写，handle 内部 wrote_size 从 0 起，无偏移参数），
-     *     续传数据从文件中段开始喂 → IDF 首写 0xE9 魔数检查直接拒收
-     *     （esp_ota_ops.c:371-377："OTA image has invalid magic byte (expected 0xE9,
-     *      saw 0x4b)"，实机复现）；即便绕过魔数检查，中段数据也会错位写到槽头。
-     * 要真续传只能弃 esp_ota_* 改 esp_partition 裸写 + 手动擦除管理 + 自校验
-     * （bootloader 兜底 + 30s 自证回滚仍在）——留作后续，65KB/s 下整包 ~80s 收益有限。 */
+    /* -------- §72 真续传判定（esp_partition 裸写 + 自管擦除） --------
+     * 2026-10-08 实现。此前（§67）曾因 esp_ota_begin 整槽擦除 / esp_ota_write
+     * 顺序写 + 0xE9 魔数检查而降级全新下载；现续传路径彻底弃用 esp_ota_write：
+     *   erase：esp_partition_erase_range 按"写进度水位"逐块擦（不预擦整槽）
+     *   write：esp_partition_write(upd, total, src, n)（绝对偏移，无魔数检查）
+     *   verify：收尾 esp_image_verify（= esp_ota_end 同源）+ 旧段回读比对 nvs 摘要
+     * 回滚/自证状态在 otadata（esp_ota_set_boot_partition 语义不变），防砖不受影响。
+     * 续传前提：nvs 断点 total/next/seg 三元自洽 + 整包 sha 匹配（PC 报了才比）。 */
     size_t start_off = 0;
     uint32_t seg_done = 0;
     bool can_resume = false;
-    if (s_resume.magic == OTA_RESUME_MAGIC && s_resume.next_offset > 0) {
-        ESP_LOGW(TAG, "[OTA_RESUME] 检测到断点 next_offset=%u（seg_done=%u），"
-                 "但 esp_ota_begin 整槽擦除 + esp_ota_write 无偏移写 → 降级全新下载",
-                 (unsigned)s_resume.next_offset, (unsigned)s_resume.seg_done);
+    bool bare_write = false;            /* true=esp_partition 裸写路径 */
+    bool sha_known = expect_sha256 && expect_sha256[0];
+    if (s_resume.magic == OTA_RESUME_MAGIC && s_resume.next_offset > 0 &&
+        s_resume.total_size == (uint32_t)expect_size &&
+        s_resume.next_offset < (uint32_t)expect_size &&
+        s_resume.next_offset % OTA_SEG_SIZE == 0 &&
+        s_resume.seg_done == s_resume.next_offset / OTA_SEG_SIZE &&
+        s_resume.seg_done > 0 && s_resume.seg_done < OTA_SEG_MAX &&
+        (!sha_known || strcasecmp(s_resume.sha256, expect_sha256) == 0)) {
+        ESP_LOGW(TAG, "[OTA_RESUME] found: total=%u done=%u seg_done=%u sha=%s",
+                 (unsigned)s_resume.total_size, (unsigned)s_resume.next_offset,
+                 (unsigned)s_resume.seg_done, s_resume.sha256);
+        /* ★ 先回读校验旧前缀：flash 现状 != nvs 摘要 ⇒ 断点过期，降级全新下载 */
+        if (verify_written_segments(upd, s_resume.seg_done)) {
+            can_resume = true;
+            bare_write = true;
+            start_off = s_resume.next_offset;
+            seg_done = s_resume.seg_done;
+            ESP_LOGW(TAG, "[OTA_RESUME] RESUME from %u B (seg_done=%u, bare-write via esp_partition)",
+                     (unsigned)start_off, (unsigned)seg_done);
+        } else {
+            ESP_LOGW(TAG, "[OTA_RESUME] resume record stale -> discard, full download");
+            memset(&s_resume, 0, sizeof(s_resume));
+            resume_save();
+        }
+    } else if (s_resume.magic == OTA_RESUME_MAGIC && s_resume.next_offset > 0) {
+        ESP_LOGW(TAG, "[OTA_RESUME] record mismatch (total=%u off=%u seg=%u vs offer size=%u)"
+                 " -> discard, full download",
+                 (unsigned)s_resume.total_size, (unsigned)s_resume.next_offset,
+                 (unsigned)s_resume.seg_done, (unsigned)expect_size);
         memset(&s_resume, 0, sizeof(s_resume));
         resume_save();
     }
-    {
+    if (!can_resume) {
         ESP_LOGI(TAG, "[OTA_RESUME] fresh download (resume rec magic=0x%08x size=%u off=%u)",
                  (unsigned)s_resume.magic, (unsigned)s_resume.total_size,
                  (unsigned)s_resume.next_offset);
@@ -685,10 +772,13 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
         ESP_LOGE(TAG, "[OTA_ERR] http status=%d (expect 200/206)", status);
         goto out;
     }
-    /* PC 端未支持 Range 时退回整包：必须从头写，否则槽内容错位 */
+    /* PC 端未支持 Range 时退回整包：必须从头写，否则槽内容错位。
+       §72：此时已选裸写路径 ⇒ 不回 esp_ota_begin（那会再整槽擦一遍），
+       直接把裸写水位拨回 0 从头写。 */
     if (can_resume && status == 200) {
         ESP_LOGW(TAG, "[OTA_RESUME] server ignored Range (200) -> downgrade to FULL download");
         can_resume = false;
+        bare_write = true;
         start_off = 0;
         seg_done = 0;
         memset(&s_resume, 0, sizeof(s_resume));
@@ -709,14 +799,20 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
                  (long long)content_len, (unsigned)(expect_size - start_off));
     }
 
-    if (esp_ota_begin(upd, expect_size, &h) != ESP_OK) {
+    size_t erased_upto = start_off;   /* §72 裸写路径的擦除水位（start_off 256K 对齐 ⇒ 扇区对齐） */
+    if (bare_write) {
+        ESP_LOGI(TAG, "[OTA_DIAG] bare-write mode: erase on demand from %u B (esp_partition)",
+                 (unsigned)erased_upto);
+        log_triple("bare-resume-ok", expect_size - start_off);
+    } else if (esp_ota_begin(upd, expect_size, &h) != ESP_OK) {
         ESP_LOGE(TAG, "[OTA_ERR] esp_ota_begin failed on %s (size=%u)",
                  upd->label, (unsigned)expect_size);
         log_triple("ota-begin-FAIL", expect_size);
         goto out;
+    } else {
+        ota_begun = true;
+        log_triple("ota-begin-ok", expect_size);
     }
-    ota_begun = true;
-    log_triple("ota-begin-ok", expect_size);
 
     /* 段哈希：从 start_off 起为**当前段**开一个独立上下文 */
     if (psa_hash_setup(&seg_sha, PSA_ALG_SHA_256) != PSA_SUCCESS) {
@@ -773,8 +869,29 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
             stage_fill = 0;
         }
 
-        /* 写槽 + 段哈希累积（同序捆绑：失败/abort 时槽内容与记录保持一致） */
-        if (esp_ota_write(h, src, n) != ESP_OK) {
+        /* 写槽 + 段哈希累积（同序捆绑：失败/abort 时槽内容与记录保持一致）。
+           §72：裸写路径先按水位擦到 total+n（4KB 扇区对齐），再 esp_partition_write
+           到绝对偏移 total —— 擦除分摊到每个 staging 块，不再有整槽 3.5s 阻塞擦。 */
+        if (bare_write) {
+            size_t need_end = ((size_t)total + (size_t)n + 4095u) & ~(size_t)4095u;
+            if (need_end > upd->size) {
+                need_end = upd->size;
+            }
+            if (need_end > erased_upto) {
+                esp_err_t er = esp_partition_erase_range(upd, erased_upto, need_end - erased_upto);
+                if (er != ESP_OK) {
+                    ESP_LOGE(TAG, "[OTA_ERR] esp_partition_erase_range failed at %u..%u (%s)",
+                             (unsigned)erased_upto, (unsigned)need_end, esp_err_to_name(er));
+                    goto out;
+                }
+                erased_upto = need_end;
+            }
+            if (esp_partition_write(upd, total, src, (size_t)n) != ESP_OK) {
+                ESP_LOGE(TAG, "[OTA_ERR] esp_partition_write failed at %u B (slot=%s)",
+                         (unsigned)total, upd->label);
+                goto out;
+            }
+        } else if (esp_ota_write(h, src, n) != ESP_OK) {
             ESP_LOGE(TAG, "[OTA_ERR] esp_ota_write failed at %u B (slot=%s)",
                      (unsigned)total, upd->label);
             goto out;
@@ -837,7 +954,24 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
     /* ★ 收尾：staging 残余（最后一块 < 32KB）。abort 时丢弃（"取消即放弃"语义，
        槽反正会在下次 begin 时整槽擦除）。 */
     if (!s_abort && s_wr_stage && stage_fill > 0) {
-        if (esp_ota_write(h, s_wr_stage, stage_fill) != ESP_OK) {
+        if (bare_write) {
+            size_t need_end = ((size_t)total + stage_fill + 4095u) & ~(size_t)4095u;
+            if (need_end > upd->size) {
+                need_end = upd->size;
+            }
+            if (need_end > erased_upto) {
+                if (esp_partition_erase_range(upd, erased_upto, need_end - erased_upto) != ESP_OK) {
+                    ESP_LOGE(TAG, "[OTA_ERR] tail erase failed at %u..%u",
+                             (unsigned)erased_upto, (unsigned)need_end);
+                    goto out;
+                }
+                erased_upto = need_end;
+            }
+            if (esp_partition_write(upd, total, s_wr_stage, stage_fill) != ESP_OK) {
+                ESP_LOGE(TAG, "[OTA_ERR] tail esp_partition_write failed at %u B", (unsigned)total);
+                goto out;
+            }
+        } else if (esp_ota_write(h, s_wr_stage, stage_fill) != ESP_OK) {
             ESP_LOGE(TAG, "[OTA_ERR] tail esp_ota_write failed at %u B", (unsigned)total);
             goto out;
         }
@@ -892,15 +1026,23 @@ static bool run_update(const char *url, size_t expect_size, const char *expect_s
         }
     }
 
-    if (esp_ota_end(h) != ESP_OK) {
+    if (bare_write) {
+        /* §72 裸写路径：无 ota handle ⇒ 用与 esp_ota_end 同源的
+           esp_image_verify(ESP_IMAGE_VERIFY) 做镜像头 + 段 CRC 全量校验。 */
+        if (!verify_image_on_partition(upd)) {
+            ESP_LOGE(TAG, "[OTA_ERR] image verify failed (bare-write path)");
+            goto out;
+        }
+    } else if (esp_ota_end(h) != ESP_OK) {
         ESP_LOGE(TAG, "[OTA_ERR] esp_ota_end failed (image invalid: 镜像头/段 CRC 不过)");
         h = 0;
         ota_begun = false;
         goto out;
+    } else {
+        h = 0;
+        ota_begun = false;
+        ESP_LOGI(TAG, "[OTA_DIAG] esp_ota_end OK (image header + segment CRC valid)");
     }
-    h = 0;
-    ota_begun = false;
-    ESP_LOGI(TAG, "[OTA_DIAG] esp_ota_end OK (image header + segment CRC valid)");
 
     /* -------- SHA256 比对 --------
        ★ M2 的关键约束：**SHA-256 是流式哈希，跨重启无法从中途累积**。

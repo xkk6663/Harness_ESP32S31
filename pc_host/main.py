@@ -62,6 +62,8 @@ class Ctx:
         # ---- 壁纸上传（v0.4 收编 §76，见 wallpaper.py）----
         self.wp_q: queue.Queue = queue.Queue(maxsize=200)        # 会话事件 → 系统页排空
         self.wp_session = None                                   # WallpaperSession | None
+        # ---- M4（v0.5）：固件归档 + sqlite 升级历史 ----
+        self.ota_store = None                                    # FirmwareStore | None
 
     def pcnow_log(self, s: str) -> None:
         line = f"[{__import__('time').strftime('%H:%M:%S')}] {s}"
@@ -214,6 +216,10 @@ def build_services(args) -> Ctx:
     # ---- §76 壁纸上传会话（httpd /wallpaper 路由 + WP_OFFER/RESULT） ----
     from .wallpaper import WallpaperSession
     ctx.wp_session = WallpaperSession(ctx)
+
+    # ---- M4（v0.5）：固件归档 + sqlite 升级历史 ----
+    from .ota.store import FirmwareStore
+    ctx.ota_store = FirmwareStore(Path(__file__).resolve().parent / "firmware_store")
     return ctx
 
 
@@ -223,6 +229,11 @@ def teardown(ctx: Ctx) -> None:
             ctx.ota_session.stop("app_exit")
         except Exception as e:
             print(f"[teardown] ota_session: {e}", flush=True)
+    if ctx.ota_store is not None:
+        try:
+            ctx.ota_store.close()
+        except Exception as e:
+            print(f"[teardown] ota_store: {e}", flush=True)
     for closer in ("smtc", "httpd", "pusher", "wav", "asr", "player", "voice", "record_server", "link"):
         obj = getattr(ctx, closer, None)
         if obj is not None and hasattr(obj, "close"):
