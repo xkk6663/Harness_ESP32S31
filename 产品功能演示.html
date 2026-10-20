@@ -429,6 +429,89 @@ footer{border-top:1px solid var(--border-soft);padding:28px 32px;display:flex;ga
 .wp-set{position:absolute;left:12px;bottom:12px;font-family:var(--mono);font-size:10.5px;color:#fff;background:rgba(10,11,14,.55);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);padding:5px 11px;border-radius:8px}
 .wp-tag{position:absolute;right:12px;bottom:12px;font-family:var(--mono);font-size:10px;color:var(--green);background:rgba(10,11,14,.55);border:1px solid rgba(74,222,128,.35);padding:5px 11px;border-radius:8px}
 .wp-foot{margin-top:12px;font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* ---------- view switching ---------- */
+.view[hidden]{display:none!important}
+.view-toggle{display:inline-flex;gap:2px;padding:2px;border-radius:9px;background:var(--surface-2);border:1px solid var(--border);margin-right:14px;flex:none}
+.view-toggle button{font-family:var(--font);font-size:12px;font-weight:600;color:var(--muted);background:transparent;border:none;padding:5px 11px;border-radius:7px;cursor:pointer;white-space:nowrap;transition:color .2s}
+.view-toggle button.on{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff}
+.nav-group{display:none}
+.nav-group.on{display:contents}
+.ind-group{display:none}
+.ind-group.on{display:flex;flex-direction:column;gap:10px}
+button.btn{cursor:pointer;font-family:var(--font)}
+
+/* ---------- main view: hero music panel ---------- */
+.mpanel{display:flex;gap:14px;align-items:center;padding:14px 14px 10px}
+.disc{width:92px;height:92px;border-radius:50%;flex:none;position:relative;background:radial-gradient(circle at 50% 50%,#2a2c33 0 18%,#111216 18% 20%,#22242b 20% 34%,#111216 34% 36%,#22242b 36% 48%,#15161a 48% 100%);box-shadow:0 6px 18px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);animation:spin 9s linear infinite}
+.disc::after{content:'';position:absolute;inset:34%;border-radius:50%;background:linear-gradient(135deg,var(--indigo),var(--violet));box-shadow:0 0 10px rgba(94,106,210,.6)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.mp-right{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+.mp-song{font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mp-artist{font-size:11px;color:var(--muted);font-weight:500;margin-left:8px}
+.mp-lyr{display:flex;flex-direction:column;gap:3px;min-height:57px}
+.ly{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ly.cur{font-size:13.5px;color:var(--text);font-weight:600}
+.mp-bar{height:4px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.mp-bar i{display:block;height:100%;width:31%;border-radius:99px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.mp-time{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.mp-keys{display:flex;gap:8px;padding:0 14px 14px}
+.mp-keys span{flex:1;text-align:center;padding:8px 0;border-radius:9px;border:1px solid var(--border);background:var(--surface-2);font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em}
+.mp-keys .k-play{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border-color:transparent;font-weight:700}
+
+/* ---------- main view: pcnow ---------- */
+.pcnow{width:min(460px,100%);margin:0 auto;border-radius:14px;border:1px solid var(--border);background:var(--surface);overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.pcnow-src{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface-2);font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.pcnow-src .live{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;flex:none}
+.pcnow-body{display:flex;gap:16px;align-items:center;padding:18px 16px}
+.pcnow-body .disc{width:104px;height:104px}
+.pcnow-keys{padding:0 16px 16px}
+
+/* ---------- main view: ota ---------- */
+.otabox{width:min(480px,100%);margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.oslots{display:flex;align-items:stretch;gap:10px}
+.oslot{flex:1;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:10px 12px}
+.oslot b{display:block;font-family:var(--mono);font-size:12px;margin-bottom:2px}
+.oslot span{font-size:10.5px;color:var(--muted)}
+.oslot.run-a{border-color:rgba(74,222,128,.5);box-shadow:0 0 14px rgba(74,222,128,.15)}
+.oswap{align-self:center;font-family:var(--mono);font-size:10px;color:var(--dim);flex:none;text-align:center;line-height:1.4}
+.ouext{border:1px dashed rgba(236,72,153,.5);border-radius:11px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.ouext b{font-family:var(--mono);font-size:11.5px;color:var(--pink)}
+.ouext span{font-size:10.5px;color:var(--dim)}
+.oprog{border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:11px 12px}
+.oprog .orow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:7px;gap:10px}
+.obar{height:8px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.obar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.otabox.run .obar i{animation:ogrow 3.2s var(--ease) .4s forwards}
+@keyframes ogrow{0%{width:0}100%{width:87%}}
+.ostatus{margin-top:8px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;gap:10px;flex-wrap:wrap}
+.ostatus .st-ok{color:var(--green);opacity:0}
+.otabox.run .st-ok{animation:fadein .4s 3.8s forwards}
+@keyframes fadein{to{opacity:1}}
+.ofoot{font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* ---------- main view: 7-tab grid ---------- */
+.m7grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;width:min(480px,100%);margin:0 auto}
+.m7{border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:11px 13px}
+.m7 b{display:flex;align-items:center;gap:7px;font-size:13px}
+.m7 b i{width:8px;height:8px;border-radius:50%;background:var(--indigo);box-shadow:0 0 8px var(--indigo);flex:none}
+.m7 span{display:block;font-size:11px;color:var(--muted);margin-top:3px;line-height:1.5}
+.m7.hot{border-color:rgba(94,106,210,.5);background:rgba(94,106,210,.08)}
+.m7.wide{grid-column:span 2}
+
+/* ---------- main view: flash partition map ---------- */
+.fmap{width:min(480px,100%);margin:0 auto;display:flex;flex-direction:column;gap:7px}
+.frow{display:flex;align-items:stretch;gap:6px}
+.fseg{flex:1;height:34px;border-radius:7px;border:1px solid var(--border);background:var(--surface-2);display:flex;align-items:center;padding:0 9px;font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.fseg small{margin-left:6px;color:var(--dim);font-size:9px}
+.fseg.thin{height:22px;flex:0 0 auto;padding:0 7px;font-size:9px}
+.fseg.a{flex:5;background:rgba(94,106,210,.15);border-color:rgba(94,106,210,.45);color:#cdd2f2}
+.fseg.b{flex:5;background:rgba(139,92,246,.13);border-color:rgba(139,92,246,.4);color:#e0d4fb}
+.fseg.u{flex:2.9;background:rgba(236,72,153,.1);border-color:rgba(236,72,153,.4);color:#f3b8d8}
+.fseg.st{flex:3}
+.fnote{font-family:var(--mono);font-size:10px;color:var(--dim);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.fkey{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--muted);text-align:center;border:1px dashed var(--border);border-radius:8px;padding:8px 10px;line-height:1.6}
+@media(max-width:640px){.m7grid{grid-template-columns:1fr}.m7.wide{grid-column:span 1}}
 </style>
 </head>
 <body>
@@ -439,22 +522,34 @@ footer{border-top:1px solid var(--border-soft);padding:28px 32px;display:flex;ga
 <!-- ================= Navigation ================= -->
 <nav class="nav">
   <div class="nav-inner">
-    <a class="nav-logo" href="#hero">
+    <a class="nav-logo" href="#hero-main">
       <span class="logo-mark">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" stroke-linecap="round"/><circle cx="12" cy="10" r="2.1"/><path d="M8.6 15.6c.9-1.4 2-2 3.4-2s2.5.6 3.4 2" stroke-linecap="round"/></svg>
       </span>
       Harness<span class="dim">·ESP32-S31</span>
     </a>
+    <div class="view-toggle" id="viewToggle">
+      <button type="button" data-view="view-main" class="on">主线 · 智能音箱</button>
+      <button type="button" data-view="view-branch">支线 · 人脸识别</button>
+    </div>
     <div class="nav-links">
-      <a href="#attendance">人脸打卡</a>
-      <a href="#engine">AI 引擎</a>
-      <a href="#xiaozhi">小智 AI</a>
-      <a href="#camera">拍照录像</a>
-      <a href="#wallpaper">动态壁纸</a>
-      <a href="#web">网页管理端</a>
-      <a href="#pipeline">识别流水线</a>
-      <a href="#dashboard">资源账本</a>
-      <a href="#quickstart">快速上手</a>
+      <span class="nav-group on" data-view="view-main">
+        <a href="#hero-main">主页</a>
+        <a href="#pcscreen">副屏推送</a>
+        <a href="#ota">WiFi OTA</a>
+        <a href="#media7">七 Tab</a>
+        <a href="#uext">双固件</a>
+        <a href="#agent">Agent 闭环</a>
+      </span>
+      <span class="nav-group" data-view="view-branch">
+        <a href="#attendance">人脸打卡</a>
+        <a href="#engine">AI 引擎</a>
+        <a href="#xiaozhi">小智 AI</a>
+        <a href="#camera">拍照录像</a>
+        <a href="#wallpaper">动态壁纸</a>
+        <a href="#web">网页管理端</a>
+        <a href="#dashboard">资源账本</a>
+      </span>
     </div>
     <a class="nav-cta" href="https://github.com/xkk6663/Harness_ESP32S31/tree/%E7%AB%AF%E4%BE%A7%E4%BA%BA%E8%84%B8%E8%AF%86%E5%88%AB" target="_blank" rel="noopener">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
@@ -466,19 +561,271 @@ footer{border-top:1px solid var(--border-soft);padding:28px 32px;display:flex;ga
 
 <!-- ================= Section indicators ================= -->
 <div class="indicators">
-  <a href="#hero" class="active"></a>
-  <a href="#attendance"></a>
-  <a href="#engine"></a>
-  <a href="#xiaozhi"></a>
-  <a href="#camera"></a>
-  <a href="#wallpaper"></a>
-  <a href="#web"></a>
-  <a href="#pipeline"></a>
-  <a href="#dashboard"></a>
-  <a href="#quickstart"></a>
+  <span class="ind-group on" data-view="view-main">
+    <a href="#hero-main" class="active"></a>
+    <a href="#pcscreen"></a>
+    <a href="#ota"></a>
+    <a href="#media7"></a>
+    <a href="#uext"></a>
+    <a href="#agent"></a>
+  </span>
+  <span class="ind-group" data-view="view-branch">
+    <a href="#hero"></a>
+    <a href="#attendance"></a>
+    <a href="#engine"></a>
+    <a href="#xiaozhi"></a>
+    <a href="#camera"></a>
+    <a href="#wallpaper"></a>
+    <a href="#web"></a>
+    <a href="#pipeline"></a>
+    <a href="#dashboard"></a>
+    <a href="#quickstart"></a>
+  </span>
 </div>
 
 <main>
+
+<!-- ========================= 主线视图 view-main ========================= -->
+<div class="view" id="view-main">
+
+<!-- ================= M1. Hero ================= -->
+<section class="hero" id="hero-main">
+  <span class="eyebrow reveal"><span class="dot"></span>ESP32-S31-KORVO-1 · 多功能智能音箱</span>
+  <h1 class="reveal d1">一台设备，<span class="grad-text">五重身份</span></h1>
+  <p class="hero-sub reveal d2">蓝牙音箱 · PC 歌词副屏 · 局域网对讲机 · 录音笔 · 视频播放器——再叠加 USB 扩展屏双固件与 WiFi OTA v2.0 A/B 双槽防砖升级。</p>
+  <div class="hero-ctas reveal d3">
+    <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+      在 GitHub 上查看
+    </a>
+    <button type="button" class="btn btn-ghost" data-goto="view-branch">支线 · 人脸识别 →</button>
+  </div>
+  <div class="hero-stats reveal d4">
+    <span><b>7</b> Tab 主界面</span>
+    <span><b>≤100ms</b> 对讲延迟</span>
+    <span><b>A/B</b> 双槽 OTA</span>
+    <span><b>800×480</b> USB 副屏</span>
+    <span><b>16MB</b> Flash</span>
+  </div>
+
+  <!-- floating UI mockup -->
+  <div class="device-stage reveal d5">
+    <div class="float-card fc1">
+      <div class="fc-label">WiFi OTA v2.0</div>
+      <div class="fc-bar"><i style="width:87%;background:#5e6ad2"></i></div>
+      <div class="fc-s">A/B 双槽 → <b class="ok">已自证转正</b></div>
+    </div>
+    <div class="float-card fc2">
+      <div class="fc-row">
+        <span class="fc-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <div>
+          <div class="fc-t">CALL · 全双工对讲</div>
+          <div class="fc-s">UDP 50000/50001 · 端到端 ≤100ms</div>
+        </div>
+      </div>
+    </div>
+    <div class="float-card fc3"><span class="fc-chip">三行歌词 · 1.25s 提前量补偿</span></div>
+
+    <div class="device">
+      <div class="device-screen">
+        <div class="dstatus">
+          <span>20:41</span>
+          <span class="dicons">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 19.5h.01" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M6 11v2M10 11v2M14 11v2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M20 11v2"/></svg>
+          </span>
+        </div>
+        <div class="mpanel">
+          <div class="disc"></div>
+          <div class="mp-right">
+            <div class="mp-song">夜航西飞<span class="mp-artist">PC NOW 推送</span></div>
+            <div class="mp-lyr"><span class="ly">灯光落进副屏的时候</span><span class="ly cur">歌词正好滚到这一行</span><span class="ly">比电脑慢不了半秒</span></div>
+            <div class="mp-bar"><i></i></div>
+            <div class="mp-time">02:11 / 04:29 · LAN</div>
+          </div>
+        </div>
+        <div class="mp-keys"><span>PREV</span><span class="k-play">PLAY</span><span>NEXT</span><span>VOL</span></div>
+        <div class="dtab">
+          <span>CALL</span><span>REC</span><span>AUDIO</span><span>SINK</span><span>VIDEO</span><span class="on">PC</span><span>SYS</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M2. PC 音乐副屏 ================= -->
+<section id="pcscreen">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">PC NOW · 局域网推送</span>
+        <h2 class="reveal d1">电脑在放的歌<br>副屏<span class="grad-text">同步呈现</span></h2>
+        <p class="sec-desc reveal d2">PyQt 上位机 pc_host 监听本机"正在播放"（网易云等），经局域网推送到设备副屏：旋转封面、三行滚动歌词（1.25s 提前量补偿滚动启动）、进度条与媒体控制键，还能反向遥控播放。</p>
+        <div class="chips reveal d3">
+          <span class="chip">旋转封面</span>
+          <span class="chip">三行歌词 · 1.25s 补偿</span>
+          <span class="chip">媒体双向控制</span>
+          <span class="chip">上位机深色主题 · §77</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="pcscreen-visual">
+        <div class="pcnow">
+          <div class="pcnow-src"><span class="live"></span><span>PC NOW · LAN 推送中</span></div>
+          <div class="pcnow-body">
+            <div class="disc"></div>
+            <div class="mp-right">
+              <div class="mp-song">夜航西飞<span class="mp-artist">演示曲目 · Local</span></div>
+              <div class="mp-lyr"><span class="ly">灯光落进副屏的时候</span><span class="ly cur">歌词正好滚到这一行</span><span class="ly">比电脑慢不了半秒</span></div>
+              <div class="mp-bar"><i></i></div>
+              <div class="mp-time">02:11 / 04:29</div>
+            </div>
+          </div>
+          <div class="mp-keys pcnow-keys"><span>PREV</span><span class="k-play">PAUSE</span><span>NEXT</span><span>LIKE</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M3. WiFi OTA v2.0 ================= -->
+<section id="ota">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">v2.0 · A/B 双槽 · 零新增端口</span>
+        <h2 class="reveal d1">升级不怕断电<br>断了<span class="grad-text">接着传</span></h2>
+        <p class="sec-desc reveal d2">设备作 HTTP 客户端主动拉取（控制面复用 UDP 50003、数据面复用 TCP 50005）：OFFER 六条校验链 → 边收边写对侧槽（32KB 攒块，256KB 段哈希落 NVS）→ 段 CRC → 自证转正；窗口内断电由 bootloader 自动回滚旧槽。真续传已实弹验收：40% 断开 → 归零重推 → 从段边界 RESUME。</p>
+        <div class="chips reveal d3">
+          <span class="chip">ota_0 ⇄ ota_1 锁死</span>
+          <span class="chip">真续传 · 最多重下 256KB</span>
+          <span class="chip">防砖四防线</span>
+          <span class="chip">双向 OTA §79 · 手动切槽</span>
+          <span class="chip">LVGL 全屏遮罩 · 请勿断电</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="ota-visual">
+        <div class="otabox">
+          <div class="oslots">
+            <div class="oslot run-a"><b>ota_0 · A 槽</b><span>当前运行 · 已自证</span></div>
+            <span class="oswap">⇄ 对侧写入</span>
+            <div class="oslot"><b>ota_1 · B 槽</b><span>OTA 写入目标</span></div>
+          </div>
+          <div class="ouext"><b>uext (ota_2) · USB 副屏固件</b><span>OTA 永不触碰 · 定点烧写 0xA20000</span></div>
+          <div class="oprog">
+            <div class="orow"><span>firmware_v2.1.bin · 4.6 / 5 MB</span><span>SHA256 校验</span></div>
+            <div class="obar"><i></i></div>
+            <div class="ostatus"><span>HTTP GET :50005 · 32KB 攒块</span><span class="st-ok">段 CRC 通过 · 自证转正 ✓</span></div>
+          </div>
+          <div class="ofoot">防砖四防线：esp_ota_end 段 CRC → 256KB 摘要链 → 自证回滚 → USB 全量兜底</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M4. 七 Tab 全家桶 ================= -->
+<section id="media7">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">audio_service · 命令队列仲裁</span>
+        <h2 class="reveal d1">七个 Tab<br>装下一整个桌面</h2>
+        <p class="sec-desc reveal d2">播放、录音、对讲经命令队列互斥调度，UI 从不直接碰 codec / I2S 寄存器；蓝牙与本地双输出一路切换。</p>
+        <div class="chips reveal d3">
+          <span class="chip">A2DP Sink + AVRCP</span>
+          <span class="chip">MJPEG AVI 硬解 + PPA 缩放</span>
+          <span class="chip">16kHz / 16bit 全双工</span>
+          <span class="chip">LOCAL / BT PUSH 双输出</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="media7-visual">
+        <div class="m7grid">
+          <div class="m7"><b><i></i>CALL · 局域网对讲</b><span>UDP 50000/50001 全双工，端到端 ≤100ms</span></div>
+          <div class="m7"><b><i></i>REC · 本地录音</b><span>一键开录 → SD 卡 WAV → FILES 页回放</span></div>
+          <div class="m7"><b><i></i>AUDIO · 播放中心</b><span>SD 卡音乐硬解；LOCAL / BT PUSH 双输出</span></div>
+          <div class="m7"><b><i></i>SINK · 蓝牙音箱</b><span>A2DP 推歌 + AVRCP 歌名/进度 + 实时歌词</span></div>
+          <div class="m7"><b><i></i>VIDEO · 视频播放</b><span>MJPEG AVI 硬件解码 + PPA 缩放，全屏 800×480</span></div>
+          <div class="m7 hot"><b><i></i>PC · 音乐副屏</b><span>封面 / 歌词 / 进度 / 媒体控制，见上节</span></div>
+          <div class="m7 wide"><b><i></i>SYS · 系统中心</b><span>RGB / WiFi / 蓝牙信息 / 固件升级（版本查询 · 双向 OTA · 运行槽显示与手动切槽）/ 存储·堆栈监视卡</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M5. 双固件架构 ================= -->
+<section id="uext">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">双固件 · SET 一键切换</span>
+        <h2 class="reveal d1">主固件 ⇄ 副屏固件<br>一个键来回切</h2>
+        <p class="sec-desc reveal d2">uext 独立固件把本机变成 Windows 认证的 800×480 USB 扩展屏（TinyUSB HS 收 JPEG → 硬解直写屏）。SET 键单击 → 倒计时确认卡 → 重启进副屏；再按 → 回写引导标志回主固件。</p>
+        <div class="chips reveal d3">
+          <span class="chip">TinyUSB HS · 硬解直写屏</span>
+          <span class="chip">JPEG 质量 9 · 单帧 ≤450KB</span>
+          <span class="chip">定点烧写 0xA20000</span>
+          <span class="chip">Windows IDD 签名驱动</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="uext-visual">
+        <div class="fmap">
+          <div class="frow">
+            <span class="fseg thin">bootloader</span><span class="fseg thin">nvs 24K</span><span class="fseg thin">phy 4K</span><span class="fseg thin">otadata 8K</span>
+          </div>
+          <div class="frow">
+            <span class="fseg a">ota_0 · 主固件 A 槽<small>5 MB</small></span>
+            <span class="fseg b">ota_1 · 主固件 B 槽<small>5 MB</small></span>
+          </div>
+          <div class="frow">
+            <span class="fseg u">uext · 副屏固件<small>2.875 MB · OTA 锁槽</small></span>
+            <span class="fseg st">storage · littlefs<small>3 MB</small></span>
+          </div>
+          <div class="fnote"><span>16 MB Flash · partitions.csv V1.3</span><span>OTA 只写对侧 · 断电回滚兜底</span></div>
+          <div class="fkey">SET 单击（主固件）→ 倒计时确认卡 → 重启进副屏 → SET 单击 → 回写引导标志 → 回主固件</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M6. Agent 开发闭环 ================= -->
+<section id="agent">
+  <div class="wrap">
+    <div class="sec-head center">
+      <span class="eyebrow reveal">不只是固件 · AGENT FIRST</span>
+      <h2 class="reveal d1">一套 Agent 可执行的<span class="grad-text">开发闭环</span></h2>
+      <p class="sec-desc reveal d2">传统嵌入式：人写码、人编译、人烧录、人看日志、人改。本仓库把整条链路沉淀成 Agent 可执行的 Skill + 工程规范——每一步的产物与判据都有明确定义。</p>
+    </div>
+    <div class="steps">
+      <div class="step reveal d1"><span class="no">01</span><h3>读规范</h3><p>docs/工程规范 01~11 + skills/esp-idf-closed-loop.md 闭环 SOP。</p></div>
+      <div class="step reveal d2"><span class="no">02</span><h3>写代码</h3><p>按模块模板生成 middleware / UI 代码，自动注册 CMakeLists。</p></div>
+      <div class="step reveal d3"><span class="no">03</span><h3>编译</h3><p>idf.py build，自动读 error: 并修复。</p></div>
+      <div class="step reveal d4"><span class="no">04</span><h3>烧录</h3><p>idf.py -p COM9 flash，确认 Hash verified。</p></div>
+      <div class="step reveal d5"><span class="no">05</span><h3>抓日志</h3><p>_serial_capture.py 拉 RTS 复位，抓 12s 启动日志。</p></div>
+      <div class="step reveal d5"><span class="no">06</span><h3>判错修复</h3><p>panic？功能日志？静默？不对就改代码，再走一遍。</p></div>
+    </div>
+    <div class="chips reveal" style="justify-content:center;margin-top:26px">
+      <span class="chip">middleware 禁 include lvgl.h</span>
+      <span class="chip">业务任务栈 ≥ 8192B</span>
+      <span class="chip">PSRAM 生命周期归属明确</span>
+      <span class="chip">驱动结论搜遍 IDF + managed_components</span>
+    </div>
+    <div class="hero-ctas reveal" style="justify-content:center;margin-top:30px">
+      <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        访问 GitHub 仓库
+      </a>
+      <button type="button" class="btn btn-ghost" data-goto="view-branch">支线 · 人脸识别 →</button>
+    </div>
+  </div>
+</section>
+
+</div><!-- /view-main -->
+
+<!-- ========================= 支线视图 view-branch ========================= -->
+<div class="view" id="view-branch" hidden>
 
 <!-- ================= 1. Hero ================= -->
 <section class="hero" id="hero">
@@ -962,11 +1309,14 @@ footer{border-top:1px solid var(--border-soft);padding:28px 32px;display:flex;ga
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
           访问 GitHub 仓库
         </a>
+        <button type="button" class="btn btn-ghost" data-goto="view-main">主线 · 智能音箱 →</button>
         <a class="btn btn-ghost" href="#hero">回到顶部 ↑</a>
       </div>
     </div>
   </div>
 </section>
+
+</div><!-- /view-branch -->
 
 </main>
 
@@ -1006,16 +1356,41 @@ document.querySelectorAll('.reveal').forEach(function(el){ revealIO.observe(el);
 var sections = Array.prototype.slice.call(document.querySelectorAll('main section[id]'));
 var dots = Array.prototype.slice.call(document.querySelectorAll('.indicators a'));
 var links = Array.prototype.slice.call(document.querySelectorAll('.nav-links a'));
+var activeView = 'view-main';
+function viewOf(el){ var v = el.closest ? el.closest('.view') : null; return v ? v.id : ''; }
 var spy = new IntersectionObserver(function(es){
   es.forEach(function(e){
-    if (e.isIntersecting){
-      var i = sections.indexOf(e.target);
-      dots.forEach(function(d,k){ d.classList.toggle('active', k===i); });
+    if (e.isIntersecting && viewOf(e.target) === activeView){
+      dots.forEach(function(d){ d.classList.toggle('active', d.getAttribute('href') === '#' + e.target.id); });
       links.forEach(function(l){ l.classList.toggle('active', l.getAttribute('href') === '#' + e.target.id); });
     }
   });
 }, {threshold:0, rootMargin:'-42% 0px -52% 0px'});
 sections.forEach(function(s){ spy.observe(s); });
+
+/* ---------- view switching: 主线 / 支线 ---------- */
+function setView(id){
+  if (id === activeView) return;
+  activeView = id;
+  document.querySelectorAll('.view').forEach(function(v){ v.hidden = (v.id !== id); });
+  document.querySelectorAll('.view-toggle button').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-view') === id); });
+  document.querySelectorAll('.nav-group').forEach(function(g){ g.classList.toggle('on', g.getAttribute('data-view') === id); });
+  document.querySelectorAll('.ind-group').forEach(function(g){ g.classList.toggle('on', g.getAttribute('data-view') === id); });
+  window.scrollTo({top:0, behavior: REDUCED ? 'auto' : 'smooth'});
+}
+document.querySelectorAll('.view-toggle button').forEach(function(b){
+  b.addEventListener('click', function(){ setView(b.getAttribute('data-view')); });
+});
+document.addEventListener('click', function(ev){
+  var t = ev.target && ev.target.closest ? ev.target.closest('[data-goto]') : null;
+  if (t){ ev.preventDefault(); setView(t.getAttribute('data-goto')); }
+});
+(function(){
+  var logo = document.querySelector('.nav-logo');
+  if (logo) logo.addEventListener('click', function(ev){
+    if (activeView !== 'view-main'){ ev.preventDefault(); setView('view-main'); }
+  });
+})();
 
 /* ---------- helper: run once when visible ---------- */
 function whenVisible(el, fn, threshold){
@@ -1116,6 +1491,12 @@ whenVisible(document.getElementById('wallpaper-visual'), function(){
   var s = document.getElementById('wpScreen');
   if (s) s.classList.add('run');
 }, .3);
+
+/* ---------- main view: ota progress ---------- */
+whenVisible(document.getElementById('ota-visual'), function(){
+  var t = document.querySelector('#ota-visual .otabox');
+  if (t) t.classList.add('run');
+}, .4);
 
 /* ---------- pipeline: code typewriter + inline annotations ---------- */
 var CODE = [
