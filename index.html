@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>端侧人脸识别 · ESP32-S31 端侧 AI 视觉终端 | Harness_ESP32S31</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#08090a;
+  --surface:#0e0f12;
+  --surface-2:#131418;
+  --surface-3:#191b21;
+  --border:#23252c;
+  --border-soft:#1a1c21;
+  --text:#f7f8f8;
+  --muted:#9095a1;
+  --dim:#5d616c;
+  --indigo:#5e6ad2;
+  --violet:#8b5cf6;
+  --green:#4ade80;
+  --pink:#ec4899;
+  --red:#f87171;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
+  --mono:"Cascadia Code","SF Mono",Consolas,"JetBrains Mono","Liberation Mono",monospace;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+html{scroll-behavior:smooth}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(94,106,210,.45)}
+a{color:inherit}
+
+/* ---------- background layers ---------- */
+.bg-grid{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:54px 54px;
+  -webkit-mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 20%,transparent 72%);
+  mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 20%,transparent 72%);}
+.bg-glow{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse 62% 42% at 50% -6%,rgba(94,106,210,.15),transparent 62%),
+             radial-gradient(ellipse 40% 30% at 88% 26%,rgba(139,92,246,.07),transparent 62%)}
+main{position:relative;z-index:1}
+
+/* ---------- nav ---------- */
+.nav{position:fixed;top:0;left:0;right:0;z-index:100;
+  backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);
+  background:rgba(8,9,10,.55);border-bottom:1px solid transparent;
+  transition:background .3s,border-color .3s}
+.nav.scrolled{background:rgba(8,9,10,.8);border-bottom-color:var(--border-soft)}
+.nav-inner{max-width:1180px;margin:0 auto;padding:0 28px;height:60px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.nav-logo{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;letter-spacing:-.01em;text-decoration:none;color:var(--text);white-space:nowrap}
+.nav-logo .logo-mark{width:23px;height:23px;border-radius:7px;background:linear-gradient(135deg,var(--indigo),var(--violet));display:grid;place-items:center;color:#fff;flex:none}
+.nav-logo .logo-mark svg{width:14px;height:14px}
+.nav-logo .dim{color:var(--dim);font-weight:500}
+.nav-links{display:flex;gap:2px}
+.nav-links a{position:relative;color:var(--muted);text-decoration:none;font-size:13.5px;padding:6px 11px;border-radius:7px;transition:color .2s,background .2s}
+.nav-links a:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.nav-links a.active{color:var(--text)}
+.nav-links a.active::after{content:'';position:absolute;left:11px;right:11px;bottom:1px;height:1.5px;border-radius:2px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.nav-cta{display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:9px;background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;font-size:13px;font-weight:600;text-decoration:none;transition:transform .2s,box-shadow .2s;white-space:nowrap}
+.nav-cta svg{width:15px;height:15px}
+.nav-cta:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(94,106,210,.35)}
+.nav-progress{position:absolute;left:0;bottom:-1px;height:2px;width:100%}
+.nav-progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--indigo),var(--violet),var(--pink));border-radius:0 2px 2px 0}
+
+/* ---------- section indicators ---------- */
+.indicators{position:fixed;right:22px;top:50%;transform:translateY(-50%);z-index:90;display:flex;flex-direction:column;gap:11px}
+.indicators a{width:7px;height:7px;border-radius:50%;background:#2a2c33;transition:all .35s var(--ease)}
+.indicators a.active{background:var(--indigo);box-shadow:0 0 10px rgba(94,106,210,.9);transform:scale(1.3)}
+
+/* ---------- generic ---------- */
+section{padding:130px 32px;position:relative;scroll-margin-top:70px}
+.wrap{max-width:1180px;margin:0 auto;width:100%}
+.reveal{opacity:0;transform:translateY(36px);transition:opacity .9s var(--ease),transform .9s var(--ease)}
+.reveal.visible{opacity:1;transform:none}
+.d1{transition-delay:.08s}.d2{transition-delay:.16s}.d3{transition-delay:.24s}.d4{transition-delay:.32s}.d5{transition-delay:.4s}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:99px;border:1px solid var(--border);background:var(--surface-2);color:var(--muted);font-size:12px;letter-spacing:.1em;font-family:var(--mono);width:fit-content}
+.eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.sec-head{display:flex;flex-direction:column;gap:16px;max-width:720px;margin-bottom:48px}
+.sec-head.center{margin-left:auto;margin-right:auto;text-align:center;align-items:center}
+h2{font-size:clamp(26px,3.6vw,40px);font-weight:750;letter-spacing:-.02em;line-height:1.28}
+.sec-desc{color:var(--muted);font-size:15.5px;line-height:1.8}
+.grad-text{background:linear-gradient(110deg,#8b93f8 5%,#a78bfa 55%,#c084fc 95%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--border);background:var(--surface-2);padding:4px 11px;border-radius:99px}
+.ok{color:var(--green)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:13px 26px;border-radius:12px;font-size:15px;font-weight:600;text-decoration:none;cursor:pointer;border:none;transition:transform .25s var(--ease),box-shadow .25s,background .25s,border-color .25s;font-family:var(--font)}
+.btn svg{width:17px;height:17px;flex:none}
+.btn-primary{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;box-shadow:0 8px 28px rgba(94,106,210,.28)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 36px rgba(94,106,210,.42)}
+.btn-ghost{background:rgba(255,255,255,.03);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:rgba(255,255,255,.06);border-color:#33353d;transform:translateY(-2px)}
+
+/* ---------- hero ---------- */
+.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:24px;padding:150px 32px 90px}
+.hero h1{font-size:clamp(52px,9vw,102px);font-weight:850;letter-spacing:-.03em;line-height:1.1;
+  background:linear-gradient(115deg,#f7f8f8 22%,#7c86ee 48%,#8b5cf6 74%,#c084fc 96%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.hero-sub{max-width:660px;color:var(--muted);font-size:clamp(15px,1.8vw,18px);line-height:1.85}
+.hero-ctas{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.hero-stats{display:flex;gap:8px 22px;flex-wrap:wrap;justify-content:center;font-family:var(--mono);font-size:12.5px;color:var(--dim);letter-spacing:.04em;margin-top:4px}
+.hero-stats b{color:var(--muted);font-weight:600}
+
+/* ---------- device mockup (hero floating UI) ---------- */
+.device-stage{position:relative;width:min(660px,100%);margin-top:52px}
+.device{position:relative;border-radius:30px;border:1px solid #2a2c34;background:linear-gradient(180deg,#14161b,#0d0e12);padding:12px;
+  box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 90px rgba(94,106,210,.13)}
+.device-screen{border-radius:20px;background:radial-gradient(120% 100% at 50% 0%,#101a2e,#080a10 72%);border:1px solid #1e2028;overflow:hidden;display:flex;flex-direction:column}
+.dstatus{display:flex;justify-content:space-between;align-items:center;padding:9px 16px 7px;font-family:var(--mono);font-size:10px;color:#6b7280;letter-spacing:.05em}
+.dicons{display:flex;gap:7px;align-items:center}
+.dicons svg{width:11px;height:11px}
+.viewfinder{position:relative;flex:1;min-height:196px;margin:0 12px;border-radius:12px;overflow:hidden;
+  background:linear-gradient(165deg,#152134 0%,#0d1420 55%,#0a0f18 100%);border:1px solid #1c2330}
+.vf-grid{position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(120,140,180,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(120,140,180,.07) 1px,transparent 1px);
+  background-size:33.33% 33.33%}
+.vf-sil{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);color:#33415a}
+.vf-sil svg{width:74px;height:88px}
+.face-box{position:absolute;left:50%;top:16%;width:31%;height:56%;transform:translateX(-50%);
+  border:1.5px solid var(--green);border-radius:6px;box-shadow:0 0 14px rgba(74,222,128,.35);animation:boxbreathe 2.6s ease-in-out infinite}
+@keyframes boxbreathe{0%,100%{box-shadow:0 0 10px rgba(74,222,128,.25)}50%{box-shadow:0 0 22px rgba(74,222,128,.5)}}
+.face-box span{position:absolute;top:-17px;left:-2px;font-family:var(--mono);font-size:9px;color:var(--green);background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.35);padding:1px 6px;border-radius:4px;white-space:nowrap}
+.scanline{position:absolute;left:0;right:0;top:-42px;height:42px;pointer-events:none;
+  background:linear-gradient(180deg,transparent,rgba(74,222,128,.09),transparent);animation:scan 2.8s ease-in-out infinite}
+@keyframes scan{0%{transform:translateY(0)}100%{transform:translateY(258px)}}
+.vf-tag{position:absolute;left:10px;bottom:9px;font-family:var(--mono);font-size:9px;color:#5b6b84;letter-spacing:.05em}
+.dbtns{display:flex;gap:6px;padding:11px 10px 9px;justify-content:center;min-width:0}
+.dbtn{flex:1;min-width:0;max-width:86px;text-align:center;font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--dim);
+  background:#14161c;border:1px solid #23252c;border-radius:9px;padding:7px 2px;transition:all .3s;overflow:hidden;white-space:nowrap}
+.dbtn.primary{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border-color:transparent;font-weight:700}
+.dbtn.on{border-color:rgba(94,106,210,.6);color:#c7d2fe;background:rgba(94,106,210,.12)}
+.dtab{display:flex;border-top:1px solid #1c1e24;background:#0b0c0f;min-width:0}
+.dtab span{flex:1;min-width:0;overflow:hidden;text-align:center;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:#4b4e57;padding:9px 0 10px;position:relative}
+.dtab span.on{color:#fff}
+.dtab span.on::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:44%;height:2px;border-radius:0 0 3px 3px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.float-card{position:absolute;z-index:5;background:rgba(14,15,18,.85);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--border);border-radius:14px;padding:12px 14px;box-shadow:0 16px 44px rgba(0,0,0,.5);animation:floaty 6s ease-in-out infinite}
+@keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+.fc1{top:-27px;right:-14px;text-align:left}
+.fc2{bottom:-25px;left:-12px;animation-delay:2s;text-align:left;min-width:186px}
+.fc3{top:34%;left:-34px;animation-delay:4s}
+.fc-row{display:flex;gap:10px;align-items:center}
+.fc-check{width:26px;height:26px;border-radius:50%;background:rgba(74,222,128,.13);border:1px solid rgba(74,222,128,.4);display:grid;place-items:center;color:var(--green);flex:none}
+.fc-check svg{width:12px;height:12px}
+.fc-t{font-size:12.5px;font-weight:650;white-space:nowrap}
+.fc-s{font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap;margin-top:1px}
+.fc-label{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:8px}
+.fc-bar{display:flex;height:6px;border-radius:4px;overflow:hidden;background:#22242c;margin-bottom:8px}
+.fc-bar i{display:block;height:100%}
+.fc-chip{font-family:var(--mono);font-size:10.5px;color:#c4b5fd;white-space:nowrap}
+
+/* ---------- feature sections ---------- */
+.feature{display:grid;grid-template-columns:1.05fr .95fr;gap:64px;align-items:center}
+.feature.flip .feature-visual{order:1}
+.feature-text{display:flex;flex-direction:column;gap:18px;align-items:flex-start}
+.feature-visual{position:relative;border-radius:16px;background:var(--surface);border:1px solid var(--border);overflow:hidden;min-height:360px}
+
+/* feature 1 : attendance */
+.enroll-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:20px}
+.panel{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:13px}
+.panel-title{font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.09em;display:flex;justify-content:space-between;gap:8px}
+.ok-tag{color:var(--green);border:1px solid rgba(74,222,128,.35);border-radius:5px;padding:1px 7px;background:rgba(74,222,128,.08)}
+.name-field{display:flex;align-items:center;gap:8px;background:var(--surface-3);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:14px;color:var(--text)}
+.name-field svg{width:14px;height:14px;color:var(--dim);flex:none}
+.caret{width:1.5px;height:15px;background:var(--indigo);animation:blink 1.1s steps(1) infinite;flex:none}
+@keyframes blink{50%{opacity:0}}
+.cap-slots{display:flex;gap:10px}
+.slot{width:54px;height:54px;border-radius:50%;border:1.5px dashed #3a3d46;display:grid;place-items:center;color:var(--dim);font-family:var(--mono);font-size:11px;transition:all .5s var(--ease)}
+.slot .st-done{display:none;place-items:center;color:var(--green)}
+.slot .st-done svg{width:18px;height:18px}
+.slot.done{border:1.5px solid var(--green);background:var(--green-dim,rgba(74,222,128,.1));box-shadow:0 0 18px rgba(74,222,128,.15);animation:slotpop .5s var(--ease)}
+.slot.done .st-wait{display:none}
+.slot.done .st-done{display:grid}
+@keyframes slotpop{0%{transform:scale(.7)}60%{transform:scale(1.12)}100%{transform:scale(1)}}
+.cap-progress{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.cap-progress b{color:var(--green)}
+.punch-hint{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.punch-result{display:flex;flex-direction:column;gap:10px;opacity:0;transform:translateY(14px);transition:all .6s var(--ease)}
+.punch-result.show{opacity:1;transform:none}
+.punch-photo{height:96px;border-radius:8px;background:linear-gradient(135deg,#16213b,#0d1220);border:1px solid var(--border);position:relative;overflow:hidden}
+.punch-photo .pbox{position:absolute;left:35%;top:15%;width:30%;height:58%;border:1.5px solid var(--green);border-radius:4px;box-shadow:0 0 12px rgba(74,222,128,.3)}
+.punch-photo .pstamp{position:absolute;right:7px;bottom:6px;font-family:var(--mono);font-size:8.5px;color:#f8d68a;background:rgba(0,0,0,.45);padding:1px 5px;border-radius:3px}
+.punch-meta{display:flex;justify-content:space-between;align-items:center}
+.pname{font-size:14px;font-weight:650}
+.score{font-family:var(--mono);font-size:10.5px;color:var(--green);background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.3);border-radius:5px;padding:1px 7px;margin-left:7px;vertical-align:1px}
+.ptime{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.csv-line{font-family:var(--mono);font-size:10px;color:#c4b5fd;background:var(--surface-3);border:1px solid var(--border-soft);border-radius:6px;padding:7px 10px;white-space:nowrap;overflow-x:auto;opacity:0;transform:translateY(6px);transition:all .5s var(--ease) .15s}
+.csv-line.show{opacity:1;transform:none}
+.pstore{font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+/* feature 2 : engine pipeline */
+.pipe{display:flex;flex-direction:column;padding:20px}
+.pipe-node{display:flex;align-items:center;gap:13px;padding:12px 14px;border-radius:12px;border:1px solid var(--border-soft);background:var(--surface-2);transition:all .5s var(--ease);opacity:.5}
+.pipe-node.active{opacity:1;border-color:rgba(94,106,210,.5);background:linear-gradient(90deg,rgba(94,106,210,.11),var(--surface-2) 62%);box-shadow:0 0 24px rgba(94,106,210,.12)}
+.pipe-node .idx{width:25px;height:25px;border-radius:8px;display:grid;place-items:center;font-family:var(--mono);font-size:11px;background:var(--surface-3);color:var(--dim);border:1px solid var(--border);transition:all .4s;flex:none}
+.pipe-node.active .idx{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border-color:transparent}
+.pipe-node .nm{font-size:13.5px;font-weight:650}
+.pipe-node .sp{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:2px}
+.pipe-node .tag{margin-left:auto;font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:6px;background:rgba(139,92,246,.12);color:#c4b5fd;border:1px solid rgba(139,92,246,.25);white-space:nowrap;flex:none}
+.pipe-node .tag.amber{background:rgba(251,191,36,.1);color:#fcd34d;border-color:rgba(251,191,36,.28)}
+.pipe-link{width:2px;height:15px;margin-left:29px;background:#2a2c34;position:relative;overflow:hidden;flex:none}
+.pipe-link::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,var(--indigo),var(--violet));transform:scaleY(0);transform-origin:top;transition:transform .45s var(--ease)}
+.pipe-link.draw::after{transform:scaleY(1)}
+.pipe-foot{margin-top:16px;padding-top:14px;border-top:1px dashed var(--border);font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* feature 3 : camera */
+.cam{padding:18px;display:flex;flex-direction:column;gap:14px}
+.cam-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.seg{display:flex;background:var(--surface-3);border:1px solid var(--border);border-radius:10px;padding:3px;position:relative}
+.seg .knob{position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);border-radius:8px;background:linear-gradient(135deg,var(--indigo),var(--violet));transition:transform .45s var(--ease)}
+.seg.video .knob{transform:translateX(100%)}
+.seg button{position:relative;z-index:1;background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:11px;padding:7px 15px;cursor:default;transition:color .3s;border-radius:8px;white-space:nowrap}
+.seg button.on{color:#fff}
+.cam-note{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.cam-view{height:198px;border-radius:12px;background:linear-gradient(160deg,#132033,#0a0f18);border:1px solid var(--border);position:relative;overflow:hidden}
+.cam-grid{position:absolute;inset:0;opacity:.55;
+  background-image:linear-gradient(rgba(120,140,180,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(120,140,180,.08) 1px,transparent 1px);
+  background-size:33.33% 33.33%}
+.cam-subject{position:absolute;left:50%;top:56%;transform:translate(-50%,-50%);color:#33415a}
+.cam-subject svg{width:70px;height:82px}
+.rec{position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:#fca5a5;opacity:0;transition:opacity .3s}
+.cam-view.rec-on .rec{opacity:1}
+.rec .rdot{width:7px;height:7px;border-radius:50%;background:var(--red);animation:pulse 1s infinite}
+.timer{font-variant-numeric:tabular-nums}
+.res-tag{position:absolute;top:10px;right:10px;font-family:var(--mono);font-size:10px;color:#5b6b84}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+.flash.go{animation:flashA .45s ease-out}
+@keyframes flashA{0%{opacity:.8}100%{opacity:0}}
+.cam-btns{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:8px}
+.cam-btn{width:37px;height:37px;border-radius:50%;border:1px solid #3a3d46;background:rgba(255,255,255,.07);display:grid;place-items:center;cursor:default;transition:transform .2s;color:#c9ced8}
+.cam-btn svg{width:15px;height:15px}
+.cam-btn.photo:active,.cam-btn.rec-btn:active{transform:scale(.88)}
+.cam-btn.rec-btn{border-color:rgba(248,113,113,.55);background:rgba(248,113,113,.14);color:#fca5a5}
+.filmstrip{overflow:hidden;padding:2px 0}
+.fs-track{display:flex;gap:6px;width:max-content;animation:fslide 11s linear infinite}
+@keyframes fslide{to{transform:translateX(calc(-50% - 3px))}}
+.frame{flex:0 0 62px;height:38px;border-radius:5px;background:linear-gradient(120deg,#1a2436,#101826);border:1px solid var(--border-soft);position:relative;overflow:hidden}
+.frame:nth-child(3n){background:linear-gradient(120deg,#1d2a3d,#121a28)}
+.frame:nth-child(4n){background:linear-gradient(120deg,#18202f,#0e1520)}
+.frame::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);transform:translateX(-100%);animation:shimmer 2.6s infinite}
+@keyframes shimmer{60%,100%{transform:translateX(100%)}}
+.cam-foot{font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* feature 4 : web console */
+.browser{border-radius:12px;overflow:hidden;border:1px solid var(--border);background:var(--surface-2);display:flex;flex-direction:column;height:100%}
+.browser-bar{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-3);border-bottom:1px solid var(--border)}
+.bdots{display:flex;gap:5px;flex:none}
+.bdot{width:9px;height:9px;border-radius:50%}
+.url{flex:1;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--surface);border:1px solid var(--border-soft);border-radius:7px;padding:5px 12px;display:flex;align-items:center;gap:7px;min-width:0}
+.url svg{width:10px;height:10px;color:var(--green);flex:none}
+.url span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.web-body{padding:14px;display:flex;flex-direction:column;gap:12px;flex:1}
+.push-toast{display:flex;gap:11px;align-items:center;padding:11px 13px;border-radius:11px;border:1px solid rgba(74,222,128,.3);background:linear-gradient(90deg,rgba(74,222,128,.09),var(--surface-2) 65%);transform:translateX(26px);opacity:0;transition:all .6s var(--ease)}
+.push-toast.show{transform:none;opacity:1}
+.push-thumb{width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#16213b,#0d1220);border:1px solid var(--border);position:relative;overflow:hidden;flex:none}
+.push-thumb i{position:absolute;left:32%;top:14%;width:36%;height:56%;border:1.5px solid var(--green);border-radius:3px}
+.pt-main{font-size:13px;font-weight:650}
+.pt-main .score{font-size:10px}
+.pt-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px}
+.media-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.tile{aspect-ratio:1;border-radius:8px;background:linear-gradient(135deg,var(--surface-3),var(--surface-2));border:1px solid var(--border-soft);transform:scale(.7);opacity:0;transition:all .5s var(--ease);position:relative;overflow:hidden}
+.tile.show{transform:none;opacity:1}
+.tile::after{content:'';position:absolute;left:30%;top:16%;width:40%;height:44%;border:1px solid rgba(120,140,180,.25);border-radius:3px}
+.tile:nth-child(2)::after,.tile:nth-child(3)::after{border-radius:50%;width:26%;height:26%;left:37%;top:37%}
+.upload{display:flex;flex-direction:column;gap:7px;margin-top:auto}
+.upload-row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.up-bar{height:6px;border-radius:4px;background:var(--surface-3);border:1px solid var(--border-soft);overflow:hidden}
+.up-fill{height:100%;width:0;border-radius:4px;background:linear-gradient(90deg,var(--indigo),var(--violet));transition:width 1.4s var(--ease)}
+
+/* ---------- pipeline / code ---------- */
+.code-card{border-radius:14px;border:1px solid var(--border);background:#0c0d10;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45);max-width:920px;margin:0 auto;transition:border-color .5s,box-shadow .5s;cursor:pointer}
+.code-card.done{border-color:rgba(94,106,210,.38);box-shadow:0 24px 60px rgba(0,0,0,.45),0 0 44px rgba(94,106,210,.09)}
+.code-head{display:flex;align-items:center;gap:10px;padding:11px 15px;background:var(--surface-2);border-bottom:1px solid var(--border)}
+.code-head svg.file{width:13px;height:13px;color:var(--dim)}
+.fname{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.lang-chip{margin-left:auto;font-family:var(--mono);font-size:10px;color:#c4b5fd;background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.25);border-radius:6px;padding:2px 8px;white-space:nowrap}
+.replay{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--surface-3);border:1px solid var(--border);border-radius:7px;padding:4px 10px;cursor:pointer;transition:all .25s}
+.replay svg{width:11px;height:11px}
+.replay:hover{color:var(--text);border-color:#33353d}
+.code-body{padding:18px 20px 14px;font-family:var(--mono);font-size:13px;line-height:1.85;overflow-x:auto}
+.cline{position:relative;white-space:pre;padding-left:38px;min-height:1.85em}
+.ln{position:absolute;left:0;top:0;width:24px;text-align:right;color:#454852;font-size:11px;user-select:none;padding-top:2px}
+.ch{opacity:0}
+.ch.on{opacity:1}
+.caret{display:inline-block;width:7px;height:14px;background:var(--indigo);vertical-align:-2px;margin-left:1px;border-radius:1px;animation:blink 1s steps(1) infinite}
+.tok-kw{color:#a78bfa}.tok-fn{color:#7c8cf8}.tok-cm{color:#5d616c;font-style:italic}.tok-num{color:#fbbf24}.tok-typ{color:#7dd3fc}
+.code-ann{margin:3px 0 11px 38px;display:flex;gap:9px;align-items:flex-start;padding:8px 12px;border-radius:9px;background:rgba(236,72,153,.07);border:1px solid rgba(236,72,153,.22);color:#f9a8d4;font-size:12px;font-family:var(--font);opacity:0;transform:translateY(-4px);transition:all .45s var(--ease)}
+.code-ann.show{opacity:1;transform:none}
+.code-ann .mark{font-weight:700;color:var(--pink);flex:none}
+.code-note{max-width:920px;margin:18px auto 0;font-family:var(--mono);font-size:11px;color:var(--dim);text-align:center;line-height:1.8}
+.code-note code{color:#c4b5fd}
+
+/* ---------- dashboard ---------- */
+.dash-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.mcard{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:9px;transition:border-color .3s,transform .3s;min-width:0}
+.mcard:hover{border-color:#2e313a;transform:translateY(-2px)}
+.mcard .lab{font-size:12.5px;color:var(--muted)}
+.mcard .val{font-size:32px;font-weight:750;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1;
+  background:linear-gradient(135deg,#c7d2fe,#8b5cf6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.mcard .sub{font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.6}
+.bars{display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:auto}
+.bar{flex:1;height:var(--h);border-radius:2px 2px 0 0;background:linear-gradient(180deg,var(--indigo),rgba(139,92,246,.35));transform:scaleY(0);transform-origin:bottom;transition:transform .7s var(--ease)}
+.mcard.wide{grid-column:span 2}
+.mcard.full{grid-column:span 4}
+.store-stack{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#15161b;border:1px solid var(--border-soft)}
+.sseg{width:0;transition:width 1s var(--ease) .2s;height:100%}
+.sseg+.sseg{margin-left:2px}
+.legend{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+.lg-row{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);min-width:0}
+.lg-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg-dot{width:9px;height:9px;border-radius:3px;flex:none}
+.lg-row b{margin-left:auto;color:var(--text);font-weight:600;font-family:var(--mono);font-size:11.5px;padding-left:10px}
+.ring-wrap{position:relative;width:132px;height:132px;margin:2px auto 4px;flex:none}
+.ring-wrap svg{width:100%;height:100%}
+.ring-track{fill:none;stroke:#22242c;stroke-width:9}
+.ring-fill{fill:none;stroke:url(#ringGrad);stroke-width:9;stroke-linecap:round;stroke-dasharray:339.29;stroke-dashoffset:339.29;transition:stroke-dashoffset 1.4s var(--ease) .3s;transform:rotate(-90deg);transform-origin:65px 65px}
+.ring-center{position:absolute;inset:0;display:grid;place-items:center;font-size:26px;font-weight:750;letter-spacing:-.02em;
+  background:linear-gradient(135deg,#c7d2fe,#8b5cf6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-variant-numeric:tabular-nums}
+.mf-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.mem-status{font-family:var(--mono);font-size:11px;color:var(--muted);transition:color .4s}
+.mem-status.ok{color:var(--green)}
+.mem-track{position:relative;height:58px;border-radius:11px;background:var(--surface-2);border:1px solid var(--border-soft);overflow:hidden}
+.mem-base{position:absolute;right:13px;top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:10px;color:var(--dim);text-align:right;line-height:1.5}
+.mseg{position:absolute;top:9px;bottom:9px;width:0;border-radius:7px;display:flex;align-items:center;padding-left:10px;font-family:var(--mono);font-size:10px;color:#fff;white-space:nowrap;overflow:hidden;transition:width .8s var(--ease),opacity .5s}
+.mseg.s1{left:0;background:linear-gradient(90deg,var(--indigo),#7c6ae6)}
+.mseg.s2{left:35%;background:linear-gradient(90deg,var(--violet),#a78bfa)}
+.mem-track.g1 .mseg.s1{width:35%}
+.mem-track.g2 .mseg.s2{width:65%}
+.mem-track.release .mseg.s1,.mem-track.release .mseg.s2{width:0;padding-left:0;opacity:.25}
+.mf-steps{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.mf-steps .ok{opacity:.45;transition:opacity .4s}
+.mf-steps .ok.lit{opacity:1;text-shadow:0 0 12px rgba(74,222,128,.5)}
+
+/* ---------- quickstart ---------- */
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+.step{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:9px;position:relative;overflow:hidden;transition:border-color .3s,transform .3s}
+.step:hover{border-color:#2e313a;transform:translateY(-2px)}
+.step .no{font-family:var(--mono);font-size:11px;color:var(--indigo);letter-spacing:.1em}
+.step h3{font-size:15px;font-weight:650}
+.step p{font-size:12.5px;color:var(--muted);line-height:1.7}
+.step .cmd{font-family:var(--mono);font-size:10.5px;background:var(--surface-3);border:1px solid var(--border-soft);border-radius:6px;padding:6px 9px;color:#c4b5fd;overflow-x:auto;white-space:nowrap;margin-top:auto}
+.final-cta{margin-top:44px;border-radius:22px;border:1px solid rgba(94,106,210,.35);
+  background:radial-gradient(80% 130% at 50% 0%,rgba(94,106,210,.17),rgba(139,92,246,.05) 55%,transparent),var(--surface);
+  padding:58px 40px;text-align:center;display:flex;flex-direction:column;gap:20px;align-items:center;position:relative;overflow:hidden}
+.final-cta h2{font-size:clamp(26px,4vw,44px)}
+.final-cta .sec-desc{max-width:560px}
+
+/* ---------- footer ---------- */
+footer{border-top:1px solid var(--border-soft);padding:28px 32px;display:flex;gap:8px 24px;flex-wrap:wrap;justify-content:space-between;
+  font-family:var(--mono);font-size:11px;color:var(--dim);position:relative;z-index:1;letter-spacing:.03em}
+
+/* ---------- responsive ---------- */
+@media(max-width:1100px){
+  .indicators{display:none}
+  .dash-grid{grid-template-columns:repeat(2,1fr)}
+  .mcard.wide{grid-column:span 2}
+  .mcard.full{grid-column:span 2}
+  .steps{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+}
+@media(max-width:900px){
+  .nav-links{display:none}
+  .feature{grid-template-columns:1fr;gap:36px}
+  .feature.flip .feature-visual{order:0}
+  .float-card{display:none}
+  section{padding:100px 22px}
+  .hero{padding-top:130px}
+}
+@media(max-width:640px){
+  .dash-grid{grid-template-columns:1fr}
+  .mcard.wide,.mcard.full{grid-column:span 1}
+  .enroll-grid{grid-template-columns:1fr}
+  .media-grid{grid-template-columns:repeat(4,1fr)}
+  .code-body{font-size:11.5px}
+  .nav-logo .dim{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+  .reveal{opacity:1;transform:none}
+  .fs-track{animation:none}
+}
+
+/* ---------- xiaozhi AI ---------- */
+.aiwin{width:min(440px,100%);margin:0 auto;border-radius:14px;border:1px solid var(--border);background:var(--surface);overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.aiwin-bar{display:flex;align-items:center;gap:9px;padding:11px 15px;background:var(--surface-2);border-bottom:1px solid var(--border);font-size:12.5px;font-weight:600}
+.aiwin-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 9px var(--green);animation:pulse 2s infinite}
+.aiwin-net{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px solid var(--border);background:var(--surface-3);padding:2px 9px;border-radius:99px}
+.aiwin-body{padding:16px 15px 8px;display:flex;flex-direction:column;gap:10px;min-height:168px}
+.abubble{max-width:80%;padding:9px 13px;border-radius:13px;font-size:13px;line-height:1.55}
+.abubble.user{align-self:flex-end;background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border-bottom-right-radius:4px}
+.abubble.bot{align-self:flex-start;background:var(--surface-3);border:1px solid var(--border);border-bottom-left-radius:4px;display:flex;align-items:center;gap:8px}
+.aiok{width:16px;height:16px;border-radius:50%;background:rgba(74,222,128,.13);border:1px solid rgba(74,222,128,.4);color:var(--green);display:grid;place-items:center;font-size:10px;font-weight:700;flex:none}
+.wave{display:flex;align-items:flex-end;gap:3px;height:24px;align-self:center}
+.wave i{width:3.5px;height:42%;border-radius:2px;background:linear-gradient(180deg,var(--violet),var(--indigo))}
+.wave i:nth-child(2n){height:68%}.wave i:nth-child(3n){height:30%}.wave i:nth-child(5n){height:85%}
+.aiwin.run .wave i{animation:wv 1.05s ease-in-out infinite}
+.wave i:nth-child(2n){animation-delay:.12s}.wave i:nth-child(3n){animation-delay:.24s}.wave i:nth-child(5n){animation-delay:.36s}
+@keyframes wv{0%,100%{height:26%}50%{height:100%}}
+.aiwin-botline{font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center;padding:4px 0 12px}
+.iot-card{border-top:1px solid var(--border);background:var(--surface-2);padding:12px 15px 6px}
+.iot-title{font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.1em;margin-bottom:6px}
+.iot-row{display:flex;align-items:center;gap:10px;font-size:12.5px;padding:8px 0;border-bottom:1px dashed var(--border-soft)}
+.iot-row:last-child{border-bottom:none;padding-bottom:12px}
+.iot-row b{font-weight:600}
+.iot-val{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--green)}
+.iot-sw{width:27px;height:15px;border-radius:99px;background:var(--surface-3);border:1px solid var(--border);position:relative;flex:none}
+.iot-sw::after{content:'';position:absolute;top:2px;left:2px;width:9px;height:9px;border-radius:50%;background:var(--dim);transition:all .3s}
+.iot-sw.on{background:rgba(94,106,210,.22);border-color:var(--indigo)}
+.iot-sw.on::after{left:13px;background:var(--indigo);box-shadow:0 0 7px var(--indigo)}
+.xz-stage{opacity:0;transform:translateY(12px);transition:opacity .55s var(--ease),transform .55s var(--ease)}
+.xz-s1{transition-delay:.08s}.xz-s2{transition-delay:.42s}.xz-s3{transition-delay:.72s}.xz-s4{transition-delay:1s}.xz-s5{transition-delay:1.2s}.xz-s6{transition-delay:1.42s}.xz-s7{transition-delay:1.6s}.xz-s8{transition-delay:1.78s}
+.aiwin.run .xz-stage{opacity:1;transform:none}
+
+/* ---------- wallpaper ---------- */
+.wpwrap{padding:26px 22px 20px}
+.wpscreen{position:relative;aspect-ratio:8/5;border-radius:12px;overflow:hidden;border:1px solid var(--border);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.wplayer{position:absolute;inset:0;opacity:0}
+.wplayer.wp1{opacity:1;background:radial-gradient(120% 90% at 20% 15%,rgba(139,92,246,.5),transparent 55%),linear-gradient(140deg,#241a4d,#5e6ad2 62%,#8b5cf6)}
+.wplayer.wp2{background:radial-gradient(120% 90% at 80% 20%,rgba(79,195,161,.4),transparent 55%),linear-gradient(140deg,#0d2b33,#1f6f7e 60%,#4fc3a1)}
+.wplayer.wp3{background:radial-gradient(120% 90% at 25% 80%,rgba(224,142,90,.45),transparent 55%),linear-gradient(140deg,#3d1c2e,#a03e63 55%,#e08e5a)}
+.wplayer.wp4{background:radial-gradient(120% 90% at 75% 75%,rgba(156,192,106,.4),transparent 55%),linear-gradient(140deg,#1c2e1a,#4c7a35 58%,#9cc06a)}
+.wpscreen.run .wplayer{animation:wpfade 16s linear infinite}
+.wpscreen.run .wp2{animation-delay:4s}.wpscreen.run .wp3{animation-delay:8s}.wpscreen.run .wp4{animation-delay:12s}
+@keyframes wpfade{0%{opacity:1}22%{opacity:1}27%{opacity:0}95%{opacity:0}100%{opacity:1}}
+.wp-clock{position:absolute;top:12px;right:12px;background:rgba(10,11,14,.55);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px);border-radius:10px;padding:7px 13px;text-align:right}
+.wp-clock b{display:block;font-size:17px;font-weight:700;letter-spacing:.02em}
+.wp-clock span{font-size:10px;color:rgba(255,255,255,.75);font-family:var(--mono)}
+.wp-set{position:absolute;left:12px;bottom:12px;font-family:var(--mono);font-size:10.5px;color:#fff;background:rgba(10,11,14,.55);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);padding:5px 11px;border-radius:8px}
+.wp-tag{position:absolute;right:12px;bottom:12px;font-family:var(--mono);font-size:10px;color:var(--green);background:rgba(10,11,14,.55);border:1px solid rgba(74,222,128,.35);padding:5px 11px;border-radius:8px}
+.wp-foot{margin-top:12px;font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* ---------- view switching ---------- */
+.view[hidden]{display:none!important}
+.view-toggle{display:inline-flex;gap:2px;padding:2px;border-radius:9px;background:var(--surface-2);border:1px solid var(--border);margin-right:14px;flex:none}
+.view-toggle button{font-family:var(--font);font-size:12px;font-weight:600;color:var(--muted);background:transparent;border:none;padding:5px 11px;border-radius:7px;cursor:pointer;white-space:nowrap;transition:color .2s}
+.view-toggle button.on{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff}
+.nav-group{display:none}
+.nav-group.on{display:contents}
+.ind-group{display:none}
+.ind-group.on{display:flex;flex-direction:column;gap:10px}
+button.btn{cursor:pointer;font-family:var(--font)}
+
+/* ---------- main view: hero music panel ---------- */
+.mpanel{display:flex;gap:14px;align-items:center;padding:14px 14px 10px}
+.disc{width:92px;height:92px;border-radius:50%;flex:none;position:relative;background:radial-gradient(circle at 50% 50%,#2a2c33 0 18%,#111216 18% 20%,#22242b 20% 34%,#111216 34% 36%,#22242b 36% 48%,#15161a 48% 100%);box-shadow:0 6px 18px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.05);animation:spin 9s linear infinite}
+.disc::after{content:'';position:absolute;inset:34%;border-radius:50%;background:linear-gradient(135deg,var(--indigo),var(--violet));box-shadow:0 0 10px rgba(94,106,210,.6)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.mp-right{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+.mp-song{font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mp-artist{font-size:11px;color:var(--muted);font-weight:500;margin-left:8px}
+.mp-lyr{display:flex;flex-direction:column;gap:3px;min-height:57px}
+.ly{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ly.cur{font-size:13.5px;color:var(--text);font-weight:600}
+.mp-bar{height:4px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.mp-bar i{display:block;height:100%;width:31%;border-radius:99px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.mp-time{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.mp-keys{display:flex;gap:8px;padding:0 14px 14px}
+.mp-keys span{flex:1;text-align:center;padding:8px 0;border-radius:9px;border:1px solid var(--border);background:var(--surface-2);font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.08em}
+.mp-keys .k-play{background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border-color:transparent;font-weight:700}
+
+/* ---------- main view: pcnow ---------- */
+.pcnow{width:min(460px,100%);margin:0 auto;border-radius:14px;border:1px solid var(--border);background:var(--surface);overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.pcnow-src{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--surface-2);font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.pcnow-src .live{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;flex:none}
+.pcnow-body{display:flex;gap:16px;align-items:center;padding:18px 16px}
+.pcnow-body .disc{width:104px;height:104px}
+.pcnow-keys{padding:0 16px 16px}
+
+/* ---------- main view: ota ---------- */
+.otabox{width:min(480px,100%);margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.oslots{display:flex;align-items:stretch;gap:10px}
+.oslot{flex:1;border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:10px 12px}
+.oslot b{display:block;font-family:var(--mono);font-size:12px;margin-bottom:2px}
+.oslot span{font-size:10.5px;color:var(--muted)}
+.oslot.run-a{border-color:rgba(74,222,128,.5);box-shadow:0 0 14px rgba(74,222,128,.15)}
+.oswap{align-self:center;font-family:var(--mono);font-size:10px;color:var(--dim);flex:none;text-align:center;line-height:1.4}
+.ouext{border:1px dashed rgba(236,72,153,.5);border-radius:11px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.ouext b{font-family:var(--mono);font-size:11.5px;color:var(--pink)}
+.ouext span{font-size:10.5px;color:var(--dim)}
+.oprog{border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:11px 12px}
+.oprog .orow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:7px;gap:10px}
+.obar{height:8px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.obar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.otabox.run .obar i{animation:ogrow 3.2s var(--ease) .4s forwards}
+@keyframes ogrow{0%{width:0}100%{width:87%}}
+.ostatus{margin-top:8px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;gap:10px;flex-wrap:wrap}
+.ostatus .st-ok{color:var(--green);opacity:0}
+.otabox.run .st-ok{animation:fadein .4s 3.8s forwards}
+@keyframes fadein{to{opacity:1}}
+.ofoot{font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:center}
+
+/* ---------- main view: 7-tab grid ---------- */
+.m7grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;width:min(480px,100%);margin:0 auto}
+.m7{border:1px solid var(--border);border-radius:11px;background:var(--surface-2);padding:11px 13px}
+.m7 b{display:flex;align-items:center;gap:7px;font-size:13px}
+.m7 b i{width:8px;height:8px;border-radius:50%;background:var(--indigo);box-shadow:0 0 8px var(--indigo);flex:none}
+.m7 span{display:block;font-size:11px;color:var(--muted);margin-top:3px;line-height:1.5}
+.m7.hot{border-color:rgba(94,106,210,.5);background:rgba(94,106,210,.08)}
+.m7.wide{grid-column:span 2}
+
+/* ---------- main view: flash partition map ---------- */
+.fmap{width:min(480px,100%);margin:0 auto;display:flex;flex-direction:column;gap:7px}
+.frow{display:flex;align-items:stretch;gap:6px}
+.fseg{flex:1;height:34px;border-radius:7px;border:1px solid var(--border);background:var(--surface-2);display:flex;align-items:center;padding:0 9px;font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.fseg small{margin-left:6px;color:var(--dim);font-size:9px}
+.fseg.thin{height:22px;flex:0 0 auto;padding:0 7px;font-size:9px}
+.fseg.a{flex:5;background:rgba(94,106,210,.15);border-color:rgba(94,106,210,.45);color:#cdd2f2}
+.fseg.b{flex:5;background:rgba(139,92,246,.13);border-color:rgba(139,92,246,.4);color:#e0d4fb}
+.fseg.u{flex:2.9;background:rgba(236,72,153,.1);border-color:rgba(236,72,153,.4);color:#f3b8d8}
+.fseg.st{flex:3}
+.fnote{font-family:var(--mono);font-size:10px;color:var(--dim);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.fkey{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--muted);text-align:center;border:1px dashed var(--border);border-radius:8px;padding:8px 10px;line-height:1.6}
+@media(max-width:640px){.m7grid{grid-template-columns:1fr}.m7.wide{grid-column:span 1}}
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="bg-glow"></div>
+
+<!-- ================= Navigation ================= -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-logo" href="#hero-main">
+      <span class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" stroke-linecap="round"/><circle cx="12" cy="10" r="2.1"/><path d="M8.6 15.6c.9-1.4 2-2 3.4-2s2.5.6 3.4 2" stroke-linecap="round"/></svg>
+      </span>
+      Harness<span class="dim">·ESP32-S31</span>
+    </a>
+    <div class="view-toggle" id="viewToggle">
+      <button type="button" data-view="view-main" class="on">主线 · 智能音箱</button>
+      <button type="button" data-view="view-branch">支线 · 人脸识别</button>
+    </div>
+    <div class="nav-links">
+      <span class="nav-group on" data-view="view-main">
+        <a href="#hero-main">主页</a>
+        <a href="#pcscreen">副屏推送</a>
+        <a href="#ota">WiFi OTA</a>
+        <a href="#media7">七 Tab</a>
+        <a href="#uext">双固件</a>
+        <a href="#agent">Agent 闭环</a>
+      </span>
+      <span class="nav-group" data-view="view-branch">
+        <a href="#attendance">人脸打卡</a>
+        <a href="#engine">AI 引擎</a>
+        <a href="#xiaozhi">小智 AI</a>
+        <a href="#camera">拍照录像</a>
+        <a href="#wallpaper">动态壁纸</a>
+        <a href="#web">网页管理端</a>
+        <a href="#dashboard">资源账本</a>
+      </span>
+    </div>
+    <a class="nav-cta" href="https://github.com/xkk6663/Harness_ESP32S31/tree/%E7%AB%AF%E4%BE%A7%E4%BA%BA%E8%84%B8%E8%AF%86%E5%88%AB" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+      GitHub
+    </a>
+  </div>
+  <div class="nav-progress"><span id="scrollProgress"></span></div>
+</nav>
+
+<!-- ================= Section indicators ================= -->
+<div class="indicators">
+  <span class="ind-group on" data-view="view-main">
+    <a href="#hero-main" class="active"></a>
+    <a href="#pcscreen"></a>
+    <a href="#ota"></a>
+    <a href="#media7"></a>
+    <a href="#uext"></a>
+    <a href="#agent"></a>
+  </span>
+  <span class="ind-group" data-view="view-branch">
+    <a href="#hero"></a>
+    <a href="#attendance"></a>
+    <a href="#engine"></a>
+    <a href="#xiaozhi"></a>
+    <a href="#camera"></a>
+    <a href="#wallpaper"></a>
+    <a href="#web"></a>
+    <a href="#pipeline"></a>
+    <a href="#dashboard"></a>
+    <a href="#quickstart"></a>
+  </span>
+</div>
+
+<main>
+
+<!-- ========================= 主线视图 view-main ========================= -->
+<div class="view" id="view-main">
+
+<!-- ================= M1. Hero ================= -->
+<section class="hero" id="hero-main">
+  <span class="eyebrow reveal"><span class="dot"></span>ESP32-S31-KORVO-1 · 多功能智能音箱</span>
+  <h1 class="reveal d1">一台设备，<span class="grad-text">五重身份</span></h1>
+  <p class="hero-sub reveal d2">蓝牙音箱 · PC 歌词副屏 · 局域网对讲机 · 录音笔 · 视频播放器——再叠加 USB 扩展屏双固件与 WiFi OTA v2.0 A/B 双槽防砖升级。</p>
+  <div class="hero-ctas reveal d3">
+    <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+      在 GitHub 上查看
+    </a>
+    <button type="button" class="btn btn-ghost" data-goto="view-branch">支线 · 人脸识别 →</button>
+  </div>
+  <div class="hero-stats reveal d4">
+    <span><b>7</b> Tab 主界面</span>
+    <span><b>≤100ms</b> 对讲延迟</span>
+    <span><b>A/B</b> 双槽 OTA</span>
+    <span><b>800×480</b> USB 副屏</span>
+    <span><b>16MB</b> Flash</span>
+  </div>
+
+  <!-- floating UI mockup -->
+  <div class="device-stage reveal d5">
+    <div class="float-card fc1">
+      <div class="fc-label">WiFi OTA v2.0</div>
+      <div class="fc-bar"><i style="width:87%;background:#5e6ad2"></i></div>
+      <div class="fc-s">A/B 双槽 → <b class="ok">已自证转正</b></div>
+    </div>
+    <div class="float-card fc2">
+      <div class="fc-row">
+        <span class="fc-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <div>
+          <div class="fc-t">CALL · 全双工对讲</div>
+          <div class="fc-s">UDP 50000/50001 · 端到端 ≤100ms</div>
+        </div>
+      </div>
+    </div>
+    <div class="float-card fc3"><span class="fc-chip">三行歌词 · 1.25s 提前量补偿</span></div>
+
+    <div class="device">
+      <div class="device-screen">
+        <div class="dstatus">
+          <span>20:41</span>
+          <span class="dicons">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 19.5h.01" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M6 11v2M10 11v2M14 11v2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M20 11v2"/></svg>
+          </span>
+        </div>
+        <div class="mpanel">
+          <div class="disc"></div>
+          <div class="mp-right">
+            <div class="mp-song">夜航西飞<span class="mp-artist">PC NOW 推送</span></div>
+            <div class="mp-lyr"><span class="ly">灯光落进副屏的时候</span><span class="ly cur">歌词正好滚到这一行</span><span class="ly">比电脑慢不了半秒</span></div>
+            <div class="mp-bar"><i></i></div>
+            <div class="mp-time">02:11 / 04:29 · LAN</div>
+          </div>
+        </div>
+        <div class="mp-keys"><span>PREV</span><span class="k-play">PLAY</span><span>NEXT</span><span>VOL</span></div>
+        <div class="dtab">
+          <span>CALL</span><span>REC</span><span>AUDIO</span><span>SINK</span><span>VIDEO</span><span class="on">PC</span><span>SYS</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M2. PC 音乐副屏 ================= -->
+<section id="pcscreen">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">PC NOW · 局域网推送</span>
+        <h2 class="reveal d1">电脑在放的歌<br>副屏<span class="grad-text">同步呈现</span></h2>
+        <p class="sec-desc reveal d2">PyQt 上位机 pc_host 监听本机"正在播放"（网易云等），经局域网推送到设备副屏：旋转封面、三行滚动歌词（1.25s 提前量补偿滚动启动）、进度条与媒体控制键，还能反向遥控播放。</p>
+        <div class="chips reveal d3">
+          <span class="chip">旋转封面</span>
+          <span class="chip">三行歌词 · 1.25s 补偿</span>
+          <span class="chip">媒体双向控制</span>
+          <span class="chip">上位机深色主题 · §77</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="pcscreen-visual">
+        <div class="pcnow">
+          <div class="pcnow-src"><span class="live"></span><span>PC NOW · LAN 推送中</span></div>
+          <div class="pcnow-body">
+            <div class="disc"></div>
+            <div class="mp-right">
+              <div class="mp-song">夜航西飞<span class="mp-artist">演示曲目 · Local</span></div>
+              <div class="mp-lyr"><span class="ly">灯光落进副屏的时候</span><span class="ly cur">歌词正好滚到这一行</span><span class="ly">比电脑慢不了半秒</span></div>
+              <div class="mp-bar"><i></i></div>
+              <div class="mp-time">02:11 / 04:29</div>
+            </div>
+          </div>
+          <div class="mp-keys pcnow-keys"><span>PREV</span><span class="k-play">PAUSE</span><span>NEXT</span><span>LIKE</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M3. WiFi OTA v2.0 ================= -->
+<section id="ota">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">v2.0 · A/B 双槽 · 零新增端口</span>
+        <h2 class="reveal d1">升级不怕断电<br>断了<span class="grad-text">接着传</span></h2>
+        <p class="sec-desc reveal d2">设备作 HTTP 客户端主动拉取（控制面复用 UDP 50003、数据面复用 TCP 50005）：OFFER 六条校验链 → 边收边写对侧槽（32KB 攒块，256KB 段哈希落 NVS）→ 段 CRC → 自证转正；窗口内断电由 bootloader 自动回滚旧槽。真续传已实弹验收：40% 断开 → 归零重推 → 从段边界 RESUME。</p>
+        <div class="chips reveal d3">
+          <span class="chip">ota_0 ⇄ ota_1 锁死</span>
+          <span class="chip">真续传 · 最多重下 256KB</span>
+          <span class="chip">防砖四防线</span>
+          <span class="chip">双向 OTA §79 · 手动切槽</span>
+          <span class="chip">LVGL 全屏遮罩 · 请勿断电</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="ota-visual">
+        <div class="otabox">
+          <div class="oslots">
+            <div class="oslot run-a"><b>ota_0 · A 槽</b><span>当前运行 · 已自证</span></div>
+            <span class="oswap">⇄ 对侧写入</span>
+            <div class="oslot"><b>ota_1 · B 槽</b><span>OTA 写入目标</span></div>
+          </div>
+          <div class="ouext"><b>uext (ota_2) · USB 副屏固件</b><span>OTA 永不触碰 · 定点烧写 0xA20000</span></div>
+          <div class="oprog">
+            <div class="orow"><span>firmware_v2.1.bin · 4.6 / 5 MB</span><span>SHA256 校验</span></div>
+            <div class="obar"><i></i></div>
+            <div class="ostatus"><span>HTTP GET :50005 · 32KB 攒块</span><span class="st-ok">段 CRC 通过 · 自证转正 ✓</span></div>
+          </div>
+          <div class="ofoot">防砖四防线：esp_ota_end 段 CRC → 256KB 摘要链 → 自证回滚 → USB 全量兜底</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M4. 七 Tab 全家桶 ================= -->
+<section id="media7">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">audio_service · 命令队列仲裁</span>
+        <h2 class="reveal d1">七个 Tab<br>装下一整个桌面</h2>
+        <p class="sec-desc reveal d2">播放、录音、对讲经命令队列互斥调度，UI 从不直接碰 codec / I2S 寄存器；蓝牙与本地双输出一路切换。</p>
+        <div class="chips reveal d3">
+          <span class="chip">A2DP Sink + AVRCP</span>
+          <span class="chip">MJPEG AVI 硬解 + PPA 缩放</span>
+          <span class="chip">16kHz / 16bit 全双工</span>
+          <span class="chip">LOCAL / BT PUSH 双输出</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="media7-visual">
+        <div class="m7grid">
+          <div class="m7"><b><i></i>CALL · 局域网对讲</b><span>UDP 50000/50001 全双工，端到端 ≤100ms</span></div>
+          <div class="m7"><b><i></i>REC · 本地录音</b><span>一键开录 → SD 卡 WAV → FILES 页回放</span></div>
+          <div class="m7"><b><i></i>AUDIO · 播放中心</b><span>SD 卡音乐硬解；LOCAL / BT PUSH 双输出</span></div>
+          <div class="m7"><b><i></i>SINK · 蓝牙音箱</b><span>A2DP 推歌 + AVRCP 歌名/进度 + 实时歌词</span></div>
+          <div class="m7"><b><i></i>VIDEO · 视频播放</b><span>MJPEG AVI 硬件解码 + PPA 缩放，全屏 800×480</span></div>
+          <div class="m7 hot"><b><i></i>PC · 音乐副屏</b><span>封面 / 歌词 / 进度 / 媒体控制，见上节</span></div>
+          <div class="m7 wide"><b><i></i>SYS · 系统中心</b><span>RGB / WiFi / 蓝牙信息 / 固件升级（版本查询 · 双向 OTA · 运行槽显示与手动切槽）/ 存储·堆栈监视卡</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M5. 双固件架构 ================= -->
+<section id="uext">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">双固件 · SET 一键切换</span>
+        <h2 class="reveal d1">主固件 ⇄ 副屏固件<br>一个键来回切</h2>
+        <p class="sec-desc reveal d2">uext 独立固件把本机变成 Windows 认证的 800×480 USB 扩展屏（TinyUSB HS 收 JPEG → 硬解直写屏）。SET 键单击 → 倒计时确认卡 → 重启进副屏；再按 → 回写引导标志回主固件。</p>
+        <div class="chips reveal d3">
+          <span class="chip">TinyUSB HS · 硬解直写屏</span>
+          <span class="chip">JPEG 质量 9 · 单帧 ≤450KB</span>
+          <span class="chip">定点烧写 0xA20000</span>
+          <span class="chip">Windows IDD 签名驱动</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="uext-visual">
+        <div class="fmap">
+          <div class="frow">
+            <span class="fseg thin">bootloader</span><span class="fseg thin">nvs 24K</span><span class="fseg thin">phy 4K</span><span class="fseg thin">otadata 8K</span>
+          </div>
+          <div class="frow">
+            <span class="fseg a">ota_0 · 主固件 A 槽<small>5 MB</small></span>
+            <span class="fseg b">ota_1 · 主固件 B 槽<small>5 MB</small></span>
+          </div>
+          <div class="frow">
+            <span class="fseg u">uext · 副屏固件<small>2.875 MB · OTA 锁槽</small></span>
+            <span class="fseg st">storage · littlefs<small>3 MB</small></span>
+          </div>
+          <div class="fnote"><span>16 MB Flash · partitions.csv V1.3</span><span>OTA 只写对侧 · 断电回滚兜底</span></div>
+          <div class="fkey">SET 单击（主固件）→ 倒计时确认卡 → 重启进副屏 → SET 单击 → 回写引导标志 → 回主固件</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= M6. Agent 开发闭环 ================= -->
+<section id="agent">
+  <div class="wrap">
+    <div class="sec-head center">
+      <span class="eyebrow reveal">不只是固件 · AGENT FIRST</span>
+      <h2 class="reveal d1">一套 Agent 可执行的<span class="grad-text">开发闭环</span></h2>
+      <p class="sec-desc reveal d2">传统嵌入式：人写码、人编译、人烧录、人看日志、人改。本仓库把整条链路沉淀成 Agent 可执行的 Skill + 工程规范——每一步的产物与判据都有明确定义。</p>
+    </div>
+    <div class="steps">
+      <div class="step reveal d1"><span class="no">01</span><h3>读规范</h3><p>docs/工程规范 01~11 + skills/esp-idf-closed-loop.md 闭环 SOP。</p></div>
+      <div class="step reveal d2"><span class="no">02</span><h3>写代码</h3><p>按模块模板生成 middleware / UI 代码，自动注册 CMakeLists。</p></div>
+      <div class="step reveal d3"><span class="no">03</span><h3>编译</h3><p>idf.py build，自动读 error: 并修复。</p></div>
+      <div class="step reveal d4"><span class="no">04</span><h3>烧录</h3><p>idf.py -p COM9 flash，确认 Hash verified。</p></div>
+      <div class="step reveal d5"><span class="no">05</span><h3>抓日志</h3><p>_serial_capture.py 拉 RTS 复位，抓 12s 启动日志。</p></div>
+      <div class="step reveal d5"><span class="no">06</span><h3>判错修复</h3><p>panic？功能日志？静默？不对就改代码，再走一遍。</p></div>
+    </div>
+    <div class="chips reveal" style="justify-content:center;margin-top:26px">
+      <span class="chip">middleware 禁 include lvgl.h</span>
+      <span class="chip">业务任务栈 ≥ 8192B</span>
+      <span class="chip">PSRAM 生命周期归属明确</span>
+      <span class="chip">驱动结论搜遍 IDF + managed_components</span>
+    </div>
+    <div class="hero-ctas reveal" style="justify-content:center;margin-top:30px">
+      <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        访问 GitHub 仓库
+      </a>
+      <button type="button" class="btn btn-ghost" data-goto="view-branch">支线 · 人脸识别 →</button>
+    </div>
+  </div>
+</section>
+
+</div><!-- /view-main -->
+
+<!-- ========================= 支线视图 view-branch ========================= -->
+<div class="view" id="view-branch" hidden>
+
+<!-- ================= 1. Hero ================= -->
+<section class="hero" id="hero">
+  <span class="eyebrow reveal"><span class="dot"></span>ESP32-S31-KORVO-1 · 端侧 AI 视觉终端</span>
+  <h1 class="reveal d1">端侧人脸识别</h1>
+  <p class="hero-sub reveal d2">ESP32-S31 单芯片完成人脸检测、识别与手势——不依赖任何云端服务器。拍照录像、小智 AI 对话、网页管理端，一机俱全。</p>
+  <div class="hero-ctas reveal d3">
+    <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31/tree/%E7%AB%AF%E4%BE%A7%E4%BA%BA%E8%84%B8%E8%AF%86%E5%88%AB" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+      在 GitHub 上查看
+    </a>
+    <a class="btn btn-ghost" href="#quickstart">快速上手 ↓</a>
+  </div>
+  <div class="hero-stats reveal d4">
+    <span><b>512-D</b> 人脸特征</span>
+    <span><b>16 MB</b> PSRAM</span>
+    <span><b>720p</b> 拍照录像</span>
+    <span><b>12</b> Web API</span>
+    <span><b>≤10</b> 人脸库</span>
+  </div>
+
+  <!-- floating UI mockup: device running the real firmware UI -->
+  <div class="device-stage reveal d5">
+    <div class="float-card fc1">
+      <div class="fc-row">
+        <span class="fc-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <div>
+          <div class="fc-t">打卡成功 · 张三</div>
+          <div class="fc-s">0.87 · 2026-10-20 09:23:41</div>
+        </div>
+      </div>
+    </div>
+    <div class="float-card fc2">
+      <div class="fc-label">PSRAM 会话账本</div>
+      <div class="fc-bar"><i style="width:35%;background:#5e6ad2"></i><i style="width:65%;background:#8b5cf6"></i></div>
+      <div class="fc-s">3.55 MB → <b class="ok">已释放</b></div>
+    </div>
+    <div class="float-card fc3"><span class="fc-chip">MFN · 512-D 特征</span></div>
+
+    <div class="device">
+      <div class="device-screen">
+        <div class="dstatus">
+          <span>09:23</span>
+          <span class="dicons">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 19.5h.01" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><path d="M6 11v2M10 11v2M14 11v2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="16" height="8" rx="2"/><path d="M20 11v2"/></svg>
+          </span>
+        </div>
+        <div class="viewfinder">
+          <div class="vf-grid"></div>
+          <div class="vf-sil">
+            <svg viewBox="0 0 60 72" fill="none" stroke="currentColor" stroke-width="2"><circle cx="30" cy="24" r="13"/><path d="M8 66c2-14 11-21 22-21s20 7 22 21" stroke-linecap="round"/></svg>
+          </div>
+          <div class="face-box"><span>FACE · 0.87</span></div>
+          <div class="scanline"></div>
+          <div class="vf-tag">OV3660 · 224×224</div>
+        </div>
+        <div class="dbtns">
+          <span class="dbtn primary">START</span>
+          <span class="dbtn on">FACE</span>
+          <span class="dbtn">MODEL</span>
+          <span class="dbtn">MODE</span>
+          <span class="dbtn">PUNCH</span>
+        </div>
+        <div class="dtab">
+          <span class="on">CAM</span><span>VIDEO</span><span>FILES</span><span>REC</span><span>SYS</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. Feature 1 : 人脸识别打卡 ================= -->
+<section id="attendance">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">S8 · 已上机验收</span>
+        <h2 class="reveal d1">三采三验录入<br>一键打卡存档</h2>
+        <p class="sec-desc reveal d2">录入模式姓名输入 + 三采三验；用户模式对准摄像头按 PUNCH，识别成功自动拍照存入 SD 卡专属文件夹，附 SNTP 校时的可信时间戳，并生成 CSV 流水。人脸库持久化在 SD 卡，掉电安全。</p>
+        <div class="chips reveal d3">
+          <span class="chip">face_db · 上限 10 人</span>
+          <span class="chip">人脸 ID 永不复用</span>
+          <span class="chip">未校时标记「时间不可信」</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="attendance-visual">
+        <div class="enroll-grid">
+          <div class="panel">
+            <div class="panel-title"><span>ENROLL · 录入模式</span><span>三采三验</span></div>
+            <div class="name-field">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 5-5.5 8-5.5s6.5 1.5 8 5.5" stroke-linecap="round"/></svg>
+              <span>张三</span><span class="caret"></span>
+            </div>
+            <div class="cap-slots">
+              <div class="slot"><span class="st-wait">1</span><span class="st-done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+              <div class="slot"><span class="st-wait">2</span><span class="st-done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+              <div class="slot"><span class="st-wait">3</span><span class="st-done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div class="cap-progress">采集进度 <b>3/3</b> · 质量门槛达标 · 特征已入库</div>
+          </div>
+          <div class="panel">
+            <div class="panel-title"><span>USER · 识别打卡</span><span class="ok-tag">MATCH</span></div>
+            <div class="punch-hint">对准摄像头 · 按 PUNCH</div>
+            <div class="punch-result">
+              <div class="punch-photo"><div class="pbox"></div><span class="pstamp">2026-10-20 09:23:41</span></div>
+              <div class="punch-meta">
+                <div class="pname">张三<span class="score">0.87</span></div>
+                <div class="ptime">SNTP 校时 · CST-8</div>
+              </div>
+              <div class="csv-line">attendance,2026-10-20,09:23:41,张三,0.87</div>
+              <div class="pstore">→ SD 卡 /attendance · JPEG + CSV 流水</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. Feature 2 : 端侧 AI 引擎 ================= -->
+<section id="engine">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">esp-dl · LittleFS 模型</span>
+        <h2 class="reveal d1">五个模型<br>一条流水线</h2>
+        <p class="sec-desc reveal d2">HumanFaceDetect 检测、MSR+MNP 配准、MFN 512 维特征、face_db 比对；HAND 档再挂 MobileNetV2 手势分类。模型全部置于 LittleFS，不编入固件——6.5 MB 的 app bin 也能住进 7 MB 单槽。</p>
+        <div class="chips reveal d3">
+          <span class="chip">det ≈1.25MB 即用即释放</span>
+          <span class="chip">识别引擎 ≈2.3MB</span>
+          <span class="chip">与人脸检测共用引擎 · MODEL 切档</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="engine-visual">
+        <div class="pipe">
+          <div class="pipe-node"><span class="idx">1</span><div><div class="nm">HumanFaceDetect</div><div class="sp">224×224 · 检测框实时叠加</div></div><span class="tag">det ≈1.25MB</span></div>
+          <div class="pipe-link"></div>
+          <div class="pipe-node"><span class="idx">2</span><div><div class="nm">MSR + MNP</div><div class="sp">单应性配准 · 5 点关键点</div></div><span class="tag">对齐</span></div>
+          <div class="pipe-link"></div>
+          <div class="pipe-node"><span class="idx">3</span><div><div class="nm">MFN 特征提取</div><div class="sp">512 维特征向量</div></div><span class="tag">引擎 ≈2.3MB</span></div>
+          <div class="pipe-link"></div>
+          <div class="pipe-node"><span class="idx">4</span><div><div class="nm">face_db 比对</div><div class="sp">SD 卡持久化 · 双份世代号索引</div></div><span class="tag">≤10 人</span></div>
+          <div class="pipe-link"></div>
+          <div class="pipe-node"><span class="idx">5</span><div><div class="nm">MobileNetV2</div><div class="sp">手势分类 · 检测框与手势名叠加</div></div><span class="tag amber">HAND 档</span></div>
+        </div>
+        <div class="pipe-foot">模型置于 LittleFS · 不编入固件 · storage 9.29 MB</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3.5 Feature : 小智 AI 对话 ================= -->
+<section id="xiaozhi">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">esp_xiaozhi · 云端大模型</span>
+        <h2 class="reveal d1">离线视觉之外<br>还有一颗<span class="grad-text">云端大脑</span></h2>
+        <p class="sec-desc reveal d2">点开 AI 浮窗即可与小智对话（esp_xiaozhi，16k/2ch 立体声锚点），支持按钮唤醒。内置 IoT 物体抽象——语音直接控制摄像头、喇叭、灯；音频通道与 MP3 播放、本地录音经租约互斥调度，谁持有谁播放，杜绝 codec 抢占。</p>
+        <div class="chips reveal d3">
+          <span class="chip">78/xiaozhi-esp32 组件化</span>
+          <span class="chip">按钮唤醒 · AI 浮窗</span>
+          <span class="chip">IoT 物体抽象</span>
+          <span class="chip">音频租约互斥</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="xiaozhi-visual">
+        <div class="aiwin">
+          <div class="aiwin-bar"><span class="aiwin-dot"></span><span>小智 AI · 云端对话</span><span class="aiwin-net">16k / 2ch</span></div>
+          <div class="aiwin-body">
+            <div class="abubble user xz-stage xz-s1">把灯调成暖色 80%，顺便拍一张照</div>
+            <div class="abubble bot xz-stage xz-s2">好的，已把灯调至暖色 · 拍照完成 <span class="aiok">✓</span></div>
+            <div class="wave xz-stage xz-s3"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="aiwin-botline xz-stage xz-s4">正在聆听… 支持按钮唤醒</div>
+          </div>
+          <div class="iot-card xz-stage xz-s5">
+            <div class="iot-title">IOT OBJECTS · 语音可控</div>
+            <div class="iot-row xz-stage xz-s6"><b>摄像头</b><span class="iot-val">拍照 ×1</span><i class="iot-sw on"></i></div>
+            <div class="iot-row xz-stage xz-s7"><b>喇叭</b><span class="iot-val">音量 62%</span><i class="iot-sw on"></i></div>
+            <div class="iot-row xz-stage xz-s8"><b>灯</b><span class="iot-val">暖色 · 80%</span><i class="iot-sw on"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. Feature 3 : 720p 拍照与录像 ================= -->
+<section id="camera">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">OV3660 · AVI/MJPEG</span>
+        <h2 class="reveal d1">取景、拍照、录像<br>一屏搞定</h2>
+        <p class="sec-desc reveal d2">CAM 档 240×240 RGB565 实时取景，VIDEO 档寄存器级切到 720p JPEG。按下即拍、按住即录、松手即停（deadman 交互，含滑出按钮收尾），FILES 页缩略图等比回放，不拉伸变形。</p>
+        <div class="chips reveal d3">
+          <span class="chip">1280×720 JPEG</span>
+          <span class="chip">AVI / MJPEG 封装</span>
+          <span class="chip">PSRAM 按需 acquire / release</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="camera-visual">
+        <div class="cam">
+          <div class="cam-top">
+            <div class="seg">
+              <span class="knob"></span>
+              <button class="on" type="button">CAM 240×240</button>
+              <button type="button">VIDEO 720p</button>
+            </div>
+            <span class="cam-note">寄存器级格式切换 · OV3660 DVP</span>
+          </div>
+          <div class="cam-view">
+            <div class="cam-grid"></div>
+            <div class="cam-subject">
+              <svg viewBox="0 0 60 72" fill="none" stroke="currentColor" stroke-width="2"><circle cx="30" cy="24" r="13"/><path d="M8 66c2-14 11-21 22-21s20 7 22 21" stroke-linecap="round"/></svg>
+            </div>
+            <div class="rec"><span class="rdot"></span><span>REC</span><span class="timer">00:00</span></div>
+            <span class="res-tag">240×240 RGB565</span>
+            <div class="flash"></div>
+            <div class="cam-btns">
+              <span class="cam-btn photo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h3l2-2.5h6L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.4"/></svg></span>
+              <span class="cam-btn rec-btn"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg></span>
+            </div>
+          </div>
+          <div class="filmstrip">
+            <div class="fs-track">
+              <span class="frame"></span><span class="frame"></span><span class="frame"></span><span class="frame"></span>
+              <span class="frame"></span><span class="frame"></span><span class="frame"></span><span class="frame"></span>
+              <span class="frame"></span><span class="frame"></span><span class="frame"></span><span class="frame"></span>
+              <span class="frame"></span><span class="frame"></span><span class="frame"></span><span class="frame"></span>
+            </div>
+          </div>
+          <div class="cam-foot">AVI / MJPEG · 按住即录 · 松手即停 · 实时取景预览</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4.5 Feature : 动态壁纸 ================= -->
+<section id="wallpaper">
+  <div class="wrap">
+    <div class="feature">
+      <div class="feature-text">
+        <span class="eyebrow reveal">§75 · 动态壁纸池</span>
+        <h2 class="reveal d1">10 分钟一换<br>断电也<span class="grad-text">记得住</span></h2>
+        <p class="sec-desc reveal d2">SD 卡 /wallpaper 壁纸池：每 10 分钟随机换一张，800ms 渐变切换（下拉浮层打开时同样生效）；每次换图写入 NVS，断电重启恢复上次壁纸；FILES 页或网页端一键设壁纸。池空 / 坏图自动落到 littlefs 内置图——任何情况不黑屏。</p>
+        <div class="chips reveal d3">
+          <span class="chip">800×480 JPEG · ≤2MB</span>
+          <span class="chip">非 800×480 上传即拒收</span>
+          <span class="chip">零拷贝双缓冲 · 净增 PSRAM = 0</span>
+          <span class="chip">代际号轮询 + commit 信号量</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="wallpaper-visual">
+        <div class="wpwrap">
+          <div class="wpscreen" id="wpScreen">
+            <div class="wplayer wp1"></div><div class="wplayer wp2"></div><div class="wplayer wp3"></div><div class="wplayer wp4"></div>
+            <div class="wp-clock"><b>20:41</b><span>多云 23° · CST</span></div>
+            <span class="wp-set">SET WALLPAPER</span>
+            <span class="wp-tag">wallpaper_pool × 4 · NVS 已记忆</span>
+          </div>
+          <div class="wp-foot">10min 随机轮换 · 800ms crossfade · 断电记忆 · 池空 → littlefs 兜底 → 不黑屏</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5. Feature 4 : 网页管理端 ================= -->
+<section id="web">
+  <div class="wrap">
+    <div class="feature flip">
+      <div class="feature-text">
+        <span class="eyebrow reveal">§74/75 · 12 个 API 端点</span>
+        <h2 class="reveal d1">连上热点<br>就是控制台</h2>
+        <p class="sec-desc reveal d2">设备内置 HTTP 服务，APSTA 双模常开热点，手机 / PC 连上即用：识别打卡 1 秒内推送（照片 + 姓名 + 时间 + 分数）、全量记录表、SD 卡媒体预览（AVI 流式播放）、壁纸 / 音乐上传管理。</p>
+        <div class="chips reveal d3">
+          <span class="chip">http://192.168.4.1</span>
+          <span class="chip">XHR 实时进度上传</span>
+          <span class="chip">壁纸 ≤2MB · 800×480 JPEG</span>
+          <span class="chip">APSTA 双模 · SNTP · 和风天气</span>
+        </div>
+      </div>
+      <div class="feature-visual reveal d3" id="web-visual">
+        <div class="browser">
+          <div class="browser-bar">
+            <span class="bdots"><i class="bdot" style="background:#ff5f56"></i><i class="bdot" style="background:#ffbd2e"></i><i class="bdot" style="background:#27ca40"></i></span>
+            <span class="url"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span>http://192.168.4.1 — 设备管理端</span></span>
+          </div>
+          <div class="web-body">
+            <div class="push-toast">
+              <span class="push-thumb"><i></i></span>
+              <div>
+                <div class="pt-main">实时打卡 · 李四<span class="score">0.91</span></div>
+                <div class="pt-sub">2026-10-20 09:24:07 · 1 秒内推送</div>
+              </div>
+            </div>
+            <div class="media-grid">
+              <span class="tile"></span><span class="tile"></span><span class="tile"></span><span class="tile"></span>
+            </div>
+            <div class="upload">
+              <div class="upload-row"><span>wallpaper.jpg · 800×480</span><span class="up-pct">0%</span></div>
+              <div class="up-bar"><span class="up-fill"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6. 识别流水线（代码打字机） ================= -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow reveal">识别流水线 · PIPELINE</span>
+      <h2 class="reveal d1">七步，从帧到<span class="grad-text">打卡存档</span></h2>
+      <p class="sec-desc reveal d2">检测 → 配准 → 特征 → 比对 → 存档。每一步都有明确的资源归属：引擎随会话按需加载，会话结束即释放——PSRAM 从不被无故占用。</p>
+    </div>
+    <div class="code-card reveal d3" id="codeCard">
+      <div class="code-head">
+        <svg class="file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        <span class="fname">face_recog_service.c</span>
+        <span class="lang-chip">C · ESP-IDF v6.1</span>
+        <button class="replay" id="replayBtn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          重播
+        </button>
+      </div>
+      <div class="code-body" id="codeBody"></div>
+    </div>
+    <p class="code-note reveal d4">以上为架构示意（API 命名与仓库 middleware 层一致），完整实现见 <code>main/middleware/camera/face_recog_service.c</code> · <code>face_service.cpp</code></p>
+  </div>
+</section>
+
+<!-- ================= 7. 资源账本（仪表盘） ================= -->
+<section id="dashboard">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow reveal">资源账本 · BILL</span>
+      <h2 class="reveal d1">每一兆字节，都有<span class="grad-text">归属</span></h2>
+      <p class="sec-desc reveal d2">16 MB PSRAM 要同时养活 LVGL 双帧缓冲、摄像头流、AI 模型与音频链路。项目用显式的生命周期纪律管好它：即用即释放、租约互斥、起流自愈。</p>
+    </div>
+    <div class="dash-grid">
+      <div class="mcard reveal d1">
+        <div class="lab">MFN 人脸特征维度</div>
+        <div class="val count" data-to="512">0</div>
+        <div class="sub">float32 · 阈值判定</div>
+        <div class="bars">
+          <i class="bar" style="--h:45%"></i><i class="bar" style="--h:62%"></i><i class="bar" style="--h:38%"></i><i class="bar" style="--h:70%"></i>
+          <i class="bar" style="--h:55%"></i><i class="bar" style="--h:80%"></i><i class="bar" style="--h:60%"></i><i class="bar" style="--h:92%"></i>
+        </div>
+      </div>
+      <div class="mcard reveal d2">
+        <div class="lab">人脸库容量</div>
+        <div class="val count" data-to="10" data-suf=" 人">0</div>
+        <div class="sub">SD 卡 /sdcard/face_db</div>
+        <div class="bars">
+          <i class="bar" style="--h:30%"></i><i class="bar" style="--h:45%"></i><i class="bar" style="--h:40%"></i><i class="bar" style="--h:60%"></i>
+          <i class="bar" style="--h:50%"></i><i class="bar" style="--h:72%"></i><i class="bar" style="--h:58%"></i><i class="bar" style="--h:88%"></i>
+        </div>
+      </div>
+      <div class="mcard reveal d3">
+        <div class="lab">Web API 端点</div>
+        <div class="val count" data-to="12" data-suf=" 个">0</div>
+        <div class="sub">热点即用 · 文件名字符白名单</div>
+        <div class="bars">
+          <i class="bar" style="--h:55%"></i><i class="bar" style="--h:40%"></i><i class="bar" style="--h:65%"></i><i class="bar" style="--h:50%"></i>
+          <i class="bar" style="--h:75%"></i><i class="bar" style="--h:60%"></i><i class="bar" style="--h:85%"></i><i class="bar" style="--h:70%"></i>
+        </div>
+      </div>
+      <div class="mcard reveal d4">
+        <div class="lab">打卡推送延迟</div>
+        <div class="val count" data-to="1" data-pre="&lt;" data-suf=" s">0</div>
+        <div class="sub">识别事件 1 秒内推送</div>
+        <div class="bars">
+          <i class="bar" style="--h:70%"></i><i class="bar" style="--h:55%"></i><i class="bar" style="--h:62%"></i><i class="bar" style="--h:48%"></i>
+          <i class="bar" style="--h:58%"></i><i class="bar" style="--h:45%"></i><i class="bar" style="--h:52%"></i><i class="bar" style="--h:40%"></i>
+        </div>
+      </div>
+      <div class="mcard wide reveal d2">
+        <div class="lab">LittleFS 存储分配 · 9.29 MB</div>
+        <div class="store-stack">
+          <i class="sseg" data-w="55.2%" style="background:linear-gradient(90deg,#5e6ad2,#7c6ae6)"></i>
+          <i class="sseg" data-w="29.5%" style="background:linear-gradient(90deg,#8b5cf6,#a78bfa)"></i>
+          <i class="sseg" data-w="15.3%" style="background:#3a3d46"></i>
+        </div>
+        <div class="legend">
+          <div class="lg-row"><i class="lg-dot" style="background:#6f7be0"></i><span>AI 模型 · det / MSR / MNP / MFN / MobileNetV2</span><b>5.13 MB</b></div>
+          <div class="lg-row"><i class="lg-dot" style="background:#a78bfa"></i><span>中文 bin 字体 · CN 20/30/45 + digital 96</span><b>2.74 MB</b></div>
+          <div class="lg-row"><i class="lg-dot" style="background:#3a3d46"></i><span>图标 / 音效 / 兜底壁纸</span><b>1.42 MB</b></div>
+        </div>
+      </div>
+      <div class="mcard wide reveal d3">
+        <div class="lab">Flash 单槽占用</div>
+        <div class="ring-wrap">
+          <svg viewBox="0 0 130 130">
+            <defs>
+              <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#5e6ad2"/>
+                <stop offset="100%" stop-color="#a78bfa"/>
+              </linearGradient>
+            </defs>
+            <circle class="ring-track" cx="65" cy="65" r="54"/>
+            <circle class="ring-fill" id="flashRing" cx="65" cy="65" r="54" data-off="23.7"/>
+          </svg>
+          <div class="ring-center"><span class="count" data-to="93" data-suf="%">0</span></div>
+        </div>
+        <div class="sub" style="text-align:center">app 6.5 MB / 7 MB ota_0 · 模型与字体不编入固件</div>
+      </div>
+      <div class="mcard full reveal d4">
+        <div class="mf-head">
+          <div class="lab">PSRAM 会话账本 · 一次打卡的内存旅程</div>
+          <div class="mem-status" id="memStatus">待机 · 无常驻识别模型</div>
+        </div>
+        <div class="mem-track" id="memTrack">
+          <span class="mseg s1">+ det 1.25 MB</span>
+          <span class="mseg s2">+ 识别引擎 2.3 MB</span>
+          <span class="mem-base">常态住户常驻<br>LVGL / 相机 / 音频 · 16 MB PSRAM</span>
+        </div>
+        <div class="mf-steps">
+          <span>① 会话开始 · 按需加载</span>
+          <span>② det 模型 1.25 MB</span>
+          <span>③ 识别引擎 2.3 MB</span>
+          <span class="ok" id="memStep4">④ 结束即释放</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8. 快速上手 + CTA ================= -->
+<section id="quickstart">
+  <div class="wrap">
+    <div class="sec-head center">
+      <span class="eyebrow reveal">快速上手 · QUICK START</span>
+      <h2 class="reveal d1">五分钟，在板子上<span class="grad-text">跑起来</span></h2>
+      <p class="sec-desc reveal d2">ESP-IDF v6.1.0 · 全量烧录一步到位 · 空 SD 卡即插即用</p>
+    </div>
+    <div class="steps">
+      <div class="step reveal d1">
+        <span class="no">01</span>
+        <h3>准备 SD 卡</h3>
+        <p>FAT32 格式；设备不自动格式化，exFAT 不支持。其余目录按需自建，空卡即插即用。</p>
+      </div>
+      <div class="step reveal d2">
+        <span class="no">02</span>
+        <h3>安装 ESP-IDF</h3>
+        <p>EIM 一键安装 v6.1.x，自动配好 Python venv、交叉工具链与 OpenOCD。</p>
+        <span class="cmd">idf.espressif.com</span>
+      </div>
+      <div class="step reveal d3">
+        <span class="no">03</span>
+        <h3>编译</h3>
+        <p>分区偏移变更时必须全量，reconfigure 一步不能省。</p>
+        <span class="cmd">idf.py reconfigure &amp;&amp; idf.py build</span>
+      </div>
+      <div class="step reveal d4">
+        <span class="no">04</span>
+        <h3>烧录</h3>
+        <p>全量烧录 app + storage.bin，分区偏移变更时尤其如此。</p>
+        <span class="cmd">idf.py -p COM9 flash</span>
+      </div>
+      <div class="step reveal d5">
+        <span class="no">05</span>
+        <h3>连接管理端</h3>
+        <p>手机 / PC 连设备热点（无密码），浏览器开箱即用。</p>
+        <span class="cmd">http://192.168.4.1</span>
+      </div>
+    </div>
+    <div class="final-cta reveal">
+      <span class="eyebrow"><span class="dot"></span>ESP32-S31-KORVO-1 · APACHE-2.0</span>
+      <h2>把端侧智能，装进你的<span class="grad-text">下一块板子</span></h2>
+      <p class="sec-desc">人脸识别打卡 · 720p 拍照录像 · 手势检测 · 小智 AI 对话 · 动态壁纸 · 网页管理端</p>
+      <p class="sec-desc" style="color:var(--muted);font-size:14px;max-width:620px;margin:6px auto 0">不只是代码——一套 AI Agent 可读规范：写代码 → 静态校验 → 烧录 → 抓日志 → 反复验证的智能开发闭环</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31/tree/%E7%AB%AF%E4%BE%A7%E4%BA%BA%E8%84%B8%E8%AF%86%E5%88%AB" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+          访问 GitHub 仓库
+        </a>
+        <button type="button" class="btn btn-ghost" data-goto="view-main">主线 · 智能音箱 →</button>
+        <a class="btn btn-ghost" href="#hero">回到顶部 ↑</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div><!-- /view-branch -->
+
+</main>
+
+<footer>
+  <span>Harness_ESP32S31 · 端侧人脸识别</span>
+  <span>ESP-IDF v6.1.0 · LVGL v9 · esp-dl · ESP32-S31-Korvo-1</span>
+  <span>Apache-2.0 · 维护者 xkk6663</span>
+</footer>
+
+<script>
+(function(){
+'use strict';
+var REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------- scroll progress + nav state ---------- */
+var nav = document.querySelector('.nav');
+var prog = document.getElementById('scrollProgress');
+function onScroll(){
+  var h = document.documentElement;
+  var max = h.scrollHeight - h.clientHeight;
+  var p = max > 0 ? (h.scrollTop / max) * 100 : 0;
+  prog.style.width = p + '%';
+  nav.classList.toggle('scrolled', h.scrollTop > 24);
+}
+window.addEventListener('scroll', onScroll, {passive:true});
+onScroll();
+
+/* ---------- reveal on scroll ---------- */
+var revealIO = new IntersectionObserver(function(es){
+  es.forEach(function(e){
+    if (e.isIntersecting){ e.target.classList.add('visible'); revealIO.unobserve(e.target); }
+  });
+}, {threshold:.15, rootMargin:'0px 0px -40px 0px'});
+document.querySelectorAll('.reveal').forEach(function(el){ revealIO.observe(el); });
+
+/* ---------- section spy: indicators + nav links ---------- */
+var sections = Array.prototype.slice.call(document.querySelectorAll('main section[id]'));
+var dots = Array.prototype.slice.call(document.querySelectorAll('.indicators a'));
+var links = Array.prototype.slice.call(document.querySelectorAll('.nav-links a'));
+var activeView = 'view-main';
+function viewOf(el){ var v = el.closest ? el.closest('.view') : null; return v ? v.id : ''; }
+var spy = new IntersectionObserver(function(es){
+  es.forEach(function(e){
+    if (e.isIntersecting && viewOf(e.target) === activeView){
+      dots.forEach(function(d){ d.classList.toggle('active', d.getAttribute('href') === '#' + e.target.id); });
+      links.forEach(function(l){ l.classList.toggle('active', l.getAttribute('href') === '#' + e.target.id); });
+    }
+  });
+}, {threshold:0, rootMargin:'-42% 0px -52% 0px'});
+sections.forEach(function(s){ spy.observe(s); });
+
+/* ---------- view switching: 主线 / 支线 ---------- */
+function setView(id){
+  if (id === activeView) return;
+  activeView = id;
+  document.querySelectorAll('.view').forEach(function(v){ v.hidden = (v.id !== id); });
+  document.querySelectorAll('.view-toggle button').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-view') === id); });
+  document.querySelectorAll('.nav-group').forEach(function(g){ g.classList.toggle('on', g.getAttribute('data-view') === id); });
+  document.querySelectorAll('.ind-group').forEach(function(g){ g.classList.toggle('on', g.getAttribute('data-view') === id); });
+  window.scrollTo({top:0, behavior: REDUCED ? 'auto' : 'smooth'});
+}
+document.querySelectorAll('.view-toggle button').forEach(function(b){
+  b.addEventListener('click', function(){ setView(b.getAttribute('data-view')); });
+});
+document.addEventListener('click', function(ev){
+  var t = ev.target && ev.target.closest ? ev.target.closest('[data-goto]') : null;
+  if (t){ ev.preventDefault(); setView(t.getAttribute('data-goto')); }
+});
+(function(){
+  var logo = document.querySelector('.nav-logo');
+  if (logo) logo.addEventListener('click', function(ev){
+    if (activeView !== 'view-main'){ ev.preventDefault(); setView('view-main'); }
+  });
+})();
+
+/* ---------- helper: run once when visible ---------- */
+function whenVisible(el, fn, threshold){
+  if (!el) return;
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if (e.isIntersecting){ io.disconnect(); fn(); }
+    });
+  }, {threshold: threshold || .25, rootMargin:'0px 0px -60px 0px'});
+  io.observe(el);
+}
+
+/* ---------- feature 1: attendance (enroll 3-capture -> punch) ---------- */
+function animAttendance(){
+  var root = document.getElementById('attendance-visual');
+  var slots = root.querySelectorAll('.slot');
+  var result = root.querySelector('.punch-result');
+  var csv = root.querySelector('.csv-line');
+  var base = REDUCED ? 0 : 500;
+  slots.forEach(function(s,i){ setTimeout(function(){ s.classList.add('done'); }, base + i*550); });
+  setTimeout(function(){ result.classList.add('show'); }, base + slots.length*550 + 250);
+  setTimeout(function(){ csv.classList.add('show'); }, base + slots.length*550 + 950);
+}
+whenVisible(document.getElementById('attendance-visual'), animAttendance, .25);
+
+/* ---------- feature 2: engine pipeline (sequential light-up) ---------- */
+function animEngine(){
+  var root = document.getElementById('engine-visual');
+  var nodes = root.querySelectorAll('.pipe-node');
+  var links = root.querySelectorAll('.pipe-link');
+  nodes.forEach(function(n,i){
+    setTimeout(function(){
+      n.classList.add('active');
+      var l = links[i];
+      if (l) l.classList.add('draw');
+    }, REDUCED ? 0 : 350 + i*480);
+  });
+}
+whenVisible(document.getElementById('engine-visual'), animEngine, .25);
+
+/* ---------- feature 3: camera (format switch + REC timer + flash) ---------- */
+function animCamera(){
+  var root = document.getElementById('camera-visual');
+  var seg = root.querySelector('.seg');
+  var view = root.querySelector('.cam-view');
+  var timer = root.querySelector('.timer');
+  var resTag = root.querySelector('.res-tag');
+  var btns = seg.querySelectorAll('button');
+  var d = REDUCED ? 0 : 500;
+  setTimeout(function(){
+    seg.classList.add('video');
+    btns[0].classList.remove('on'); btns[1].classList.add('on');
+    view.classList.add('rec-on');
+    resTag.textContent = '1280×720 JPEG';
+  }, d);
+  var t = 0;
+  var iv = setInterval(function(){
+    t++;
+    timer.textContent = '00:' + (t < 10 ? '0' + t : t);
+    if (t >= 12) clearInterval(iv);
+  }, REDUCED ? 999999 : 1000);
+  setTimeout(function(){
+    var f = root.querySelector('.flash');
+    f.classList.add('go');
+    setTimeout(function(){ f.classList.remove('go'); }, 500);
+  }, REDUCED ? 0 : 1800);
+}
+whenVisible(document.getElementById('camera-visual'), animCamera, .25);
+
+/* ---------- feature 4: web console (push toast + tiles + upload) ---------- */
+function animWeb(){
+  var root = document.getElementById('web-visual');
+  var toast = root.querySelector('.push-toast');
+  var tiles = root.querySelectorAll('.tile');
+  var fill = root.querySelector('.up-fill');
+  var pct = root.querySelector('.up-pct');
+  var r = REDUCED ? 0 : 1;
+  setTimeout(function(){ toast.classList.add('show'); }, 350*r);
+  tiles.forEach(function(tl,i){ setTimeout(function(){ tl.classList.add('show'); }, (700 + i*140)*r); });
+  setTimeout(function(){ fill.style.width = '62%'; }, 1400*r);
+  var v = 0;
+  var iv = setInterval(function(){
+    v = Math.min(62, v + 2);
+    pct.textContent = v + '%';
+    if (v >= 62) clearInterval(iv);
+  }, 45);
+}
+whenVisible(document.getElementById('web-visual'), animWeb, .25);
+
+/* ---------- feature: xiaozhi AI ---------- */
+whenVisible(document.getElementById('xiaozhi-visual'), function(){
+  var w = document.querySelector('#xiaozhi-visual .aiwin');
+  if (w) w.classList.add('run');
+}, .3);
+
+/* ---------- feature: wallpaper ---------- */
+whenVisible(document.getElementById('wallpaper-visual'), function(){
+  var s = document.getElementById('wpScreen');
+  if (s) s.classList.add('run');
+}, .3);
+
+/* ---------- main view: ota progress ---------- */
+whenVisible(document.getElementById('ota-visual'), function(){
+  var t = document.querySelector('#ota-visual .otabox');
+  if (t) t.classList.add('run');
+}, .4);
+
+/* ---------- pipeline: code typewriter + inline annotations ---------- */
+var CODE = [
+  {tokens:[['// face_recog_service.c · S8 识别-打卡事务（架构示意）','cm']]},
+  {tokens:[['static ','kw'],['void ','kw'],['punch_session','fn'],['('],['void ','kw'],['*arg) {']]},
+  {tokens:[['{']]},
+  {tokens:[['    '],['face_recog_load','fn'],['('],['RECOG_FULL','num'],[');'],['        '],['// ① 按需加载 MSR+MNP+MFN ≈ 2.3MB PSRAM','cm']],
+   ann:'PSRAM 即用即释放：识别引擎 ≈2.3MB 随会话加载，unload_sync 同步卸载'},
+  {tokens:[['    '],['frame_t ','typ'],['*f = '],['viewfinder_acquire','fn'],['('],['224','num'],[');'],['     '],['// ② 224×224 取景帧','cm']]},
+  {tokens:[['    '],['box_t ','typ'],['box;']]},
+  {tokens:[['    '],['if ','kw'],['('],['human_face_detect','fn'],['(f, &box) == '],['ESP_OK','num'],[') {'],['  '],['// ③ 检测框实时叠加','cm']],
+   ann:'HumanFaceDetect · espdet p4 · 224×224 输入，绿框实时叠加到取景器'},
+  {tokens:[['        '],['lm_t ','typ'],['lm;  '],['msr_mnp_align','fn'],['(f, &box, &lm);'],['  '],['// ④ 5 点关键点配准','cm']]},
+  {tokens:[['        '],['float ','kw'],['feat['],['MFN_DIM','num'],['];'],['            '],['//    512 维特征向量','cm']]},
+  {tokens:[['        '],['mfn_extract','fn'],['(&lm, feat);']]},
+  {tokens:[['        '],['match_t ','typ'],['m = '],['face_db_match','fn'],['(feat);'],['       '],['// ⑤ SD 卡人脸库比对','cm']],
+   ann:'face_db 持久化在 SD 卡：特征 + 双份世代号索引，掉电安全，上限 10 人'},
+  {tokens:[['        '],['if ','kw'],['(m.score >= '],['FACE_MATCH_THRESHOLD','num'],[')']]},
+  {tokens:[['            '],['punch_commit','fn'],['(&m, '],['sntp_stamp','fn'],['());'],['      '],['// ⑥ 存照 + CSV 流水','cm']]},
+  {tokens:[['    }']]},
+  {tokens:[['    '],['viewfinder_release','fn'],['(f);']]},
+  {tokens:[['    '],['face_recog_unload_sync','fn'],['();'],['             '],['// ⑦ 会话结束即释放','cm']],
+   ann:'det 模型 + 识别引擎 + 抓帧缓冲全部归还——PSRAM 不被会话无故占用'},
+  {tokens:[['}']]}
+];
+var codeCard = document.getElementById('codeCard');
+var codeBody = document.getElementById('codeBody');
+var replayBtn = document.getElementById('replayBtn');
+var typeTimer = null;
+
+function buildCode(){
+  codeBody.innerHTML = '';
+  var chars = [], anns = [];
+  CODE.forEach(function(line, li){
+    var cl = document.createElement('div');
+    cl.className = 'cline';
+    var ln = document.createElement('span');
+    ln.className = 'ln';
+    ln.textContent = li + 1;
+    cl.appendChild(ln);
+    line.tokens.forEach(function(tk){
+      var txt = tk[0], cls = tk[1];
+      for (var ci = 0; ci < txt.length; ci++){
+        var s = document.createElement('span');
+        s.className = 'ch' + (cls ? ' tok-' + cls : '');
+        s.textContent = txt.charAt(ci);
+        cl.appendChild(s);
+        chars.push(s);
+      }
+    });
+    codeBody.appendChild(cl);
+    if (line.ann){
+      var a = document.createElement('div');
+      a.className = 'code-ann';
+      var mk = document.createElement('span'); mk.className = 'mark'; mk.textContent = '↳';
+      var tx = document.createElement('span'); tx.textContent = line.ann;
+      a.appendChild(mk); a.appendChild(tx);
+      codeBody.appendChild(a);
+      anns.push({after: li, el: a});
+    }
+  });
+  return {chars: chars, anns: anns};
+}
+
+function typeCode(){
+  var built = buildCode();
+  var chars = built.chars, anns = built.anns;
+  var lineEnds = [], acc = 0;
+  CODE.forEach(function(line){
+    line.tokens.forEach(function(t){ acc += t[0].length; });
+    lineEnds.push(acc);
+  });
+  var i = 0, done = false;
+  var caret = document.createElement('span');
+  caret.className = 'caret';
+  codeCard.classList.remove('done');
+
+  function finish(){
+    done = true;
+    if (caret.parentNode) caret.parentNode.removeChild(caret);
+    codeCard.classList.add('done');
+  }
+  function skip(){
+    if (done) return;
+    done = true;
+    if (typeTimer) clearTimeout(typeTimer);
+    chars.forEach(function(c){ c.classList.add('on'); });
+    anns.forEach(function(a){ a.el.classList.add('show'); });
+    finish();
+  }
+  function step(){
+    if (done) return;
+    if (i >= chars.length){ finish(); return; }
+    var ch = chars[i];
+    ch.parentNode.insertBefore(caret, ch);
+    ch.classList.add('on');
+    i++;
+    var li = lineEnds.indexOf(i);
+    if (li !== -1){
+      anns.forEach(function(a){
+        if (a.after === li) setTimeout(function(){ a.el.classList.add('show'); }, 380);
+      });
+      typeTimer = setTimeout(step, 340);
+    } else {
+      typeTimer = setTimeout(step, REDUCED ? 0 : 13);
+    }
+  }
+  if (REDUCED){ skip(); return; }
+  step();
+  codeCard.addEventListener('click', function(ev){
+    if (ev.target.closest && ev.target.closest('.replay')) return;
+    skip();
+  });
+  replayBtn.onclick = function(){
+    if (typeTimer) clearTimeout(typeTimer);
+    done = false; i = 0;
+    typeCode();
+  };
+}
+whenVisible(document.getElementById('pipeline'), typeCode, .2);
+
+/* ---------- dashboard: counters + bars + ring + psram flow ---------- */
+function animDashboard(){
+  var sec = document.getElementById('dashboard');
+  sec.querySelectorAll('.count').forEach(function(el){
+    var to = parseFloat(el.dataset.to) || 0;
+    var dec = parseInt(el.dataset.dec || '0', 10);
+    var pre = el.dataset.pre || '';
+    var suf = el.dataset.suf || '';
+    if (REDUCED){ el.textContent = pre + to.toFixed(dec) + suf; return; }
+    var dur = 1600, t0 = performance.now();
+    function tick(now){
+      var p = Math.min((now - t0) / dur, 1);
+      var e = 1 - Math.pow(1 - p, 3);
+      el.textContent = pre + (to * e).toFixed(dec) + suf;
+      if (p < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+  sec.querySelectorAll('.bars').forEach(function(bs){
+    bs.querySelectorAll('.bar').forEach(function(b, i){
+      setTimeout(function(){ b.style.transform = 'scaleY(1)'; }, REDUCED ? 0 : 120 + i*70);
+    });
+  });
+  sec.querySelectorAll('.sseg').forEach(function(s, i){
+    setTimeout(function(){ s.style.width = s.dataset.w; }, REDUCED ? 0 : 250 + i*220);
+  });
+  var ring = document.getElementById('flashRing');
+  if (ring){
+    if (REDUCED){ ring.style.strokeDashoffset = ring.dataset.off; }
+    else { setTimeout(function(){ ring.style.strokeDashoffset = ring.dataset.off; }, 350); }
+  }
+  var track = document.getElementById('memTrack');
+  var status = document.getElementById('memStatus');
+  var step4 = document.getElementById('memStep4');
+  if (track && !REDUCED){
+    setTimeout(function(){ track.classList.add('g1'); status.textContent = '加载 det 模型 · +1.25 MB'; }, 500);
+    setTimeout(function(){ track.classList.add('g2'); status.textContent = '加载识别引擎 · 峰值 3.55 MB'; }, 1150);
+    setTimeout(function(){
+      track.classList.add('release');
+      status.textContent = '会话结束 · 3.55 MB 全部释放';
+      status.classList.add('ok');
+      if (step4) step4.classList.add('lit');
+    }, 2400);
+  } else if (track && REDUCED){
+    track.classList.add('g1','g2','release');
+    status.textContent = '会话结束 · 3.55 MB 全部释放';
+    status.classList.add('ok');
+    if (step4) step4.classList.add('lit');
+  }
+}
+whenVisible(document.getElementById('dashboard'), animDashboard, .2);
+
+/* ---------- reduced-motion: reveal everything immediately ---------- */
+if (REDUCED){
+  document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('visible'); });
+}
+})();
+</script>
+</body>
+</html>
