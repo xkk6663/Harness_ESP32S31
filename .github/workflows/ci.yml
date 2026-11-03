@@ -1,0 +1,42 @@
+name: ci
+
+# 只跑"脱机可跑"的部分：host 单元测试 + 脱机状态机用例（无需板卡、无需 PySide6）。
+# 真机回归（hil 标记）需要自托管 runner 挂板子，等接入后再单独加 nightly 工作流。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 安装测试依赖
+        run: pip install -r requirements-dev.txt
+
+      - name: host 单测 + 脱机 HIL（gcc 由 runner 自带，用于 ringbuf C 用例）
+        run: python -m pytest -m "not hil" -q --junitxml=report/pytest.xml
+
+      - name: 归档报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: report/
+          if-no-files-found: ignore

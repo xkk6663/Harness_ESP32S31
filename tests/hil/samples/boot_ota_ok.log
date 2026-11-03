@@ -1,0 +1,64 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+I (29) boot: ESP-IDF v6.1.0 2nd stage bootloader
+I (29) boot: compile time Nov  1 2026 22:13:07
+I (31) boot: Multicore bootloader
+I (35) boot: Partition Table:
+I (38) boot: ## Label            Usage          Type ST Offset   Length
+I (45) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (53) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (60) boot:  2 ota_0            OTA app          00 10 00010000 00500000
+I (68) boot:  3 ota_1            OTA app          00 11 00510000 00500000
+I (76) boot:  4 littlefs         Unknown data     01 83 00a10000 00500000
+I (84) boot: End of partition table
+I (129) esp_image: segment 0: paddr=00010020 vaddr=3c0f0020 size=2b3b80h (2833280) map
+I (219) boot: Loaded app from partition at offset 0x10000
+I (220) boot: Disabling RNG early entropy source...
+I (241) cpu_start: Multicore app
+I (243) cpu_start: Pro cpu start user code
+I (243) cpu_start: cpu freq: 240000000 Hz
+I (251) spiram: Found 16MB SPI RAM device
+I (259) main_task: Calling app_main()
+I (1150) MAIN: [boot-diag] app_main enter                      internal free=347120 largest=169984 | DMA free=141308 | PSRAM free=8380000
+I (1206) MAIN: [boot-diag] after fs_service_mount                internal free=344980 largest=169984 | DMA free=141308 | PSRAM free=8378000
+I (1298) MAIN: [boot-diag] after sdcard_service_mount            internal free=342112 largest=163840 | DMA free=141308 | PSRAM free=8378000
+I (1420) MAIN: [boot-diag] after bsp_i2c_init                    internal free=338908 largest=163840 | DMA free=141308 | PSRAM free=8378000
+I (1905) MAIN: [boot-diag] after ui_binfont_load                 internal free=326540 largest=163840 | DMA free=141308 | PSRAM free=8377904
+I (2011) MAIN: [boot-diag] after bt ctrl init                    internal free=318204 largest=163840 | DMA free=141308 | PSRAM free=8377904
+I (2096) MAIN: [boot-diag] after bt_push early init               internal free=315874 largest=163840 | DMA free=141308 | PSRAM free=8377904
+I (2204) MAIN: [boot-diag] after bt_sink early init               internal free=312960 largest=155648 | DMA free=141308 | PSRAM free=8377904
+I (2288) MAIN: [boot-diag] after fs_service_init                  internal free=309420 largest=155648 | DMA free=141308 | PSRAM free=8377904
+I (2360) MAIN: [boot-diag] after nvs early init                   internal free=306880 largest=155648 | DMA free=141308 | PSRAM free=8377904
+I (2452) MAIN: [boot-diag] after wallpaper_service_init           internal free=302940 largest=155648 | DMA free=141308 | PSRAM free=8377904
+I (2538) MAIN: [boot-diag] after file_mgr_init                    internal free=299520 largest=147456 | DMA free=141308 | PSRAM free=8377904
+I (3206) MAIN: [boot-diag] after bsp_display_start                 internal free=180760 largest=77824 | DMA free=141308 | PSRAM free=8376000
+I (3418) MAIN: [boot-diag] after ui_binfont_attach                 internal free=178340 largest=77824 | DMA free=141308 | PSRAM free=8376000
+I (3560) MAIN: [boot-diag] after audio_service_init                internal free=174980 largest=73728 | DMA free=141308 | PSRAM free=8376000
+I (3612) MAIN: [boot-diag] after led_service_init                  internal free=174140 largest=73728 | DMA free=141308 | PSRAM free=8376000
+I (3690) MAIN: [boot-diag] after button_service_init               internal free=172840 largest=73728 | DMA free=141308 | PSRAM free=8376000
+I (3721) MAIN: [boot-diag] after vol_out_cb set                    internal free=172840 largest=73728 | DMA free=141308 | PSRAM free=8376000
+I (3802) MAIN: [boot-diag] before wifi_manager_init                internal free=171120 largest=73728 | DMA free=140800 | PSRAM free=8376000
+I (4450) MAIN: [boot-diag] after wifi_manager_init                 internal free=156860 largest=65536 | DMA free=140800 | PSRAM free=8375000
+I (4510) MAIN: [boot-diag] after session_manager_init              internal free=154620 largest=65536 | DMA free=140800 | PSRAM free=8375000
+I (4720) MAIN: [boot-diag] after link_manager_init                 internal free=152200 largest=65536 | DMA free=140800 | PSRAM free=8375000
+I (4805) MAIN: [boot-diag] after wallpaper_service_fetch_init      internal free=151360 largest=65536 | DMA free=140800 | PSRAM free=8375000
+I (4890) MAIN: [boot-diag] after udp_voice_init                    internal free=150020 largest=65536 | DMA free=140800 | PSRAM free=8374000
+I (4975) MAIN: [boot-diag] after record_service_init               internal free=149980 largest=65536 | DMA free=140800 | PSRAM free=8374000
+I (5060) MAIN: [boot-diag] after pcnow_service_init                internal free=148640 largest=61440 | DMA free=140800 | PSRAM free=8374000
+I (5142) MAIN: [boot-diag] after ota_service_init                  internal free=146420 largest=61440 | DMA free=140800 | PSRAM free=8374000
+I (5162) OTA: [OTA_DIAG] init done: running=ota_0 next_update=ota_1 pending_verify=0
+I (5178) MAIN: [boot-diag] after ota selftest timer armed         internal free=146420 largest=61440 | DMA free=140800 | PSRAM free=8374000
+I (5380) MAIN: [boot-diag] after PageManager_Init                  internal free=141200 largest=57344 | DMA free=140800 | PSRAM free=8374000
+I (5602) MAIN: [boot-diag] after PageManager_Load(splash)          internal free=139860 largest=57344 | DMA free=140800 | PSRAM free=8374000
+I (5640) MAIN: [stack-hwm] taskLVGL high-water = 21184 words (84736 bytes)
+I (5650) MAIN: boot done, waiting swipe up
+I (5890) LINK: heartbeat from 192.168.1.88, pw_ver=1.0.0 fw_ver=1.0.0
+I (6102) OTA: [OTA_DIAG] OFFER received: ver=1.1.0 size=2833280 sha=8f2c1d0e9a7b3c4d
+I (6110) OTA: [OTA_DIAG] all 6 checks passed -> target slot ota_1 (5242880 B free)
+I (6234) OTA: [OTA_DIAG] progress 2% (56665 B, 29 KB/s)
+I (6980) OTA: [OTA_DIAG] progress 40% (1133312 B, 29 KB/s)
+I (7420) OTA: [OTA_DIAG] progress 98% (2776614 B, 28 KB/s)
+I (7480) OTA: [OTA_DIAG] progress 100% (2833280 B, 28 KB/s)
+I (7902) OTA: [OTA_DIAG] self-test OK: app marked VALID (rollback cancelled), run=ota_1
+I (8210) MAIN: boot done, waiting swipe up
