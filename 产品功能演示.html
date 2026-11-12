@@ -728,7 +728,7 @@ button.btn{cursor:pointer;font-family:var(--font)}
 <section class="hero" id="hero-main">
   <span class="eyebrow reveal"><span class="dot"></span>ESP32-S31-KORVO-1 · 多功能智能音箱</span>
   <h1 class="reveal d1">一台设备，<span class="grad-text">五重身份</span></h1>
-  <p class="hero-sub reveal d2">蓝牙音箱 · PC 歌词副屏 · 局域网对讲机 · 录音笔 · 视频播放器——再叠加 USB 扩展屏双固件与 WiFi OTA v2.0 A/B 双槽防砖升级。</p>
+  <p class="hero-sub reveal d2">蓝牙音箱 · PC 歌词副屏 · 局域网对讲机 · 录音笔 · 视频播放器——再叠加 USB 扩展屏双固件与 WiFi OTA v2.1.0 A/B 双槽防砖升级。</p>
   <div class="hero-ctas reveal d3">
     <a class="btn btn-primary" href="https://github.com/xkk6663/Harness_ESP32S31" target="_blank" rel="noopener">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
@@ -925,20 +925,22 @@ button.btn{cursor:pointer;font-family:var(--font)}
   </div>
 </section>
 
-<!-- ================= M3. WiFi OTA v2.0 ================= -->
+<!-- ================= M3. WiFi OTA v2.1.0 ================= -->
 <section id="ota">
   <div class="wrap">
     <div class="feature flip">
       <div class="feature-text">
-        <span class="eyebrow reveal">v2.0 · A/B 双槽 · 零新增端口</span>
+        <span class="eyebrow reveal">v2.1.0 · A/B 双槽 · 零新增端口</span>
         <h2 class="reveal d1">升级不怕断电<br>断了<span class="grad-text">接着传</span></h2>
-        <p class="sec-desc reveal d2">设备作 HTTP 客户端主动拉取（控制面复用 UDP 50003、数据面复用 TCP 50005）：OFFER 六条校验链 → 边收边写对侧槽（32KB 攒块，256KB 段哈希落 NVS）→ 段 CRC → 自证转正；窗口内断电由 bootloader 自动回滚旧槽。真续传已实弹验收：40% 断开 → 归零重推 → 从段边界 RESUME。</p>
+        <p class="sec-desc reveal d2">设备作 HTTP 客户端主动拉取（控制面复用 UDP 50003、数据面复用 TCP 50005）：OFFER 六条校验链 → 边收边写对侧槽（32KB 攒块，256KB 段哈希落 NVS）→ 段 CRC → 自证转正；窗口内断电由 bootloader 自动回滚旧槽。真续传已实弹验收：40% 断开 → 归零重推 → 从段边界 RESUME。<b>v2.1.0 已整链路真机验收</b>（CLI / UI 双路线）：OFFER → HMAC 认证 → 六条校验 → 切槽 → 自证转正全绿；OTA 期 WiFi 停态 panic 已根治，版本三层 = version.txt 发布号 + +g&lt;sha&gt; 构建标识 + ELF SHA256 归档；吞吐 105~187 KB/s，TCP 窗口按实测定档 5760/16。</p>
         <div class="chips reveal d3">
           <span class="chip">ota_0 ⇄ ota_1 锁死</span>
           <span class="chip">真续传 · 最多重下 256KB</span>
           <span class="chip">防砖四防线</span>
           <span class="chip">双向 OTA §79 · 手动切槽</span>
           <span class="chip">LVGL 全屏遮罩 · 请勿断电</span>
+          <span class="chip">版本三层 · version.txt + g&lt;sha&gt; + ELF SHA</span>
+          <span class="chip">自证约 10 s 转正 · 断电自动回滚</span>
         </div>
       </div>
       <div class="feature-visual reveal d3" id="ota-visual">
@@ -950,7 +952,7 @@ button.btn{cursor:pointer;font-family:var(--font)}
           </div>
           <div class="ouext"><b>uext (ota_2) · USB 副屏固件</b><span>OTA 永不触碰 · 定点烧写 0xA20000</span></div>
           <div class="oprog">
-            <div class="orow"><span>firmware_v2.1.bin · 4.6 / 5 MB</span><span>SHA256 校验</span></div>
+            <div class="orow"><span>firmware_v2.1.0.bin · 5.0 / 5 MB（余 8 KB）</span><span>SHA256 校验</span></div>
             <div class="obar"><i></i></div>
             <div class="ostatus"><span>HTTP GET :50005 · 32KB 攒块</span><span class="st-ok">段 CRC 通过 · 自证转正 ✓</span></div>
           </div>
