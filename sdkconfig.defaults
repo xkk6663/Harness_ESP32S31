@@ -137,5 +137,15 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 ##   且 SPIRAM_MALLOC_ALWAYSINTERNAL=0，大块可落 PSRAM；改后必须看
 ##   [OTA_MEM] INT largest 是否仍 ≥32KB，若掉太狠再退回 32768。
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
-CONFIG_LWIP_TCP_WND_DEFAULT=65536
+# TCP 接收窗口：本环境实测 5760（IDF 默认）吞吐最高，调大反而更差，故保持默认。
+#   5760(WND)/16(mbox) → 187 KB/s   ← 最佳，采用
+#   5760/16            → 171、119 KB/s（同配置不同轮，波动来自无线空口）
+#   65535/16           → 60 KB/s
+#   65535/64           → 90 KB/s
+# 两个坑（2026-11-12 实测）：
+#  1) Kconfig 上限是 65535（range 2440 65535，未开 LWIP_WND_SCALE）；写 65536 会被
+#     kconfig 判越界并**悄悄回写成 5760**，连编都不重编（sdkconfig.h 内容没变）。
+#  2) 只改 sdkconfig.defaults 对已存在的 sdkconfig 不生效，必须改 sdkconfig 本体。
+CONFIG_LWIP_TCP_WND_DEFAULT=5760
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

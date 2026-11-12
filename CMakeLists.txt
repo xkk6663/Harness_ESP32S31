@@ -45,10 +45,15 @@ if(NOT DEFINED PROJECT_VER)
                 else()
                     set(PROJECT_VER "${_ver}+g${_sha}")
                 endif()
-                if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git/HEAD")
-                    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                                 "${CMAKE_CURRENT_SOURCE_DIR}/.git/HEAD")
-                endif()
+                # ★ 别只挂 .git/HEAD —— commit 时变的是 .git/index 和 refs/heads/*，
+                #   HEAD 文件内容一直是 "ref: refs/heads/main"，挂它等于没挂，
+                #   换 commit 后 CMake 不重配 → 版本串停在上一个 sha（已真机踩过）。
+                foreach(_f ".git/index" ".git/HEAD")
+                    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
+                        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                                     "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
+                    endif()
+                endforeach()
             else()
                 set(PROJECT_VER "${_ver}")
             endif()
