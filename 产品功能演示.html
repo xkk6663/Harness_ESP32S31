@@ -770,7 +770,7 @@ button.btn{cursor:pointer;font-family:var(--font)}
           <div class="hw-tools">
             <button type="button" class="hw-btn on" data-act="spin">自动旋转</button>
             <button type="button" class="hw-btn" data-act="top">俯视</button>
-            <button type="button" class="hw-btn" data-act="silk">丝印</button>
+            <button type="button" class="hw-btn on" data-act="silk">丝印</button>
             <button type="button" class="hw-btn" data-act="lcd">拆下 LCD</button>
             <button type="button" class="hw-btn" data-act="reset">复位</button>
           </div>
@@ -1963,7 +1963,7 @@ function init() {
   controls.autoRotateSpeed = 0.8;
   controls.update();
 
-  const key = new THREE.DirectionalLight(0xffffff, 1.95);
+  const key = new THREE.DirectionalLight(0xffffff, 1.62);
   key.position.set(96, 260, 120);
   key.castShadow = true;
   key.shadow.mapSize.set(1024, 1024);
