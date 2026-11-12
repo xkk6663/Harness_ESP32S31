@@ -116,11 +116,20 @@ class OtaSession:
             pass
 
     def firmware_json(self) -> bytes:
-        """GET /firmware.json。★ --ota-limit 时上报截断后 size（与 C# 同语义）。"""
+        """GET /firmware.json。★ --ota-limit 时上报截断后 size（与 C# 同语义）。
+
+        ★ 版本管理第 2/3 层（见 docs/项目规划/固件版本管理.md）：
+          ver / commit / idf_ver / elf_sha256 一起上报，设备侧只读 ver（'+' 处截断），
+          出问题时用 elf_sha256 能反查到唯一一个 bin（DB 里按 sha256 归档）。
+        """
         return json.dumps({
             "ver": self.fw.version,
             "size": self.served_size,
             "sha256": self.fw.sha256,
+            "elf_sha256": self.fw.elf_sha256,
+            "commit": self.fw.commit,
+            "idf_ver": self.fw.idf_ver,
+            "build_time": self.fw.build_time,
             "full_size": self.fw.size,
             "limit_percent": self.limit_percent,
         }).encode("utf-8")
@@ -333,11 +342,16 @@ class OtaSession:
                 continue                    # 仍是重启前的心跳，不能用来核对版本
             back_ver = str((self.ctx.link.info or {}).get("fw_ver", "") or "")
             self._log(f"设备已回来: {self.ctx.link.device_ip}，fw_ver={back_ver or '(未上报)'}")
-            ver_ok = back_ver == fw.version
+            # ★ 版本管理第 2 层：只比 SemVer 数值（`+g<sha>` 这类 build metadata 不参与
+            #   优先级判断）。数值同、标识不同 = 同一 release 的另一次构建（例如同版本
+            #   重刷），只提示不判失败；数值变了才是"真的换版本 or 被回滚"。
+            ver_ok = compare_semver(back_ver, fw.version) == 0
             if ver_ok:
+                if back_ver != fw.version:
+                    self._log(f"⚠ 版本数值相同、构建标识不同：设备 {back_ver} / 本轮 {fw.version}")
                 self._log(f"★ 版本核对通过（{fw.version}）→ 升级成功 ✅")
-                if dev_ver_before == fw.version:
-                    self._log("⚠ 升级前后版本串相同，本判据分不出'新固件已转正'与"
+                if dev_ver_before and compare_semver(dev_ver_before, fw.version) == 0:
+                    self._log("⚠ 升级前后 SemVer 相同，本判据分不出'新固件已转正'与"
                               "'被回滚到旧槽'；以设备日志 self-test OK / 槽位为准")
             else:
                 self._log(f"★ 版本核对不一致: 期望 {fw.version} / 实际 {back_ver}"

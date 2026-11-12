@@ -49,6 +49,16 @@ class FirmwareStore:
                 self._conn.execute(ddl)
             except sqlite3.OperationalError:
                 pass
+        # ★ 版本管理第 3 层（2026-11-12）：归档多存 elf_sha256 / commit / idf_ver。
+        #   elf_sha256 比 commit 更精确（同 commit 但 sdkconfig 不同 → 不同 ELF），
+        #   用来把设备上报的 fw_ver 反查到唯一一个 bin（find_by_ver）。
+        for ddl in ("ALTER TABLE firmwares ADD COLUMN elf_sha256 TEXT",
+                    "ALTER TABLE firmwares ADD COLUMN git_commit TEXT",
+                    "ALTER TABLE firmwares ADD COLUMN idf_ver TEXT"):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     # ---- 归档（OTA 会话线程调用） ----
@@ -63,10 +73,32 @@ class FirmwareStore:
             if not dest.exists():
                 shutil.copyfile(fw.path, dest)
             self._conn.execute(
-                "INSERT OR REPLACE INTO firmwares VALUES(?,?,?,?,?,?)",
-                (fw.sha256, fw.version, str(dest), fw.size, fw.build_time, time.time()))
+                "INSERT OR REPLACE INTO firmwares"
+                "(sha, ver, path, size, build_time, added, elf_sha256, git_commit, idf_ver) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (fw.sha256, fw.version, str(dest), fw.size, fw.build_time, time.time(),
+                 getattr(fw, "elf_sha256", ""), getattr(fw, "commit", ""),
+                 getattr(fw, "idf_ver", "")))
             self._conn.commit()
             return str(dest)
+
+    def find_by_ver(self, ver: str) -> list[tuple]:
+        """按版本串反查归档 bin —— 设备上报 fw_ver 后定位"到底跑的是哪份构建"。
+
+        `2.1.0+g708d4ea` 这种带 build metadata 的串会精确命中；只给 `2.1.0`
+        时退回匹配同一 release 的所有构建（多行，按归档时间倒序）。
+        """
+        with self._lock:
+            exact = list(self._conn.execute(
+                "SELECT ver, sha, size, build_time, elf_sha256, git_commit, path "
+                "FROM firmwares WHERE ver=? ORDER BY added DESC", (ver,)))
+            if exact:
+                return exact
+            core = ver.strip().lstrip("vV").split("+")[0].split("-")[0]
+            return list(self._conn.execute(
+                "SELECT ver, sha, size, build_time, elf_sha256, git_commit, path "
+                "FROM firmwares WHERE ver LIKE ? ORDER BY added DESC",
+                (f"{core}%",)))
 
     # ---- 升级历史（OTA 会话线程调用） ----
     def add_history(self, device_ip: str, from_ver: str, fw, ok: bool, detail: str, *,
