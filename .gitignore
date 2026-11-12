@@ -53,3 +53,14 @@ tools/**/obj/
 debug.log
 pc_host/.device_ip
 pc_host/firmware_store/
+
+# ---- 仓库整理（2026-11-12）：运行时数据 / 本机文件，不入库 ----
+# 录音落盘（wav + 索引 sqlite）是设备/PC 运行时产物，不属于源码
+recordings/
+pc_host/recordings/
+# 本机快捷方式（指向本机 IDF 环境，换台机器即失效）
+*.lnk
+# python 打包元数据（pip install -e 生成）
+*.egg-info/
+# 演示页的历史存档（本地留在磁盘，不进仓库）
+产品功能演示.备份-*.html

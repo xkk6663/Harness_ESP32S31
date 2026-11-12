@@ -325,37 +325,48 @@
 ## 阶段 6：OTA 远程升级（A/B 双区 + 回滚防砖，迁移 STM32 IAP 思想）
 
 > 设计见需求第 11 章。不自写 bootloader，用 esp_ota/app_update + IDF rollback。
+> **✅ 阶段 6 已全部完成（v2.0 落地，v2.1.0 于 2026-11-12 真机复验收口）**，
+> 现状与判据见 `docs/项目规划/WiFi_OTA_烧录验收与使用流程.md`（V3.4）与
+> `report/OTA真机验收报告_2026-11-12.md`；细节索引见改动记录 §61~§80。
 
 ### 6.1 分区与配置（阶段二已占坑，此处开功能）
-- [ ] 确认烧录走 bootloader+otadata+ota_0；menuconfig 开 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`；
-- [ ] esp_app_desc 版本号纳入构建（git describe），心跳上报；可选尾部划 64K coredump。
+- [x] 烧录走 bootloader+otadata+ota_0；`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`（进 defaults + sdkconfig）；
+- [x] esp_app_desc 版本号纳入构建、心跳上报。实际实现比"git describe"更严：**三层**——
+      `version.txt`（发布 SemVer）+ CMake 注入的 `+g<sha>[.dirty]` + `app_elf_sha256`（归档兜底）；
+- [ ] 尾部划 64K coredump（未做，非必需）。
 
 ### 6.2 设备端 ota_service（中间层状态机）
-- [ ] IDLE/RECEIVING/VERIFY/PENDING/VALID/ROLLBACK，独立任务+命令队列；
-- [ ] esp_ota_begin/write/end 写备用槽，4KB 块、队列解耦、进度事件给 UI；
-- [ ] OTA_BEGIN/数据块(len+offset+可选crc32)/OTA_END/OTA_ABORT（TCP 50004）；整包 SHA256 校验、set_boot、延时重启；nvs 存 offset 续传（可选）；
-- [ ] 升级期暂停通话/录音（Flash 写互斥），UI 升级页，规避写 Flash 关 cache 的并发坑。
+- [x] 状态机（IDLE/RECEIVING/VERIFY/PENDING/VALID/ROLLBACK）+ 独立 ota_task（栈在内部 RAM）；
+- [x] esp_ota_begin/write/end 写对侧槽；**读 8KB / 段 256KB / 尾段单独 flush**，进度事件喂 UI；
+- [x] 控制面走 UDP 50003 的 JSON（`OTA_OFFER`/`OTA_ACCEPT`/`OTA_PROGRESS`/`OTA_RESULT`/`OTA_REJECT`/
+      `OTA_ABORT`，非早期设想的 TCP 50004 自定义帧）；数据面 HTTP GET `:50005/firmware.bin`；
+- [x] 整包 SHA256（流式累计，边收边算）+ `esp_ota_end` 镜像头/段 CRC + 段数一致性；
+- [x] 断点**真续传**：256KB 段哈希落 NVS + 旧段回读验哈希 + esp_partition 裸写/水位擦除（2026-10-08 实弹通过）；
+- [x] 升级期暂停录音/通话 + UI 浮层 + 写 Flash 关 cache 的并发纪律（flash IO 任务栈强制内部 RAM）。
 
 ### 6.3 回滚自证（防砖核心）
-- [ ] 新固件 PENDING_VERIFY，自证条件满足（关键任务就绪 + 30s 无崩溃 + PC 心跳在线）后 mark_app_valid；
-- [ ] 未自证 → 下次重启自动回滚旧槽；用 CRC 错误注入验证确实回退。
+- [x] 新固件 PENDING_VERIFY，自证条件 = **WiFi 已连 且 link 在线** + 10s 浸泡（1s 周期条件驱动，
+      实测 boot+14.4s 转正）；
+- [x] 未自证 → 下次重启 bootloader 自动回滚旧槽；**双向实测**（自证前断电回滚 / 转正后断电保持新槽）；
+- [x] 坏固件路径（`--ota-corrupt` 注入）实测被 `esp_ota_end` 段 CRC 拦住，槽不被切。
 
 ### 6.4 PC 端 OTA 面板（pc_host/ota + ui/ota_tab）
-> ✅ **已落地（2026-10-07，pc_host v0.3，改动记录 §63）**：固件升级页收编 C# agent 的 --ota
-> 能力——bin 解析（esp_app_desc_t@0x20 + SHA256）/ semver 比对 / OFFER×3 / 进度条 / 自证版本核对 /
-> --force、--ota-limit、--ota-corrupt 三开关全带；50005 /firmware.* 路由"就绪才宣告" + Range 206 续传。
-> ★ 协议修正：设备回包固定 PC:50003（link_manager.c:102 端口覆写），由 link 分发器喂会话——
-> C# 版用临时 UDP 口收 ACCEPT 的写法在设备语义下收不到包（真实 bug，本收编顺带修正）。
-> 未做（可选增强）：固件仓库版本归档 + sqlite 历史；拖拽（现为文件选择框）。
-- [x] 选 bin 解析内嵌 esp_app_desc + 现算 SHA256，显示版本/时间/大小；
-- [x] 与设备版本 semver 比对 + 进度/速率显示 + 设备 ACK（OFFER/PROGRESS/RESULT 全事件化）；
-- [ ] 固件仓库按版本归档 + sqlite 升级历史，可选旧版重推；构建后脚本导出 bin+manifest（可选增强，未做）；
-- [x] 破坏性开关：损坏注入（--ota-corrupt）、百分比限制器（--ota-limit）、中止（OTA_ABORT）、收发包日志、续传（Range 206）；
-- [x] 升级后心跳读版本确认（60s 等待 + fw_ver 核对），回滚不一致红字/日志提示。
+> ✅ **已落地（2026-10-07 收编 C# agent 能力；M4 补齐归档与历史）**：bin 解析
+> （esp_app_desc_t@0x20 + 版本/commit/elf_sha256）/ SemVer 比对 / OFFER×3 / 进度条 / 自证版本核对 /
+> `--force`、`--ota-limit`、`--ota-corrupt` 开关 / 50005 `/firmware.*` 路由"就绪才宣告"+ Range 206 续传。
+> ★ 协议修正：设备回包固定 PC:50003（`link_manager.c` 端口覆写），由 link 分发器喂会话。
+- [x] 选 bin → 解析内嵌 esp_app_desc + 现算 SHA256，显示版本/时间/大小；
+- [x] 与设备版本 SemVer 比对（两端都剥 `v` 与 `+metadata`）+ 进度/速率 + 全事件化 ACK；
+- [x] **固件仓库按版本归档 + sqlite 升级历史**（列名 `git_commit`，避开 sqlite 保留字）+ bin 拖拽；
+- [x] 破坏性开关：损坏注入、百分比限制器、主动中止、收发包日志、Range 206 续传；
+- [x] 升级后核对：改为"先等 link 掉线 → 再等重新 ONLINE"才读版本，修掉旧的**假阳性**；
+      并提示两端版本串相同时分不出"转正/回滚"，以设备日志 `self-test OK` + 槽位为准。
 
 ### 6.5 阶段 6 验收
-- [ ] 正常升级切槽上线、旧槽保留；坏固件/无法自证自动回滚；中途断电不变砖可续传；
-- [ ] OTA 与录音/通话互斥正确，assets 不被擦，版本正确上报；打勾 + 改动记录 + 文件索引。
+- [x] 正常升级切槽上线、旧槽保留；坏固件被拦；断电/不自证自动回滚；断点续传；
+- [x] OTA 与录音/通话互斥、assets(storage) 不被擦、版本正确上报；
+- [x] 2026-11-12 v2.1.0 发版实测：`App version: 2.1.0`、`whole-sha MATCH`、`self-test OK (run=ota_0)`、CLI exit 0；
+- [ ] 吞吐判据 `≥700 KB/s` 未达标（实测 105~187 KB/s），已按实测最优定档 5760/16 并停止调参。
 
 ---
 

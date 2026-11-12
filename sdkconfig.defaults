@@ -128,24 +128,19 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 ## 注：本方案用 esp_http_client + esp_ota_* 手动实现（非 esp_https_ota 组件），
 ## 故无需 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP —— http:// 明文由 esp_http_client 直接支持。
 
-## ★ OTA 吞吐（改动记录 §80 S1，2026-11-12）：TCP 窗口 5760 → 16384 → 65536
-##   真机复测（§80 验收，2026-11-12）：窗口 16384 时整包 27.8s = 187KB/s，
-##   而 256KB/段的耗时均匀在 1.30~1.46s ⇒ 每个 16KB 窗口往返约 85ms，
-##   吞吐 ≈ 窗口/往返延迟，窗口就是天花板（不是 flash 擦除，也不是 sha 校验：
-##   verify 仅 0.4s、dl/total=0.985）。按同式推算 64KB 窗口 → 约 700~750KB/s。
-##   代价：按 socket 计约 +48KB —— 本机 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-##   且 SPIRAM_MALLOC_ALWAYSINTERNAL=0，大块可落 PSRAM；改后必须看
-##   [OTA_MEM] INT largest 是否仍 ≥32KB，若掉太狠再退回 32768。
+## ★ OTA 吞吐（改动记录 §80）：TCP 窗口保持 IDF 默认 5760，不放大
+##   2026-11-12 四组真机实测（同一 AP / 同一 PC，PC 侧 144.4 Mbps、RSSI −32）：
+##     5760/16 → 187 KB/s（整包 27.8 s，最佳）  5760/16 → 171、119（空口波动）
+##     65535/16 → 60 KB/s                      65535/64 → 90 KB/s
+##   结论：瓶颈不在 TCP 窗口（`verify` 仅 0.47 s、dl/total≈0.99，已排除 flash 与 sha），
+##   而在无线空口/聚合（`wifi_init: rx ba win: 2`，AMPDU RX 窗口仅 2）。
+##   故定档 5760/16，不再调参；若要冲 700 KB/s，见验收报告 §十一 的三条候选。
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
-# TCP 接收窗口：本环境实测 5760（IDF 默认）吞吐最高，调大反而更差，故保持默认。
-#   5760(WND)/16(mbox) → 187 KB/s   ← 最佳，采用
-#   5760/16            → 171、119 KB/s（同配置不同轮，波动来自无线空口）
-#   65535/16           → 60 KB/s
-#   65535/64           → 90 KB/s
-# 两个坑（2026-11-12 实测）：
-#  1) Kconfig 上限是 65535（range 2440 65535，未开 LWIP_WND_SCALE）；写 65536 会被
-#     kconfig 判越界并**悄悄回写成 5760**，连编都不重编（sdkconfig.h 内容没变）。
-#  2) 只改 sdkconfig.defaults 对已存在的 sdkconfig 不生效，必须改 sdkconfig 本体。
+# TCP 接收窗口：保持 IDF 默认（实测最大吞吐就是默认配置）。
+#  坑 1) Kconfig 上限是 65535（range 2440 65535，未开 LWIP_WND_SCALE）；写 65536 会被
+#        kconfig 判越界并**悄悄回写成 5760**，且 sdkconfig.h 内容不变 ⇒ 连编都不会重编。
+#  坑 2) 只改本文件对已存在的 sdkconfig 不生效（IDF 仅在 sdkconfig 缺失时才用 defaults），
+#        必须同时改 sdkconfig 本体。
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
-CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+# 接收邮箱：能排队多少段（每段≈MSS 1440 B），需 ≥ 窗口/MSS。窗口保持 5760 时 16 足够。
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

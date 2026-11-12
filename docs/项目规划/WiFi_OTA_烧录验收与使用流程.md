@@ -1,8 +1,30 @@
 # WiFi 局域网 OTA — 逐功能逐步骤验收手册
 
-> 版本 **V3.3**（2026-10-08）· 对应改动记录 **§61 ~ §79g**、ICD **V1.6**
+> 版本 **V3.4**（2026-11-12）· 对应改动记录 **§61 ~ §80**、ICD **V1.6**
 > 方案 `docs/项目规划/WiFi局域网OTA升级实施方案.md`
 > 分支：**main**
+>
+> **V3.4 变更（v2.0 → v2.1.0 发布版，§80 真机验收轮）**：
+> ① **WiFi 停态 panic 根治**：`wifi_manager.c: apply_candidate()` 的 `esp_wifi_set_config`
+>    改判错记 W 日志后 `return`，不再 `ESP_ERROR_CHECK` abort —— 以前每次 OTA 重启路径
+>    **100% panic**（`ESP_ERR_WIFI_STOP_STATE 0x3014` @ `wifi_manager.c:269`），现在
+>    `set_config "Power" failed: ESP_ERR_WIFI_STOP_STATE -> skip reconnect` 后干净 `rst:0xc`；
+> ② **PC 端闭环核对不再假阳性**：`session.py` 改为"先等 link 掉线 → 再等重新 ONLINE"才读版本；
+>    并显式提示"两端 SemVer 相同时分不出转正/回滚"，以设备日志 `self-test OK` / 槽位为准；
+> ③ **版本三层**：`version.txt`（发布 SemVer，人工决定）+ `+g<sha>[.dirty]`（`CMakeLists.txt`
+>    在 `project()` 前注入，`idf.py build` 裸跑就带）+ `app_elf_sha256`（归档兜底）。
+>    发布构建 `pwsh -f tools/build_fw.ps1 -NoMeta`（`RELEASE_BUILD=1` + 拒绝脏工作区），
+>    设备最终上报纯 `2.1.0`；**不要用 `-DPROJECT_VER`**（会写进 `CMakeCache` 造成版本滞留）；
+> ④ **吞吐定档 5760/16**：四组实测（187 / 171 / 119 / 60 / 90 / 105 KB/s），窗口放大反而劣化，
+>    瓶颈在无线空口（`rx ba win: 2`），不再调参 —— 判据 `≥700 KB/s` 当前**不适用**，
+>    详见 `report/OTA真机验收报告_2026-11-12.md` §十一；
+> ⑤ **新增两个测试工况坑**（本轮踩到）：
+>    · 自证窗口内**手按复位** = 主动放弃转正 ⇒ bootloader 回滚，别按；
+>    · 重启后**黑屏 4.5 s 是正常的**（3.58 s 面板初始化 → 4.50 s Splash → 5.6 s Main）。
+> ⑥ **CLI 路线必挂心跳保活**：`python docs/_heartbeat_keep.py <设备IP> <秒数>`，
+>    否则 link 不在线 → 自证不成立 → 下次重启回滚（UI 路线因 PC 端常驻界面天然有心跳）；
+> ⑦ `MAIN: [OTA] self-test window expired … will roll back on next boot` 已改为
+>    **仅 PENDING_VERIFY 时**才打印（以前每次普通开机都刷，属于误导）。
 >
 > **V3.3 变更（v1.7 → v2.0 发布版，§79 系列）**：
 > ① **E 组真续传真机回归通过**（2026-10-08：只发 40% → 归零重推 → 从段边界 RESUME，用户确认）；

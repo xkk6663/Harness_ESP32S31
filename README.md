@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-green)](LICENSE)
 [![Language](https://img.shields.io/badge/C-C99-yellow)](https://en.cppreference.com/w/c)
 [![RTOS](https://img.shields.io/badge/FreeRTOS-SMP-purple)](https://www.freertos.org/)
-![Release](https://img.shields.io/badge/发布版-v2.0-DA291C?logo=github&logoColor=white)
+![Release](https://img.shields.io/badge/发布版-v2.1.0-DA291C?logo=github&logoColor=white)
 
 ![UI](https://img.shields.io/badge/UI-LVGL_v9-2EA3DD?logo=lvgl&logoColor=white)
 ![USB](https://img.shields.io/badge/USB_副屏-TinyUSB_HS_扩展屏-6E4B9E)
@@ -96,7 +96,7 @@
 
 ---
 
-## 🔄 WiFi OTA 升级（A/B 双槽，v2.0 发布版）
+## 🔄 WiFi OTA 升级（A/B 双槽，v2.1.0 发布版）
 
 **零新增端口**：控制面复用 UDP 50003（link_manager），数据面复用 TCP 50005（pc_host 内置 HTTP），
 设备作 **HTTP 客户端主动拉取**（无需 PC 能直连设备）。
@@ -148,8 +148,18 @@ PC: pc_host「固件升级」页                     设备: ota_service（middl
 
 > OTA 只写 ota_0/ota_1 的**对侧**；`nvs`/`storage`/`uext` 一概不碰。
 > 固件尺寸硬上限 = 5,242,880 B（超出设备回 `OTA_REJECT reason=space`）。
-> 版本号 = `git describe` 烘焙进 `esp_app_desc_t`（**tag/提交后必须 `idf.py fullclean` 重建**，
-> 否则增量构建不重跑 configure、版本串不更新）。
+>
+> **版本三层（v2.1.0 起）**：① `version.txt` = 发布 SemVer（人工决定，发布才动）；
+> ② 构建标识 `+g<sha>[.dirty]` —— 由 `CMakeLists.txt` 在 `project()` 之前注入，
+> 所以 `idf.py build` 裸跑就带 sha，无需 `-DPROJECT_VER`（那个会写进 `CMakeCache` 造成版本滞留）；
+> ③ `app_elf_sha256` 兜底归档（`pc_host` 解析后进 `firmware.json` / sqlite）。
+> 发布构建用 `pwsh -f tools/build_fw.ps1 -NoMeta`（置 `RELEASE_BUILD=1` + 拒绝脏工作区），
+> 器件最终上报纯 `2.1.0`；日常构建报 `2.1.0+g<sha>`。
+> 版本比对在两端都只比前三段数字（自动剥掉 `v` 前缀与 `+` 之后的 metadata）。
+>
+> **吞吐定档（§80，2026-11-12）**：TCP 窗口保持 IDF 默认 5760/16 —— 四组实测里
+> 187 KB/s 就是最大值（65535/16 反而掉到 60 KB/s）；`verify` 仅 0.47 s、`dl/total≈0.99`，
+> 已排除 flash 与 sha，瓶颈在无线空口（`rx ba win: 2`）。详见验收报告 §十一。
 >
 > **双向 OTA（§79）**：PC 心跳携带 `fw_latest`（本机 build bin 编译版本），设备端 SYS 页
 > Firmware Update 卡实时显示云端最新版本；点 **Check update** 发 `OTA_REQ` —— PC 判无更新回
