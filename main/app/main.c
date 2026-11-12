@@ -170,9 +170,12 @@ static void ota_selftest_tick_cb(void *arg)
         return;
     }
     if (elapsed_s >= 30) {
-        /* 窗口耗尽仍未转正：留 pending，下次启动由 bootloader 回滚 */
-        ESP_LOGW("MAIN", "[OTA] self-test window expired (30s) without WiFi+link -> "
-                         "will roll back on next boot");
+        /* 窗口耗尽仍未转正：留 pending，下次启动由 bootloader 回滚。
+           只有真的处于 PENDING_VERIFY 才算"回滚风险"，否则该槽是 VALID，别误导。 */
+        if (ota_service_is_pending_verify()) {
+            ESP_LOGW("MAIN", "[OTA] self-test window expired (30s) without WiFi+link -> "
+                             "will roll back on next boot");
+        }
         esp_timer_stop(s_ota_st);
     }
 }
@@ -330,7 +333,11 @@ void app_main(void)
     BOOT_DIAG("after ota_service_init");
     /* 自证定时器：1s 周期检查（条件满足即刻转正，见 ota_selftest_tick_cb 注释）。
        若本固件是 OTA 上来的（PENDING_VERIFY），这条链决定"转正"还是"下次启动回滚"。
-       非 OTA 启动时 mark_valid_if_pending() 立即返回 false 且开销趋零。 */
+       非 OTA 启动时 mark_valid_if_pending() 立即返回 false 且开销趋零 —— 所以定时器
+       照旧总是启动（不改任何行为），只是"窗口耗尽"的告警改成仅在真的处于
+       PENDING_VERIFY 时才打：以前每次普通开机 30s 都会刷一条
+       "self-test window expired ... will roll back on next boot"，而该槽其实是 VALID，
+       纯属误导（§80 验收期间被反复当成故障）。 */
     s_selftest_t0_us = esp_timer_get_time();
     esp_timer_create_args_t ota_st_args = {
         .callback = ota_selftest_tick_cb,
