@@ -82,7 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--device", default=None, help="设备 IP；缺省=UDP 50003 广播自动发现")
     ap.add_argument("--limit", type=int, default=0, help="只发 N%%（断点续传/中断测试）")
     ap.add_argument("--corrupt", action="store_true", help="流中翻 1 bit（坏固件测试）")
-    ap.add_argument("--force", action="store_true", help="忽略版本比对")
+    ap.add_argument("--force", action="store_true", help="允许降级/同版本（设备端仍会判 min_version）")
+    ap.add_argument("--psk", default=None,
+                    help="OFFER 的 HMAC 预共享密钥；缺省读环境变量 OTA_PSK，再缺省用开发默认值")
+    ap.add_argument("--min-version", default="", metavar="VER",
+                    help="OFFER 里申报的最低可接受版本（设备 ver<min_version ⇒ REJECT oldver）")
     ap.add_argument("--offline", action="store_true", help="脱机模式：用固件行为替身跑状态机")
     ap.add_argument("--offline-reject", default=None, metavar="REASON",
                     help="脱机模式下让替身拒绝 OFFER（busy/pending/space/network）")
@@ -120,10 +124,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ota-cli] 上下文初始化失败: {type(e).__name__}: {e}", file=sys.stderr)
             return EXIT_ERROR
 
-    session = OtaSession(ctx, fw, limit_percent=args.limit, corrupt=args.corrupt, force=args.force)
+    session = OtaSession(ctx, fw, limit_percent=args.limit, corrupt=args.corrupt,
+                         force=args.force, psk=args.psk, min_version=args.min_version)
     if device is not None:
         from .ota.harness import wire
         wire(session, device)
+    if link is not None:
+        # 真机模式：设备回包（OTA_ACCEPT / OTA_PROGRESS / OTA_RESULT）固定发 PC:50003，
+        # 必须把 link.on_json 接到会话 —— GUI 侧由 main.py 的分发器做这件事，
+        # CLI 之前漏接，会话永远收不到 ACCEPT（2026-11-12 验收实测）。
+        link.on_json = session.feed
     t0 = time.monotonic()
     session.start()
 
@@ -147,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         "serve_count": session.serve_count,
         "corrupt": args.corrupt,
         "force": args.force,
+        "min_version": args.min_version,
         "elapsed_s": round(elapsed, 2),
         "exit_code": code,
         "logs": ctx.logs,

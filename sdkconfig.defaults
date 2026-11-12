@@ -127,3 +127,15 @@ CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 ## 注：本方案用 esp_http_client + esp_ota_* 手动实现（非 esp_https_ota 组件），
 ## 故无需 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP —— http:// 明文由 esp_http_client 直接支持。
+
+## ★ OTA 吞吐（改动记录 §80 S1，2026-11-12）：TCP 窗口 5760 → 16384 → 65536
+##   真机复测（§80 验收，2026-11-12）：窗口 16384 时整包 27.8s = 187KB/s，
+##   而 256KB/段的耗时均匀在 1.30~1.46s ⇒ 每个 16KB 窗口往返约 85ms，
+##   吞吐 ≈ 窗口/往返延迟，窗口就是天花板（不是 flash 擦除，也不是 sha 校验：
+##   verify 仅 0.4s、dl/total=0.985）。按同式推算 64KB 窗口 → 约 700~750KB/s。
+##   代价：按 socket 计约 +48KB —— 本机 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+##   且 SPIRAM_MALLOC_ALWAYSINTERNAL=0，大块可落 PSRAM；改后必须看
+##   [OTA_MEM] INT largest 是否仍 ≥32KB，若掉太狠再退回 32768。
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_WND_DEFAULT=65536
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

@@ -425,22 +425,65 @@ PC 端的**行号迟滞规则**（`pcnow/pusher.py::_stable_line`）：
 
 | type | 方向 | 字段 | 说明 |
 |---|---|---|---|
-| `OTA_OFFER` | PC→设备 | `ver`(string) `size`(number) `sha256`(hex64 string) `url`(string) | 升级提议；`url` 是设备可直接 GET 的完整地址 |
+| `OTA_OFFER` | PC→设备 | `ver`(string) `size`(number) `sha256`(hex64 string, **必需**) `url`(string) `min_version`(string, 可空) `force`(0/1) `nonce`(uint64) `ts`(uint64) `hmac`(hex64 string) | 升级提议；`url` 是设备可直接 GET 的完整地址。★ V1.7 起 `sha256`/`hmac` 为**强制**字段（见 §8.1.1） |
 | `OTA_ACCEPT` | 设备→PC | `size`(number) | 校验通过，即将开始拉取 |
 | `OTA_REJECT` | 设备→PC | `reason`(string) | 拒绝原因，见下表 |
 | `OTA_PROGRESS` | 设备→PC | `percent`(0-100) `speed`(KB/s) | 每 2% 一条 |
 | `OTA_RESULT` | 设备→PC | `ok`(0/1) `detail`(string) | ok=1 后设备 1s 内重启 |
-| `OTA_ABORT` | PC→设备 | `reason`(string, 可选) | 中止；**M2 起真正生效**：设备下载循环每 4KB 块边界检查标志，立即停手（不写完当前块） |
+| `OTA_ABORT` | PC→设备 | `reason`(string, 可选) | 中止；**M2 起真正生效**：设备下载循环每块边界检查标志，立即停手（不写完当前块） |
 
-**`OTA_REJECT.reason` 取值语义**：
+**`OTA_REJECT.reason` 取值语义**（按判定顺序）：
 
 | reason | 含义 |
 |---|---|
+| `badjson` / `badargs` | JSON 解析失败 / `url` 或 `size` 无效 |
+| `noauth` | OFFER 缺 `hmac`（V1.7 起鉴权强制） |
+| `nopsk` | 设备没拿到 PSK（NVS `ota/psk` 为空且编译期兜底为空） |
+| `badauth` | HMAC-SHA256 校验失败（PSK 不一致 / 字段被改 / hmac 非 hex） |
+| `stale` | `ts` 与设备时钟偏差 > 300s（**仅 SNTP 已校时时判**） |
+| `replay` | `nonce` 非严格递增（重放同一 OFFER） |
+| `nosha` | `sha256` 缺失或不是 64 hex（整包摘要闭环无从谈起） |
+| `oldver` | `ver` < OFFER 声明的 `min_version` |
+| `downgrade` | `ver` < 设备当前运行版本且 `force=0` |
+| `network` | link_manager 未在线 |
 | `busy` | 录音中 / 通话或推流中 / 已在升级（三选一） |
 | `pending` | 运行槽处于 PENDING_VERIFY（自证窗口内，IDF 规定不能再写另一槽） |
-| `space` | 备用槽装不下该 size |
-| `network` | link_manager 未在线 |
-| `badargs` / `badjson` | OFFER 字段缺失 / JSON 解析失败 |
+| `space` | 备用槽装不下该 size（构建侧请先跑 `tools/check_fw_size.py`） |
+
+### 8.1.1 OFFER 鉴权与版本门禁（V1.7，改动记录 §80）
+
+> 动机：原六道检查全是**状态**检查，没有身份检查 —— 同网段任意主机发一个
+> `url` 指向自己的 bin，只要 size 与镜像 CRC 过得去设备就会刷。
+> 设备端实现：`ota_service.c` 的 `ota_auth_check()` / `ver_cmp()`；
+> PC 端实现：`pc_host/ota/auth.py`（唯一实现，UI/CLI/脱机替身共用）。
+
+**规范化签名串（双方必须一字不差，字段顺序即下表顺序，`|` 分隔）**：
+
+```
+ver|min_version|force|size|sha256|url|nonce|ts
+```
+
+- `force` 归一成 `0`/`1`；`size`/`nonce`/`ts` 为十进制整数；
+  `min_version` 缺省时是**空串**（不是 `-`、不是省略该段）。
+- `hmac = HMAC-SHA256(PSK, canon)` 的小写 hex（64 字符）。
+- 校验顺序：**hmac 先验** → `ts` 新鲜度 → `nonce` 单调。先证字段未被篡改，
+  再用 nonce/ts 做状态判断，避免伪造包把 NVS 计数器顶高。
+- `nonce` 设备侧存 NVS `ota/nonce`（u64），**只有通过鉴权的 OFFER 才写**；
+  PC 侧存 `pc_host/firmware_store/ota.db` 的 `kv('nonce')`，跨进程严格递增。
+- **PSK**：设备 NVS `ota/psk`（blob）优先，缺省回落到编译期 `OTA_DEV_PSK`
+  （开发用，与 PC 的 `pc_host/ota/auth.py:DEFAULT_PSK` 逐字一致，
+  `tests/unit/test_ota_auth.py` 会读 C 源码做一致性断言）。
+  量产须由产线写 NVS 每台独立 PSK，PC 侧用 `--psk` 或环境变量 `OTA_PSK`。
+- **诚实边界**：未开 Flash Encryption 时 PSK 可被物理读出。这一档把门槛从
+  "同网段任何人"抬到"能读你 flash 的人"；根治靠量产的 Secure Boot v2 + Flash Encryption。
+
+**版本门禁（设备侧，不再只靠 PC 软拦）**：
+
+1. `min_version` 非空且 `ver < min_version` → `oldver`（无条件拒）；
+2. `ver < 当前运行版本` 且 `force != 1` → `downgrade`；
+3. 比较规则与 PC 的 `compare_semver` 相同：容忍 `v`/`V` 前缀，`-dirty`/`+build`
+   后缀不参与，缺位补 0，非法段按 0。
+
 
 ### 8.2 HTTP 路由（PC :50005 新增两条）
 
@@ -492,12 +535,16 @@ IDLE → (OTA_OFFER 校验通过) OFFERED → DOWNLOADING → VERIFY
 | 开关 | 语义 | 预期设备端反应 |
 |---|---|---|
 | `--ota-limit N` | 只发前 N%（1..99），`/firmware.json` 与 `OTA_OFFER.size` 均报**截断长度** | 设备端 `size mismatch` → 保留断点 → 续传可补齐 |
-| `--ota-corrupt` | 流中点翻 1 bit | `esp_ota_end` 失败（镜像段 CRC）/ 段摘要不符 |
-| `--force` | 忽略 SemVer 比对 | 同版本/降级也照发 |
-| （默认） | 设备 `fw_ver >=` 固件版本 ⇒ **拒发**（退出码 8） | 设备端不会收到 OFFER |
+| `--ota-corrupt` | 流中点翻 1 bit | `esp_ota_end` 失败（镜像段 CRC）/ 段摘要不符 / 整包 SHA MISMATCH |
+| `--force` | 忽略 PC 侧"版本未提升"软拦，**并把 `force=1` 写进 OFFER** | 设备端据此放行降级；`min_version` 仍生效 |
+| `--min-version VER` | OFFER 申报最低可接受版本 | 目标 `ver < min_version` ⇒ `REJECT oldver` |
+| `--psk STR` | OFFER 的 HMAC 预共享密钥（缺省读 `OTA_PSK`，再缺省开发默认值） | PSK 不一致 ⇒ `REJECT badauth` |
+| （默认） | 设备 `fw_ver >=` 固件版本 ⇒ **拒发**（退出码 8） | 设备端不会收到 OFFER；★ 即便绕过，设备侧 `downgrade` 仍会拦 |
 
 **SemVer 粗比规则**：按 `.` 分 3 段数值比较；容忍 `v`/`V` 前缀；`-dirty`/`+build` 后缀不参与；
 缺位补 0。★ 仅用于"要不要升"的粗判，**不参与安全/完整性判定**（那是 SHA256 的事）。
+C 侧同规则实现在 `ota_service.c:ver_cmp()`。
+
 
 **在线判定与主动中止**：会话期（已 ACCEPT、未收到 RESULT）设备心跳丢失 > **8 s** ⇒
 PC 主动发 `OTA_ABORT{"reason":"peer_lost"}`。★ 这依赖 `DeviceOfflineMs=5000`（心跳超时）先置离线。

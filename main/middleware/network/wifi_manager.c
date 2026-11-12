@@ -266,7 +266,18 @@ static void apply_candidate(const wifi_cred_t *cred)
     } else {
         sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    if (err != ESP_OK) {
+        /* ★ F36（2026-11-12 真机验收发现）：esp_restart() 关 WiFi 的瞬间会抛
+           WIFI_EVENT_STA_DISCONNECTED(reason=8 ASSOC_LEAVE)，事件仍会走到
+           "运行中掉线"分支 → 再调进来。STOP 态下 set_config 返回
+           ESP_ERR_WIFI_STOP_STATE(0x3014)，原来 ESP_ERROR_CHECK 直接 abort()，
+           把每次 OTA 成功后的"重启"变成 panic 重启（日志脏、复位时机被扰动）。
+           改为温和失败：记一条 W 级日志返回，不再尝试重连。 */
+        ESP_LOGW(TAG, "set_config \"%s\" failed: %s -> skip reconnect",
+                 cred->ssid, esp_err_to_name(err));
+        return;
+    }
 
     strncpy(s_cur_ssid, cred->ssid, sizeof(s_cur_ssid) - 1);
     s_retry_num = 0;

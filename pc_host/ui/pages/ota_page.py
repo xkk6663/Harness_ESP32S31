@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import queue
 import time
 from pathlib import Path
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout,
 
 from ..widgets import make_page_header, v_card
 from ...ota import FirmwareInfo, OtaSession, compare_semver
+from ...ota.auth import DEFAULT_PSK, PSK_ENV, resolve_psk
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_FW = _REPO_ROOT / "build" / "display_audio_photo.bin"
@@ -43,7 +45,7 @@ class OtaPage(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
 
-        root.addWidget(make_page_header("固件升级", "WiFi 局域网 OTA · A/B 双槽轮替 + 30s 自证回滚防砖"))
+        root.addWidget(make_page_header("固件升级", "WiFi 局域网 OTA · A/B 双槽轮替 + 30s 自证回滚防砖 · HMAC 鉴权 + 版本门禁"))
 
         # §79：实时查询当前编译固件版本（bin mtime 变化才重解析，~1s 粒度）
         self.lbl_build = QLabel("本地编译固件： —")
@@ -58,8 +60,10 @@ class OtaPage(QWidget):
         fw_card, fw_lay = v_card("固件文件（build/display_audio_photo.bin）")
         row = QHBoxLayout()
         self.path_edit = QLineEdit()
-        if _DEFAULT_FW.exists():
-            self.path_edit.setText(str(_DEFAULT_FW))
+        # ★ 默认路径的 setText 必须留到 __init__ 末尾再做：setText 会**同步**触发
+        #   textChanged → _reparse → _update_cmp，而后者要访问 btn_start / edit_minver。
+        #   原实现放在控件创建之前，PySide 只打印 AttributeError traceback 不崩，
+        #   表现为"界面正常但比对结论一直不刷新"。
         self.path_edit.setPlaceholderText("app bin 路径（含 esp_app_desc_t 的固件，不是 bootloader）")
         self.path_edit.textChanged.connect(self._reparse)
         browse = QPushButton("浏览…")
@@ -93,10 +97,42 @@ class OtaPage(QWidget):
             dev_form.addRow(QLabel(label), w)
         ctl_lay.addLayout(dev_form)
 
+        # ---- §80 S3/S4：鉴权与版本门禁（设备端强校验，PC 只负责"如约申报"）----
+        # 这两项不是可选装饰：OFFER 少了 hmac 会被 REJECT noauth，固件版本低于
+        # min_version 会被 REJECT oldver —— 都在设备端判，PC 绕不过去。
+        gate_form = QFormLayout()
+        gate_form.setHorizontalSpacing(16)
+        gate_form.setVerticalSpacing(6)
+        self.edit_psk = QLineEdit()
+        self.edit_psk.setPlaceholderText(f"留空 = 环境变量 {PSK_ENV} / 开发默认值")
+        self.edit_psk.setToolTip(
+            "HMAC-SHA256 预共享密钥，必须与设备一致。\n"
+            "解析顺序：本框 → 环境变量 OTA_PSK → 开发默认值。\n"
+            "设备侧取 NVS 命名空间 ota 的键 psk，没烧过则用编译期默认。\n"
+            "★ 不一致 → 设备回 REJECT badauth（日志会打印 HMAC 失配）。")
+        self.edit_psk.textChanged.connect(self._refresh_auth_state)
+        self.edit_minver = QLineEdit()
+        self.edit_minver.setPlaceholderText("留空 = 不限制（例：1.2.0）")
+        self.edit_minver.setToolTip(
+            "本次允许刷入的**最低固件版本下限**（写进 OFFER.min_version）。\n"
+            "要升级到的固件版本 < 它 → 设备无条件回 REJECT oldver，force 也不能绕过。\n"
+            "用途：防止误把设备刷成过老版本。")
+        self.edit_minver.textChanged.connect(self._update_cmp)
+        self.lbl_auth = QLabel("—")
+        self.lbl_auth.setObjectName("Secondary")
+        gate_form.addRow(QLabel("鉴权 PSK"), self.edit_psk)
+        gate_form.addRow(QLabel("最低版本"), self.edit_minver)
+        gate_form.addRow(QLabel("鉴权状态"), self.lbl_auth)
+        ctl_lay.addLayout(gate_form)
+
         adv = QHBoxLayout()
         adv.setSpacing(14)
-        self.chk_force = QCheckBox("忽略版本比对（--force）")
-        self.chk_force.setToolTip("同版本/降级也照发（联调用）")
+        self.chk_force = QCheckBox("强制降级（force，需设备接受）")
+        self.chk_force.setToolTip("同版本/降级也照发，并把 force=1 写进 OFFER。\n"
+                                  "★ 设备端有独立版本门禁（§80 S4）：offer.ver 低于运行版本\n"
+                                  "   且 force=0 时回 REJECT downgrade；min_version 更高时回 oldver。")
+        # 勾选即刷新比对结论/按钮（原来只靠 ~1s 轮询，勾完要等一下才亮）
+        self.chk_force.toggled.connect(self._update_cmp)
         self.chk_corrupt = QCheckBox("注入 1bit 损坏（验收 F）")
         self.chk_corrupt.setToolTip("固件流中点翻一个 bit，验证设备端 esp_ota_end/段哈希拒绝")
         spin_lbl = QLabel("只发前")
@@ -151,6 +187,32 @@ class OtaPage(QWidget):
         self._timer.timeout.connect(self._poll)
         self._timer.start(150)
 
+        # ---- 延迟初始化：控件全部就位后再灌默认值（见 path_edit 处注释）----
+        if _DEFAULT_FW.exists():
+            self.path_edit.setText(str(_DEFAULT_FW))
+        self._refresh_auth_state()
+
+    # ---- 鉴权参数展示：PSK 来源与长度（防"以为改了其实没改"） ----
+    def _refresh_auth_state(self) -> None:
+        txt = self.edit_psk.text().strip()
+        try:
+            psk = resolve_psk(txt or None)
+        except Exception as e:  # noqa: BLE001
+            self.lbl_auth.setText(f"PSK 解析失败：{e}")
+            return
+        if txt:
+            src = "界面输入"
+        elif os.environ.get(PSK_ENV):
+            src = f"环境变量 {PSK_ENV}"
+        else:
+            src = "开发默认"
+        tail = ""
+        if psk == DEFAULT_PSK.encode("utf-8"):
+            tail = "  ★ 与编译期默认值相同（量产须换）"
+        elif len(psk) < 16:
+            tail = "  ★ 长度 < 16 B，建议加长"
+        self.lbl_auth.setText(f"HMAC-SHA256 · {len(psk)} B / {src}{tail}")
+
     # ---- 文件选择与解析（Qt 线程内同步做，几 MB 读取足够快） ----
     def _browse(self) -> None:
         start = str(_DEFAULT_FW.parent) if _DEFAULT_FW.parent.exists() else str(Path.home())
@@ -204,19 +266,36 @@ class OtaPage(QWidget):
         link = self.ctx.link
         dev_ver = str((link.info or {}).get("fw_ver", "") or "") if link else ""
         self.lbl_dev_ver.setText(dev_ver or "（离线 / 未上报）")
+        mv = self.edit_minver.text().strip()
+        can = False
         if fw is None:
             self.lbl_cmp.setText("先选择有效固件")
+        elif mv and compare_semver(fw.version, mv) < 0:
+            # 本地预检，对齐设备端 ver_cmp(offer.ver, min_version) < 0 → oldver。
+            # 这条是**无条件**拒（force 也绕不过），所以直接锁死按钮，别白跑一趟。
+            self.lbl_cmp.setText(f"固件 {fw.version} < 最低版本 {mv}，设备必回 REJECT oldver")
         elif not dev_ver:
-            self.lbl_cmp.setText("设备未上报版本，OFFER 时跳过比对")
+            self.lbl_cmp.setText("设备未上报版本：PC 侧跳过比对（设备端门禁仍生效）")
+            can = True
         else:
             c = compare_semver(dev_ver, fw.version)
             if c < 0:
                 self.lbl_cmp.setText(f"可升级  {dev_ver} → {fw.version}")
+                can = True
             elif self.chk_force.isChecked():
-                self.lbl_cmp.setText(f"版本未提升（{dev_ver} ≥ {fw.version}），--force 已勾选可强刷")
+                # force 只是"申报"，最终由设备端 downgrade 规则裁决
+                self.lbl_cmp.setText(f"版本未提升（{dev_ver} vs {fw.version}），"
+                                     f"force 已勾选，交由设备端裁决")
+                can = True
+            elif c == 0:
+                # git describe 风格（v2.0-4-g708d4ea-dirty）的提交数 / -dirty 不参与比较，
+                # 同主版本的任意两次构建都会落到这里 —— 开发迭代必勾 force。
+                self.lbl_cmp.setText(f"版本解析相同（{dev_ver} ≈ {fw.version}："
+                                     f"git 描述后缀不参与比较），需勾选「强制降级」")
             else:
-                self.lbl_cmp.setText(f"版本未提升（{dev_ver} ≥ {fw.version}），需勾选「忽略版本比对」")
-        self.btn_start.setEnabled(fw is not None and self.session is None
+                self.lbl_cmp.setText(f"降级：设备 {dev_ver} 高于固件 {fw.version}，"
+                                     f"需勾选「强制降级」")
+        self.btn_start.setEnabled(can and self.session is None
                                   and bool(self.ctx.link and self.ctx.link.online))
 
     # ---- 会话控制 ----
@@ -227,7 +306,10 @@ class OtaPage(QWidget):
         session = OtaSession(self.ctx, fw,
                              limit_percent=self.spin_limit.value(),
                              corrupt=self.chk_corrupt.isChecked(),
-                             force=self.chk_force.isChecked())
+                             force=self.chk_force.isChecked(),
+                             # §80 S3/S4：空串 → None，交给 resolve_psk 走环境变量/默认
+                             psk=self.edit_psk.text().strip() or None,
+                             min_version=self.edit_minver.text().strip())
         self.session = session
         self.ctx.ota_session = session          # link 分发器据此喂 OTA_* 回包
         session.start()
@@ -244,7 +326,8 @@ class OtaPage(QWidget):
         self.btn_start.setEnabled(not running)
         self.btn_abort.setEnabled(running)
         self.path_edit.setEnabled(not running)
-        for w in (self.chk_force, self.chk_corrupt, self.spin_limit):
+        for w in (self.chk_force, self.chk_corrupt, self.spin_limit,
+                  self.edit_psk, self.edit_minver):
             w.setEnabled(not running)
 
     # ---- 150ms 轮询：排空事件队列 + 设备状态 ----
@@ -327,10 +410,16 @@ class OtaPage(QWidget):
         v.addWidget(txt)
         rows = store.recent(200) if store else []
         lines = []
-        for ts, ip, from_ver, to_ver, size, _sha, ok, detail in rows:
+        for row in rows:
+            ts, ip, from_ver, to_ver, size, _sha, ok, detail = row[:8]
+            # §80 S4 新列（老库迁移后可能为 None）
+            force = row[8] if len(row) > 8 else 0
+            min_ver = (row[9] if len(row) > 9 else "") or ""
             tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+            flags = (f"force " if force else "") + (f"min={min_ver}" if min_ver else "")
             lines.append(f"{tstr}  {'✓' if ok else '✗'}  {ip or '?':<15}  "
-                         f"{from_ver or '?'} → {to_ver}  {size / 1048576:.2f}MB  {detail}")
+                         f"{from_ver or '?'} → {to_ver}  {size / 1048576:.2f}MB  "
+                         f"{('[' + flags + ']  ') if flags else ''}{detail}")
         txt.setPlainText("\n".join(lines) if lines else "暂无升级记录（归档目录 pc_host/firmware_store/）")
         dlg.resize(760, 440)
         dlg.exec()

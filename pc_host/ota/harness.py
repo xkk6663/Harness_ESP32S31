@@ -24,6 +24,9 @@ import queue
 import threading
 import time
 
+from . import auth as ota_auth
+from .session import compare_semver as _ver_cmp
+
 
 class MockHttpd:
     """httpd 替身：只记录 attach/detach 与端口（真机模式换 NowHttpServer）。"""
@@ -106,7 +109,8 @@ class MockDevice:
                  result_ok: bool = True, progress: bool = True, reboot: bool = True,
                  back_ver: str | None = None, online_at_start: bool = True,
                  drop_link_after_accept: bool = False,
-                 progress_step_ms: int = 8, reboot_delay_s: float = 1.2) -> None:
+                 progress_step_ms: int = 8, reboot_delay_s: float = 1.2,
+                 psk: bytes | None = None, check_auth: bool = True) -> None:
         self.link = MockLink(self)
         self.link._online = online_at_start
         self.link.info = {"fw_ver": dev_ver} if online_at_start else {}
@@ -119,10 +123,16 @@ class MockDevice:
         self.drop_link_after_accept = drop_link_after_accept
         self.progress_step_ms = progress_step_ms
         self.reboot_delay_s = reboot_delay_s
+        # §80 S3/S4：设备端强校验的替身。psk 默认取开发值（与固件 OTA_DEV_PSK 一致），
+        # 传错值即可复现 T6（REJECT badauth）；check_auth=False 用于只看状态机的老用例。
+        self.psk = psk if psk is not None else ota_auth.resolve_psk()
+        self.check_auth = check_auth
+        self._last_nonce = 0
 
         self.offers: list[dict] = []
         self.aborts: list[dict] = []
         self.accepts = 0
+        self.rejects: list[str] = []      # 设备端实际回过的 reason（T5~T9 断言用）
         self.feed_sink = None          # 由 wire() 注入：设备回包 -> session.feed()
         self._lock = threading.Lock()
 
@@ -130,6 +140,39 @@ class MockDevice:
     def _reply(self, msg: dict) -> None:
         if self.feed_sink is not None:
             self.feed_sink(dict(msg))
+
+    def _reject(self, reason: str) -> None:
+        self.rejects.append(reason)
+        self._reply({"type": "OTA_REJECT", "reason": reason})
+
+    def _check_offer(self, offer: dict) -> str | None:
+        """对齐 ota_service.c 的 handle_offer 前四段：auth → sha → ver → 状态。"""
+        if self.reject:
+            return self.reject
+        if self.check_auth:
+            if not offer.get("hmac"):
+                return "noauth"
+            canon = ota_auth.canonical_offer(
+                offer.get("ver", ""), offer.get("min_version", ""),
+                bool(offer.get("force", 0)), int(offer.get("size", 0)),
+                offer.get("sha256", ""), offer.get("url", ""),
+                int(offer.get("nonce", 0)), int(offer.get("ts", 0)))
+            if not ota_auth.verify(self.psk, canon, offer.get("hmac", "")):
+                return "badauth"
+            if int(offer.get("nonce", 0)) <= self._last_nonce:
+                return "replay"
+            self._last_nonce = int(offer.get("nonce", 0))
+        if not str(offer.get("sha256", "") or ""):
+            return "nosha"
+        # 版本门禁（S4）
+        min_v = str(offer.get("min_version", "") or "")
+        ver = str(offer.get("ver", "") or "")
+        if min_v and _ver_cmp(ver, min_v) < 0:
+            return "oldver"
+        running = str((self.link.info or {}).get("fw_ver", "") or "")
+        if running and _ver_cmp(ver, running) < 0 and not offer.get("force"):
+            return "downgrade"
+        return None
 
     # ---- 设备收报文（由 MockLink.send 在会话线程里调用） ----
     def on_link_message(self, msg: dict) -> None:
@@ -145,8 +188,9 @@ class MockDevice:
     # ---- 一次升级的完整固件侧行为 ----
     def _simulate(self, offer: dict) -> None:
         # 校验链优先（设备端先判失败再宣告接受）
-        if self.reject:
-            self._reply({"type": "OTA_REJECT", "reason": self.reject})
+        reason = self._check_offer(offer)
+        if reason:
+            self._reject(reason)
             return
 
         size = int(offer.get("size", 0))

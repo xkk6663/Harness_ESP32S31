@@ -37,6 +37,18 @@ class FirmwareStore:
             "CREATE TABLE IF NOT EXISTS history("
             "ts REAL, device_ip TEXT, from_ver TEXT, to_ver TEXT,"
             "size INTEGER, sha TEXT, ok INTEGER, detail TEXT)")
+        # §80 S3/S4：OFFER nonce 计数器（严格递增，跨进程/重启单调）
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v INTEGER)")
+        # ★ 老库迁移：history 补 force / min_version 两列（§80 S4 起才有这两个语义）。
+        #   sqlite 的 ADD COLUMN 幂等失败码是 OperationalError（duplicate column），
+        #   这里吞掉即可，新库第一次建表后也会走一遍。
+        for ddl in ("ALTER TABLE history ADD COLUMN force INTEGER",
+                    "ALTER TABLE history ADD COLUMN min_version TEXT"):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     # ---- 归档（OTA 会话线程调用） ----
@@ -57,19 +69,38 @@ class FirmwareStore:
             return str(dest)
 
     # ---- 升级历史（OTA 会话线程调用） ----
-    def add_history(self, device_ip: str, from_ver: str, fw, ok: bool, detail: str) -> None:
+    def add_history(self, device_ip: str, from_ver: str, fw, ok: bool, detail: str, *,
+                    force: bool = False, min_version: str = "") -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO history VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO history VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (time.time(), device_ip, from_ver, fw.version, fw.size,
-                 fw.sha256, 1 if ok else 0, detail))
+                 fw.sha256, 1 if ok else 0, detail,
+                 1 if force else 0, min_version or ""))
             self._conn.commit()
+
+    # ---- §80 S3：OFFER nonce（OTA 会话线程调用） ----
+    def next_nonce(self) -> int:
+        """返回严格递增的 nonce 并落库。
+
+        设备端把"最近一次通过鉴权的 nonce"存 NVS，收到 `nonce <= last` 直接
+        REJECT replay —— 所以这里必须**持久化**（进程重启后不能回到 0），
+        并且至少是毫秒时间戳量级（换一台 PC 也不会撞号）。
+        """
+        with self._lock:
+            row = self._conn.execute("SELECT v FROM kv WHERE k='nonce'").fetchone()
+            last = int(row[0]) if row else 0
+            n = max(int(time.time() * 1000), last + 1)
+            self._conn.execute("INSERT OR REPLACE INTO kv VALUES('nonce', ?)", (n,))
+            self._conn.commit()
+            return n
 
     # ---- 查询（Qt 线程调用） ----
     def recent(self, n: int = 100) -> list[tuple]:
         with self._lock:
             return list(self._conn.execute(
-                "SELECT ts, device_ip, from_ver, to_ver, size, sha, ok, detail "
+                "SELECT ts, device_ip, from_ver, to_ver, size, sha, ok, detail, "
+                "force, min_version "
                 "FROM history ORDER BY ts DESC LIMIT ?", (n,)))
 
     def close(self) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -82,6 +83,19 @@ class NowHttpServer:
 def _make_handler(srv: NowHttpServer):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"         # ★ Range/206 需要 HTTP/1.1 语义
+
+        def setup(self) -> None:
+            """§80 S1(d)：accepted socket 关 Nagle。
+
+            ThreadingHTTPServer 接受的连接默认不带 NODELAY；固件响应用 64KB
+            大块写基本不受 Nagle 影响，但控制面小包（/firmware.json、封面、
+            歌词）会跟在同一栈上走，关掉可省掉一次"等 ACK"的延迟。
+            """
+            super().setup()
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
 
         def log_message(self, fmt, *args):  # 静默默认访问日志
             pass

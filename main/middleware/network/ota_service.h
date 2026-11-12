@@ -30,6 +30,17 @@
  *     每段单独算 SHA256 存 nvs；断电重启后从最近锚点续拉，
  *     只需重算该锚点之后的段（≈ 最多 256KB），最终再整包复核。
  *
+ *  ── §80 优化（v2.1，2026-11-12）──────────────────────────────────
+ *  ③ **传输提速**：读块 8KB、每 64KB 让出一次、PC 侧 TCP_NODELAY、
+ *     lwIP 窗口 5760→16384（见 sdkconfig / sdkconfig.defaults）。目标 ≥1.5MB/s。
+ *  ④ **整包 SHA-256 闭环**：全新下载流式累积、续传回读 `[0, expect_size)`，
+ *     在 `esp_ota_set_boot_partition()` 之前比对，不符**不切槽**。
+ *     OFFER 缺 `sha256` ⇒ `REJECT nosha`。
+ *  ⑤ **OFFER 鉴权**：`hmac`(HMAC-SHA256 over 规范化串) + `nonce` 单调 + `ts` 新鲜度，
+ *     失败分别回 `noauth/nopsk/badauth/replay/stale`。规范化串见 ICD §8.1.1。
+ *  ⑥ **设备端版本门禁**：`min_version` / `force` ⇒ `oldver` / `downgrade`。
+ *  ⑦ **耗时打点**：`grep "OTA_DIAG] timing"` 得 dl/verify/total/throughput。
+ *
  *  ── 内存纪律（严格遵循 docs/工程规范/13_内存管理规范.md + 14_堆管理宝贵经验.md）─
  *  - **A 静态池**：4KB 读缓冲 `s_rd_buf` 走 `.bss`（不进堆、零碎片）。
  *  - **B 预分配常驻**：OFFER JSON 拷贝走 PSRAM 堆（一次性、任务内 free）。

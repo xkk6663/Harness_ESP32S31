@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from .fw_info import FirmwareInfo
+from . import auth as ota_auth
 
 CHUNK = 64 * 1024
 WAIT_ONLINE_S = 20
@@ -68,12 +69,16 @@ class OtaSession:
     """一次 OTA 升级会话。属性 active 供 httpd 路由判断（就绪才宣告）。"""
 
     def __init__(self, ctx, fw: FirmwareInfo, *, limit_percent: int = 0,
-                 corrupt: bool = False, force: bool = False) -> None:
+                 corrupt: bool = False, force: bool = False,
+                 psk: str | None = None, min_version: str = "") -> None:
         self.ctx = ctx
         self.fw = fw
         self.limit_percent = max(0, min(99, int(limit_percent)))
         self.corrupt = corrupt
         self.force = force
+        # §80 S3/S4：鉴权与版本门禁（设备端强校验，PC 侧只是"如约申报"）
+        self.psk = ota_auth.resolve_psk(psk)
+        self.min_version = min_version or ""
 
         self.active = False                  # httpd 路由据此注册 /firmware.*
         self.state = "idle"
@@ -199,7 +204,11 @@ class OtaSession:
         if self.corrupt:
             self._log("★ 测试开关: corrupt → 流中点翻 1 bit")
         if self.force:
-            self._log("★ 测试开关: force → 忽略版本比对")
+            self._log("★ 测试开关: force → 允许降级（设备端仍会自行判 min_version）")
+        _dev_psk = self.psk == ota_auth.DEFAULT_PSK.encode("utf-8")
+        self._log(f"鉴权    : HMAC-SHA256 / PSK {len(self.psk)} B"
+                  f"{'（★ 开发默认值，量产须用 --psk 或 OTA_PSK）' if _dev_psk else ''}"
+                  f" / min_ver={self.min_version or '-'}")
 
         # 1) 等设备心跳（复用 NetLink 的在线判定）
         t0 = time.monotonic()
@@ -227,7 +236,8 @@ class OtaSession:
         if not self.force and dev_ver:
             if compare_semver(dev_ver, fw.version) >= 0:
                 self._log(f"★ 版本未提升（设备 {dev_ver} >= 固件 {fw.version}），"
-                          "默认不发 OFFER。要强行刷入请勾选「忽略版本比对」。")
+                          "默认不发 OFFER。要强行刷入请勾选「强制降级（force）」"
+                          "—— force 只让 PC 放行，设备端 downgrade 规则仍会独立裁决。")
                 return self._finish(False, f"版本未提升（{dev_ver} >= {fw.version}）")
         elif not self.force:
             self._log("设备未上报 fw_ver，跳过版本比对（继续）")
@@ -235,15 +245,28 @@ class OtaSession:
         # 3) OFFER ×3（设备回包固定到 PC:50003，由 link 线程 feed 进来）
         url = f"http://{pick_local_ip_for(dev_ip)}:{self.ctx.httpd.port}/firmware.bin"
         self._log(f"通告 URL: {url}")
-        offer = json.dumps({"type": "OTA_OFFER", "ver": fw.version,
-                            "size": self.served_size, "sha256": fw.sha256, "url": url},
-                           separators=(",", ":"))
-        accepted = False
         self._set_state("offer")
+        accepted = False
         for attempt in range(1, OFFER_TRIES + 1):
             if self._stop.is_set():
                 return self._finish(None, "cancelled")
-            self._log(f"发送 OTA_OFFER（第 {attempt}/{OFFER_TRIES} 次）")
+            # ★ 每次重试都重新签名：nonce 必须严格递增（设备判"<= 上次"即 REJECT replay），
+            #   复用同一个 nonce 会让第 2/3 次重试必然被拒。
+            fields = ota_auth.build_offer_fields(
+                self.psk, ver=fw.version, min_version=self.min_version,
+                force=self.force, size=self.served_size, sha256=fw.sha256,
+                url=url, store=store)
+            offer = json.dumps({
+                "type": "OTA_OFFER",
+                "ver": fw.version,
+                "size": self.served_size,
+                "sha256": fw.sha256,
+                "url": url,
+                **fields,
+            }, separators=(",", ":"))
+            self._log(f"发送 OTA_OFFER（第 {attempt}/{OFFER_TRIES} 次，"
+                      f"force={fields['force']} min_ver={fields['min_version'] or '-'} "
+                      f"nonce={fields['nonce']} hmac={fields['hmac'][:8]}…）")
             self.ctx.link.send(json.loads(offer))
             if self._drain_until_accept(ACCEPT_WAIT_S):
                 accepted = True
@@ -290,19 +313,36 @@ class OtaSession:
         # 5) 自证核对：等设备以新版本回来（≤60s）
         self._set_state("verify")
         self._log("升级成功，设备重启中… 等待以新版本回来（自证 30s 内）")
+        # ★ F36 修正（2026-11-12 真机验收发现）：原实现只要 link.online 就比对
+        #   fw_ver。但设备重启前那包心跳还留在 info 里（online 本身有约 6s 滞后），
+        #   两端版本串又常常相同（同主版本重刷 / force 重刷），于是必然判"通过"——
+        #   实测设备其实停在 PENDING_VERIFY、下次复位就回滚，PC 却报 exit 0。
+        #   现在必须"先看到 link 掉线（设备重启断网），再看到它重新 ONLINE"，
+        #   读到的才是重启后的第一包心跳。
+        dev_ver_before = str((self.ctx.link.info or {}).get("fw_ver", "") or "")
         v0 = time.monotonic()
+        seen_offline = False
         while time.monotonic() - v0 < VERIFY_TIMEOUT_S:
-            time.sleep(1.0)
-            if self.ctx.link.online:
-                back_ver = str((self.ctx.link.info or {}).get("fw_ver", "") or "")
-                self._log(f"设备已回来: {self.ctx.link.device_ip}，fw_ver={back_ver or '(未上报)'}")
-                ver_ok = back_ver == fw.version
-                if ver_ok:
-                    self._log(f"★ 版本核对通过（{fw.version}）→ 升级成功 ✅")
-                else:
-                    self._log(f"★ 版本核对不一致: 期望 {fw.version} / 实际 {back_ver}"
-                              " → 可能已自动回滚 ❌（查串口 rollback 关键字）")
-                return self._finish(True if ver_ok else False, "updated" if ver_ok else "version-mismatch")
+            time.sleep(0.5)
+            if not self.ctx.link.online:
+                if not seen_offline:
+                    self._log("设备已下线（重启中），等它以新版本回来…")
+                seen_offline = True
+                continue
+            if not seen_offline:
+                continue                    # 仍是重启前的心跳，不能用来核对版本
+            back_ver = str((self.ctx.link.info or {}).get("fw_ver", "") or "")
+            self._log(f"设备已回来: {self.ctx.link.device_ip}，fw_ver={back_ver or '(未上报)'}")
+            ver_ok = back_ver == fw.version
+            if ver_ok:
+                self._log(f"★ 版本核对通过（{fw.version}）→ 升级成功 ✅")
+                if dev_ver_before == fw.version:
+                    self._log("⚠ 升级前后版本串相同，本判据分不出'新固件已转正'与"
+                              "'被回滚到旧槽'；以设备日志 self-test OK / 槽位为准")
+            else:
+                self._log(f"★ 版本核对不一致: 期望 {fw.version} / 实际 {back_ver}"
+                          " → 可能已自动回滚 ❌（查串口 rollback 关键字）")
+            return self._finish(True if ver_ok else False, "updated" if ver_ok else "version-mismatch")
         self._finish(False, f"设备重启后 {VERIFY_TIMEOUT_S}s 内未恢复心跳 —— 可能已自动回滚，"
                       "请查串口日志（rollback 关键字）")
 
@@ -322,8 +362,17 @@ class OtaSession:
             if t == "OTA_REJECT":
                 reason = str(msg.get("reason", "?"))
                 hint = {"busy": "录音/通话中", "pending": "待自证", "space": "槽不够",
-                        "network": "离线", "badargs": "参数问题", "badjson": "参数问题"}
-                self._log(f"设备拒绝: {reason}（{hint.get(reason, '见 ICD §8')}）")
+                        "network": "离线", "badargs": "参数问题", "badjson": "参数问题",
+                        # §80 S2/S3/S4 新增拒绝原因（设备端强校验，不是 PC 能绕的）
+                        "nosha": "OFFER 缺 sha256（设备要求整包摘要）",
+                        "noauth": "OFFER 缺 hmac（设备要求鉴权）",
+                        "nopsk": "设备没有 PSK（NVS ota/psk 未烧）",
+                        "badauth": "HMAC 校验失败（PSK 不一致？）",
+                        "replay": "nonce 非递增（疑似重放）",
+                        "stale": "ts 超出 ±300s（PC 与设备时钟差太大）",
+                        "oldver": "低于设备声明的 min_version",
+                        "downgrade": "降级被设备拒绝（需勾「强制降级」= force）"}
+                self._log(f"设备拒绝: {reason}（{hint.get(reason, '见 ICD §8.1')}）")
                 raise _Rejected(reason)
         return False
 
@@ -337,7 +386,8 @@ class OtaSession:
             store = getattr(self.ctx, "ota_store", None)
             if store is not None:
                 try:
-                    store.add_history(self._dev_ip, self._dev_ver, self.fw, ok, detail)
+                    store.add_history(self._dev_ip, self._dev_ver, self.fw, ok, detail,
+                                      force=self.force, min_version=self.min_version)
                 except Exception as e:  # noqa: BLE001
                     self._log(f"历史记录写入失败（忽略）: {type(e).__name__}: {e}")
 
