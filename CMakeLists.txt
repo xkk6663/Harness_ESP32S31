@@ -6,6 +6,57 @@ cmake_minimum_required(VERSION 3.5)
 
 set(COMPONENTS main) # "Trim" the build. Include the minimal set of components; main and anything it depends on.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# ---- 固件版本：version.txt（人决定）+ 构建 metadata（commit）----
+# 方案见 docs/项目规划/固件版本管理.md。必须写在 project() 之前：
+# IDF 的 project.cmake 用 `if(NOT DEFINED PROJECT_VER)` 判断要不要自己去找 version.txt。
+#   * 默认        → PROJECT_VER = <version.txt>+g<短 sha>[.dirty]
+#   * 发布包       → 设环境变量 RELEASE_BUILD=1 → PROJECT_VER = <version.txt>（不带 metadata）
+#   * 显式 -D      → 以传入值为准（CI 想钉死版本号时用）
+# 换 commit 后靠 .git/HEAD 这个 CMAKE_CONFIGURE_DEPENDS 触发重配，版本不会滞留。
+if(NOT DEFINED PROJECT_VER)
+    set(_ver_file "${CMAKE_CURRENT_SOURCE_DIR}/version.txt")
+    if(EXISTS "${_ver_file}")
+        file(STRINGS "${_ver_file}" _ver LIMIT_COUNT 1)
+        string(STRIP "${_ver}" _ver)
+        if(DEFINED ENV{RELEASE_BUILD})
+            set(PROJECT_VER "${_ver}")
+            message(STATUS "PROJECT_VER = ${PROJECT_VER}  (release build, version.txt only)")
+        else()
+            find_package(Git QUIET)
+            set(_sha "")
+            if(GIT_FOUND)
+                execute_process(
+                    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    OUTPUT_VARIABLE _sha
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+            endif()
+            if(_sha)
+                execute_process(
+                    COMMAND "${GIT_EXECUTABLE}" status --porcelain
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    OUTPUT_VARIABLE _dirty
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+                if(_dirty)
+                    set(PROJECT_VER "${_ver}+g${_sha}.dirty")
+                else()
+                    set(PROJECT_VER "${_ver}+g${_sha}")
+                endif()
+                if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git/HEAD")
+                    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                                 "${CMAKE_CURRENT_SOURCE_DIR}/.git/HEAD")
+                endif()
+            else()
+                set(PROJECT_VER "${_ver}")
+            endif()
+            message(STATUS "PROJECT_VER = ${PROJECT_VER}  (version.txt + git commit)")
+        endif()
+    endif()
+endif()
+
 project(display_audio_photo)
 
 # gcc15 在总 -Werror=all 下把 bluedroid 自带 bt_types.h 的 strncpy truncation 当错误。

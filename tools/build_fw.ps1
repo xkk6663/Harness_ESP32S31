@@ -5,12 +5,11 @@
   pwsh -f tools/build_fw.ps1 -NoMeta         # 发布构建：严格等于 version.txt，且要求工作区干净
   pwsh -f tools/build_fw.ps1 -Flash          # 构建完顺带 app-flash（日常调试用）
 
-规则：
-  * 版本号的"人工/流程决定"部分只写在仓库根的 version.txt（ESP-IDF 会自动当 PROJECT_VER）。
-  * 日常构建把 commit 作为 SemVer 的 build metadata 拼在后面（+gXXXXXXX），
-    设备/PC 的 ver_parse 都会在 '+' 处截断，所以它不影响"要不要升"的判断，
-    但日志里一眼能看出是哪个 commit 编出来的。
-  * 工作区脏时日常构建带 .dirty 后缀；发布构建（-NoMeta）则直接拒绝，避免把不可复现的包发出去。
+版本号本身由 CMakeLists.txt 在 project() 之前算好（读 version.txt + git rev-parse），
+所以 `idf.py build` 直接跑也会带 +g<sha>。本脚本只是额外做三件事：
+  1) 必要时初始化 IDF 环境；
+  2) -NoMeta 时置 RELEASE_BUILD=1 并拒绝脏工作区（避免把不可复现的包发出去）；
+  3) 构建后跑一次体积门禁。
 #>
 param(
     [switch]$NoMeta,
@@ -38,7 +37,6 @@ if ($ver -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
 }
 
 $sha = (& git rev-parse --short HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $sha) { throw 'git rev-parse --short HEAD 失败（不是 git 仓库？）' }
 $dirty = ((& git status --porcelain | Out-String).Trim().Length -gt 0)
 
 if ($NoMeta -and $dirty) {
@@ -46,24 +44,25 @@ if ($NoMeta -and $dirty) {
 }
 
 if ($NoMeta) {
-    $appVer = $ver
-} elseif ($dirty) {
-    $appVer = "$ver+g$sha.dirty"
+    $env:RELEASE_BUILD = '1'
+    Write-Host "[build] 发布构建：PROJECT_VER = $ver（无 build metadata）" -ForegroundColor Green
 } else {
-    $appVer = "$ver+g$sha"
+    Remove-Item Env:RELEASE_BUILD -ErrorAction SilentlyContinue
+    $appVer = if ($dirty) { "$ver+g$sha.dirty" } else { "$ver+g$sha" }
+    Write-Host "[build] 日常构建：PROJECT_VER = $appVer" -ForegroundColor Cyan
 }
 
-Write-Host "[build] version.txt = $ver" -ForegroundColor Cyan
-Write-Host "[build] commit      = $sha$(if ($dirty) { ' (dirty)' })" -ForegroundColor Cyan
-Write-Host "[build] PROJECT_VER = $appVer" -ForegroundColor Green
+try {
+    & idf.py build
+    if ($LASTEXITCODE -ne 0) { throw "idf.py build 失败（exit $LASTEXITCODE）" }
 
-& idf.py -DPROJECT_VER="$appVer" build
-if ($LASTEXITCODE -ne 0) { throw "idf.py build 失败（exit $LASTEXITCODE）" }
+    & python (Join-Path $root 'tools\check_fw_size.py') (Join-Path $root 'build\display_audio_photo.bin')
+    Write-Host "[build] 体积门禁 exit=$LASTEXITCODE" -ForegroundColor Yellow
 
-& python (Join-Path $root 'tools\check_fw_size.py') (Join-Path $root 'build\display_audio_photo.bin')
-Write-Host "[build] 体积门禁 exit=$LASTEXITCODE" -ForegroundColor Yellow
-
-if ($Flash) {
-    & idf.py -p COM9 -b 921600 app-flash
-    if ($LASTEXITCODE -ne 0) { throw "app-flash 失败（exit $LASTEXITCODE）" }
+    if ($Flash) {
+        & idf.py -p COM9 -b 921600 app-flash
+        if ($LASTEXITCODE -ne 0) { throw "app-flash 失败（exit $LASTEXITCODE）" }
+    }
+} finally {
+    Remove-Item Env:RELEASE_BUILD -ErrorAction SilentlyContinue
 }
